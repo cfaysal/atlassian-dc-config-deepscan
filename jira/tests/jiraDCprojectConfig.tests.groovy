@@ -1016,6 +1016,49 @@ ok("the suppressed reads are collapsed too",
 ok("the orphan table is collapsed too",
     afterShrink.storage.contains("<ac:parameter ac:name=\"title\">Remarks without a matching item (1 remark)</ac:parameter>"))
 
+/* ---- 24. A table inside a remark cell is refused, not silently obeyed ----- */
+
+/* The read works on the page markup, and markup nesting is the one thing a regular
+ * expression cannot see. A table pasted into a Remark cell used to end the enclosing
+ * table early: every remark below it was dropped and re-seeded on the next write, so
+ * an administrator lost text with nothing reporting a failure. The property under
+ * test is that this now refuses to write rather than writing the wrong thing. */
+
+ok("a page this export wrote carries no nesting", !Cx.hasNestedTableBody(closedPage.storage))
+ok("an empty page carries none either", !Cx.hasNestedTableBody(""))
+ok("two tables side by side are not nested",
+    !Cx.hasNestedTableBody("<table><tbody><tr><td>a</td></tr></tbody></table>" +
+        "<table><tbody><tr><td>b</td></tr></tbody></table>"))
+ok("a table inside a table is nested",
+    Cx.hasNestedTableBody("<tbody><tr><td><table><tbody><tr><td>x</td></tr></tbody></table></td></tr></tbody>"))
+
+/* The real shape: a page this export wrote, with a table pasted into one remark
+ * cell. Built out of the real output rather than by hand, so the test cannot pass
+ * against a page shape the export never produces. */
+String nestedSeed = "<td>" + Cx.REMARK_SEED + "</td>"
+int nestAt = closedPage.storage.indexOf(nestedSeed)
+ok("there is a seeded cell to paste a table into", nestAt >= 0)
+String withNestedTable = closedPage.storage.substring(0, nestAt) +
+    "<td><table><tbody><tr><td>pasted</td></tr></tbody></table></td>" +
+    closedPage.storage.substring(nestAt + nestedSeed.length())
+
+RemarkRead nestedRead = Cx.parseRemarks(withNestedTable)
+check("a page with a nested table is refused", nestedRead.outcome, RemarkRead.FAILED)
+ok("and refusing means nothing is written", !nestedRead.isWriteAllowed())
+ok("the refusal says what to do about it", nestedRead.reason.contains("nested"))
+
+/* Without the guard this page parsed as a success and lost the remarks below the
+ * pasted table. Proving the old behaviour is what makes the guard worth having:
+ * the second remark is on the page and the naive read cannot see it. */
+int lastNestSeed = withNestedTable.lastIndexOf(nestedSeed)
+String nestedWithRemarkBelow = withNestedTable.substring(0, lastNestSeed) +
+    "<td>this one is below the pasted table</td>" +
+    withNestedTable.substring(lastNestSeed + nestedSeed.length())
+ok("the lost remark really is on the page",
+    nestedWithRemarkBelow.contains("this one is below the pasted table"))
+check("and the read still refuses rather than dropping it",
+    Cx.parseRemarks(nestedWithRemarkBelow).outcome, RemarkRead.FAILED)
+
 /* ---- result --------------------------------------------------------------- */
 
 println "PASSED: " + passed

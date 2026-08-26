@@ -2574,6 +2574,35 @@ class Cx {
         return detail
     }
 
+    /* The read is a set of regular expressions over the page markup, and a regular
+     * expression cannot see nesting. A table placed inside a Remark cell therefore
+     * ends the enclosing table early: every remark below it is dropped, seeded again
+     * on the next write, and an administrator's text is gone without anything having
+     * reported a failure. That is the one outcome this export must never produce, so
+     * nesting is detected before the read starts and refused. */
+    static boolean hasNestedTableBody(String storage) {
+        int depth = 0
+        int at = 0
+        while (at < storage.length()) {
+            int open = storage.indexOf("<tbody", at)
+            int close = storage.indexOf("</tbody", at)
+            if (open < 0 && close < 0) {
+                return false
+            }
+            if (open >= 0 && (close < 0 || open < close)) {
+                depth++
+                if (depth > 1) {
+                    return true
+                }
+                at = open + 6
+            } else {
+                depth--
+                at = close + 7
+            }
+        }
+        return false
+    }
+
     /* Reads every remark table on the page, not just the first one: the
      * orphaned-remark table is a second table and its notes have to survive
      * as well. Anything unexpected is FAILED, never an empty success. */
@@ -2586,6 +2615,11 @@ class Cx {
             }
             if (!storage.contains(MARKER)) {
                 return read.fail("The existing page does not carry the export marker \"" + MARKER + "\". It was not produced by this export, so it is not overwritten.")
+            }
+            if (hasNestedTableBody(storage)) {
+                return read.fail("A table is nested inside another table on the existing page. This read " +
+                    "works on the page markup and cannot tell which row such a remark belongs to, so " +
+                    "nothing is written. Take the nested table out of the Remark cell and export again.")
             }
 
             int tablesMatched = 0
@@ -4044,7 +4078,7 @@ class Scan {
                 return
             }
             for (Object raw : actions) {
-                self.add(transitionNode(workflow, (ActionDescriptor) raw))
+                self.add(transitionNode(workflow, (ActionDescriptor) raw, status))
             }
         }
     }
@@ -4070,8 +4104,10 @@ class Scan {
                 self.absent("The workflow has no global and no initial transition.")
                 return
             }
+            /* A global or initial transition belongs to no status, so there is no
+             * status for a self transition to stay in and none is claimed. */
             for (ActionDescriptor action : loose) {
-                self.add(transitionNode(workflow, action))
+                self.add(transitionNode(workflow, action, null))
             }
         }
     }
@@ -4103,12 +4139,11 @@ class Scan {
         return node
     }
 
-    private Nd transitionNode(JiraWorkflow workflow, ActionDescriptor action) {
+    private Nd transitionNode(JiraWorkflow workflow, ActionDescriptor action, Status origin) {
         Nd node = Nd.of("workflowTransition", "Transition: " + Pc.orNa(action.getName()))
         node.ident(action.getId())
         return guard(node) { Nd self ->
-            String target = targetStatusName(workflow, action)
-            self.val(target == null ? "target not readable" : "to " + target)
+            self.val(targetText(workflow, action, origin))
 
             /* Named, not counted. "4 post functions" tells an administrator that
              * something happens on this transition without telling them what, which
@@ -4116,6 +4151,7 @@ class Scan {
              * could not be read still says so rather than reporting nothing. */
             self.add(descriptorGroup("workflowCondition", "Conditions", conditions(action)))
             self.add(descriptorGroup("workflowValidator", "Validators", safeList(action.getValidators())))
+            self.add(descriptorGroup("workflowFunction", "Pre functions", preFunctions(action)))
             self.add(descriptorGroup("workflowFunction", "Post functions", postFunctions(action)))
 
             Map meta = action.getMetaAttributes()
@@ -4230,28 +4266,35 @@ class Scan {
         }
     }
 
-    /* Action pre-functions and result pre/post functions are all reported under one
-     * heading. They are separate lists in the descriptor, and a transition that
-     * carries action-level pre-functions would otherwise show them nowhere. */
+    /* A pre-function runs before the transition, a post-function after it, and both
+     * exist twice over: once on the action and once on its unconditional result.
+     * They used to be reported together under the heading "Post functions", which
+     * put every pre-function under a name that says the opposite of what it does.
+     * Each list is now collected under its own heading. A read that fails returns
+     * null and is reported as a failed read rather than as an empty list. */
+    private static List<Object> preFunctions(ActionDescriptor action) {
+        return functionsOf(action, true)
+    }
+
     private static List<Object> postFunctions(ActionDescriptor action) {
+        return functionsOf(action, false)
+    }
+
+    private static List<Object> functionsOf(ActionDescriptor action, boolean before) {
         try {
             List<Object> all = new ArrayList<Object>()
-            List<Object> pre = safeList(action.getPreFunctions())
-            List<Object> post = safeList(action.getPostFunctions())
-            if (pre == null || post == null) {
+            List<Object> onAction = safeList(before ? action.getPreFunctions() : action.getPostFunctions())
+            if (onAction == null) {
                 return null
             }
-            all.addAll(pre)
-            all.addAll(post)
+            all.addAll(onAction)
             ResultDescriptor result = action.getUnconditionalResult()
             if (result != null) {
-                List<Object> resultPre = safeList(result.getPreFunctions())
-                List<Object> resultPost = safeList(result.getPostFunctions())
-                if (resultPre == null || resultPost == null) {
+                List<Object> onResult = safeList(before ? result.getPreFunctions() : result.getPostFunctions())
+                if (onResult == null) {
                     return null
                 }
-                all.addAll(resultPre)
-                all.addAll(resultPost)
+                all.addAll(onResult)
             }
             return all
         } catch (Exception ignored) {
@@ -4259,22 +4302,37 @@ class Scan {
         }
     }
 
-    private static String targetStatusName(JiraWorkflow workflow, ActionDescriptor action) {
+    /* Where a transition leaves the issue. OSWorkflow writes no step attribute on a
+     * result that does not change step, and ResultDescriptor then answers 0: that is
+     * the field's initial value in the shipped bytecode, guarded by a protected
+     * hasStep flag with no public accessor. A Jira step id is positive, so a step of
+     * zero or less is a transition that stays where it is - not a step that could not
+     * be read. Telling those two apart matters, because the old code printed "target
+     * not readable" for both and put a read failure where there was none. The three
+     * ways this can genuinely fail are now named separately from each other. */
+    private static String targetText(JiraWorkflow workflow, ActionDescriptor action, Status origin) {
         try {
             ResultDescriptor result = action.getUnconditionalResult()
             if (result == null) {
-                return null
+                return "the transition names no result, so its target is unknown"
             }
             int stepId = result.getStep()
+            if (stepId <= 0) {
+                return origin == null
+                    ? "stays in the status it started from"
+                    : "stays in " + Pc.orNa(origin.getName())
+            }
             Object descriptor = workflow.getDescriptor()
             Object step = Pc.duck(descriptor, "getStep", Integer.valueOf(stepId))
             if (step == null) {
-                return null
+                return "target step " + String.valueOf(stepId) + " is not in this workflow"
             }
             Status status = workflow.getLinkedStatus((StepDescriptor) step)
-            return status == null ? null : status.getName()
-        } catch (Exception ignored) {
-            return null
+            return status == null
+                ? "target step " + String.valueOf(stepId) + " is linked to no status"
+                : "to " + status.getName()
+        } catch (Exception error) {
+            return "target not readable: " + error.getClass().getSimpleName()
         }
     }
 
@@ -6163,7 +6221,8 @@ Map<String, Object> confluenceSpaces(ApplicationLinkRequestFactory factory) {
             return result
         }
 
-        List<Map<String, Object>> rows = Cx.rowsOf((Map<String, Object>) call.get("json"), "results")
+        Map<String, Object> json = (Map<String, Object>) call.get("json")
+        List<Map<String, Object>> rows = Cx.rowsOf(json, "results")
         for (Map<String, Object> row : rows) {
             String key = Cx.str(row, "key", "")
             if (key.isEmpty() || !seen.add(key)) {
@@ -6175,11 +6234,19 @@ Map<String, Object> confluenceSpaces(ApplicationLinkRequestFactory factory) {
             spaces.add(space)
         }
 
-        if (rows.size() < Cx.SPACE_PAGE_SIZE) {
+        /* Confluence caps a page at its own configured maximum, which can be smaller
+         * than the one asked for. Comparing the row count against the requested size
+         * therefore ends the loop on the first page of an instance with a low cap and
+         * reports a short list as the whole list, with nothing marked as cut. The
+         * server's own paging is the authority instead: a next link means there is
+         * more, its absence means there is not. The cursor advances by the rows that
+         * actually came back, so a capped page skips nothing. */
+        boolean hasNext = Cx.str(Cx.sub(json, "_links"), "next", "").length() > 0
+        if (!hasNext || rows.isEmpty()) {
             result.put("ok", Boolean.TRUE)
             return result
         }
-        start += Cx.SPACE_PAGE_SIZE
+        start += rows.size()
     }
 
     result.put("ok", Boolean.TRUE)
@@ -6267,10 +6334,15 @@ Map<String, Object> confluenceSearchPages(ApplicationLinkRequestFactory factory,
         return result
     }
 
-    List<Map<String, Object>> rows = Cx.rowsOf((Map<String, Object>) call.get("json"), "results")
-    /* The request carries a limit, so a full page of hits means there may be more.
-     * Saying so is the point: a silently cut list reads as "that is everything". */
-    if (rows.size() >= Cx.SEARCH_LIMIT) {
+    Map<String, Object> searchJson = (Map<String, Object>) call.get("json")
+    List<Map<String, Object>> rows = Cx.rowsOf(searchJson, "results")
+    /* Saying that a list was cut is the point: a silently shortened list reads as
+     * "that is everything". The server's next link is the authority, because
+     * Confluence may cap the page below the limit that was asked for, in which case a
+     * full page never looks full. The row count is kept as a second signal for a
+     * response that carries no links at all. */
+    if (Cx.str(Cx.sub(searchJson, "_links"), "next", "").length() > 0 ||
+            rows.size() >= Cx.SEARCH_LIMIT) {
         result.put("truncated", Boolean.TRUE)
     }
     for (Map<String, Object> row : rows) {
