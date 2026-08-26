@@ -1014,29 +1014,46 @@ class Render {
         return out.toString()
     }
 
+    /* A section is closed until it is asked for. A project of any size produces
+     * twelve sections and thousands of nodes, and a page that opens with all of them
+     * unfolded cannot be read at all: the first thing an administrator needs is the
+     * list of sections and how much sits in each. What matters while a section is
+     * closed is written on its header, so a closed section is never mistaken for an
+     * empty or a broken one. */
     private static String section(Nd node, boolean expandAll) {
         StringBuilder out = new StringBuilder()
+        boolean open = expandAll
         out.append("<div class=\"section\">")
-        out.append("<div class=\"section-head\">")
+        out.append("<div class=\"section-head\" role=\"button\" tabindex=\"0\" aria-expanded=\"")
+        out.append(open ? "true" : "false").append("\">")
+        out.append("<button class=\"twisty section-twisty\" type=\"button\" tabindex=\"-1\">")
+        out.append(open ? "&#9662;" : "&#9656;").append("</button>")
         out.append("<h2 class=\"section-title\">").append(Pc.html(Pc.orNa(node.label))).append("</h2>")
         if (!node.children.isEmpty()) {
             out.append("<span class=\"section-count muted\">")
             out.append(String.valueOf(node.countDescendants())).append(" items</span>")
+        }
+        /* A section that could not be read says so on its header, where it stays
+         * visible while the section is closed. Behind the fold, a failed read turns
+         * into something the reader has to go looking for. */
+        if (!node.isReadable()) {
+            out.append("<span class=\"state state-").append(Pc.html(node.state)).append("\">")
+            out.append(Pc.html(stateLabel(node.state))).append("</span>")
+        } else if (node.children.isEmpty()) {
+            out.append("<span class=\"muted empty\">nothing configured</span>")
         }
         if (node.deepLink != null) {
             out.append("<a class=\"jump\" href=\"").append(Pc.html(node.deepLink))
             out.append("\" target=\"_blank\" rel=\"noreferrer\">open in Jira</a>")
         }
         out.append("</div>")
+
+        out.append("<div class=\"section-body").append(open ? "" : " hidden").append("\">")
         if (node.value != null) {
             out.append("<div class=\"section-value\">").append(valueHtml(node.value)).append("</div>")
         }
         if (node.linkNote != null) {
             out.append("<div class=\"linknote\">").append(Pc.html(node.linkNote)).append("</div>")
-        }
-        if (!node.isReadable()) {
-            out.append("<div class=\"state state-").append(Pc.html(node.state)).append("\">")
-            out.append(Pc.html(stateLabel(node.state))).append("</div>")
         }
         if (node.children.isEmpty()) {
             if (node.isReadable()) {
@@ -1050,6 +1067,7 @@ class Render {
             out.append("</ul>")
             out.append(sectionTable(node))
         }
+        out.append("</div>")
         out.append("</div>\n")
         return out.toString()
     }
@@ -1421,6 +1439,17 @@ table.flat th, table.flat td { border: 1px solid var(--border-subtle); padding: 
 table.flat th { background: var(--surface-subtle); font-weight: 600; position: sticky; top: 0; }
 table.flat tr:nth-child(even) td { background: var(--surface-subtle); }
 .view-table { overflow-x: auto; }
+.section-head { cursor: pointer; user-select: none; gap: 10px; }
+.section-head:hover .section-title { color: var(--blue); }
+.section-head .twisty { font-size: 13px; }
+.section-title { flex: 0 1 auto; }
+/* "open" must never wrap into "ope / n": the last two columns shrink to their own
+   content instead of taking a share of the width. */
+table.flat th:nth-child(4), table.flat td:nth-child(4),
+table.flat th:nth-child(5), table.flat td:nth-child(5) { white-space: nowrap; width: 1%; }
+table.flat td:nth-child(5) { text-align: right; }
+table.flat td:first-child { white-space: normal; font-size: 12px; }
+table.flat th:nth-child(2), table.flat td:nth-child(2) { min-width: 140px; }
 .section-value, .node-value, .linknote, table.flat td, .node-diag {
     overflow-wrap: anywhere; word-break: break-word;
 }
@@ -1473,7 +1502,27 @@ details.long .long-body { margin-top: 6px; padding: 8px 10px; background: var(--
      * fetch, no external resource, no state that outlives the tab. */
     private static String script() {
         return """<script>
+function toggleSection(section, force) {
+    if (!section) { return; }
+    var body = section.querySelector(':scope > .section-body');
+    if (!body) { return; }
+    var open = force === undefined ? body.classList.contains('hidden') : force;
+    body.classList.toggle('hidden', !open);
+    var head = section.querySelector(':scope > .section-head');
+    if (head) { head.setAttribute('aria-expanded', open ? 'true' : 'false'); }
+    var chevron = section.querySelector(':scope > .section-head > .twisty');
+    if (chevron) { chevron.innerHTML = open ? '&#9662;' : '&#9656;'; }
+}
+
 document.addEventListener('click', function (event) {
+    /* The whole section header is the hit area, which is why the link inside it has
+       to be excluded by hand: clicking "open in Jira" must open Jira, not fold the
+       section away underneath the click. */
+    var head = event.target.closest('.section-head');
+    if (head && !event.target.closest('a')) {
+        toggleSection(head.closest('.section'));
+        return;
+    }
     var button = event.target.closest('.twisty');
     if (!button) { return; }
     var item = button.closest('li.node');
@@ -1496,7 +1545,17 @@ function setTwisty(item, open) {
     }
 }
 
+document.addEventListener('keydown', function (event) {
+    if (event.key !== 'Enter' && event.key !== ' ') { return; }
+    var head = event.target.closest ? event.target.closest('.section-head') : null;
+    if (!head) { return; }
+    event.preventDefault();
+    toggleSection(head.closest('.section'));
+});
+
 function expandAll(open) {
+    var sections = document.querySelectorAll('.section');
+    for (var s = 0; s < sections.length; s++) { toggleSection(sections[s], open); }
     var items = document.querySelectorAll('li.node');
     for (var i = 0; i < items.length; i++) { setTwisty(items[i], open); }
 }

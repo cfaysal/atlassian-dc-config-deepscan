@@ -381,6 +381,35 @@ ok("collapsed output hides the nested list", collapsed.contains("class=\"tree hi
 ok("expanded output hides nothing", !expanded.contains("class=\"tree hidden\""))
 ok("the collapsed node says how much it hides", collapsed.contains("class=\"node-count muted\""))
 
+/* Sections fold too, and they start folded. What a reader needs while a section is
+ * shut has to stay on the header, otherwise folding hides evidence rather than
+ * noise. */
+ok("a section carries its own chevron", collapsed.contains("class=\"twisty section-twisty\""))
+ok("a section body starts hidden", collapsed.contains("class=\"section-body hidden\""))
+ok("an expanded page opens its sections", expanded.contains("class=\"section-body\""))
+ok("an expanded page hides no section body", !expanded.contains("class=\"section-body hidden\""))
+ok("the section header states how many items it holds", collapsed.contains("section-count muted"))
+ok("the section header is reachable by keyboard", collapsed.contains("tabindex=\"0\""))
+
+/* The marker is matched, not the sentence. "could not be read" is also the label of
+ * a summary card at the top of the page, so asserting on the words alone would pass
+ * for a page that never marked the section at all. */
+Report brokenSection = new Report()
+brokenSection.section("s", "Workflow scheme").failed("Read failed: RuntimeException")
+String brokenCollapsed = Render.html(brokenSection, [:] as LinkedHashMap, false)
+ok("a failed read is marked on the header, above the folded body",
+    brokenCollapsed.indexOf("class=\"state state-unreadable\"") >= 0 &&
+    brokenCollapsed.indexOf("class=\"state state-unreadable\"") < brokenCollapsed.indexOf("section-body"))
+
+Report emptySection = new Report()
+emptySection.section("s", "Components")
+String emptyCollapsed = Render.html(emptySection, [:] as LinkedHashMap, false)
+ok("an empty section says so on the header, above the folded body",
+    emptyCollapsed.indexOf("nothing configured") < emptyCollapsed.indexOf("section-body"))
+ok("empty and unreadable sections still differ while both are closed",
+    !emptyCollapsed.contains("class=\"state state-unreadable\"") &&
+    !brokenCollapsed.contains("nothing configured"))
+
 /* Both views ship in the same page, so the table can never describe a different
  * tree than the one next to it. */
 ok("the tree view is rendered", collapsed.contains("class=\"tree view-tree\""))
