@@ -16,6 +16,21 @@
 - **javax / jakarta neutral.** Neither namespace may be imported. The `Response` class is
   resolved at runtime in `Http`, and that is the only place that knows about it.
 
+## One file, on purpose
+
+The endpoint is a single Groovy file and stays one, however long it gets. Splitting it
+into modules over ScriptRunner script roots, or assembling it from parts at build time,
+have both been considered and both were declined.
+
+The reason is what this endpoint is for. An administrator opens a customer instance they
+do not own, pastes one file into the ScriptRunner console, and gets an answer. No script
+root, no distribution across cluster nodes, no deploy rights, no build step. For an audit
+tool you run on somebody else's system, that is half of what makes it usable.
+
+So the file is long, and the structure lives inside it: banner comments mark the blocks,
+and the Jira-free half is cut out by CI and unit tested. If a section grows unreadable,
+make the section smaller. Do not make the file plural.
+
 ## Layout
 
 Everything above the `END OF THE JIRA-FREE BLOCK` banner is free of Jira types. CI cuts that
