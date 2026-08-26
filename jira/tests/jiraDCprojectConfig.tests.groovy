@@ -354,6 +354,47 @@ ok("map carries totals", ((Map) asMap.get("totals")).get("nodes") == 5)
 ok("map omits empty child lists",
     !((Map) ((List) asMap.get("sections"))[1].get("children")[0]).containsKey("children"))
 
+/* ---- 12b. a measured absence is not a failed read ------------------------ */
+
+/* A transition with no screen, a project with no category, a condition list that is
+ * genuinely empty: all ABSENT, all normal, none of them a failure. Counting them as
+ * unreadable made a healthy project announce dozens of failed reads on the summary
+ * card while the diagnostics list right beside it correctly said none. */
+Report absences = new Report()
+Nd withAbsences = absences.section("s", "Workflows")
+withAbsences.add(Nd.of("workflowScreen", "Transition screen").absent("No screen"))
+withAbsences.add(Nd.of("workflowCondition", "Conditions").absent("none"))
+withAbsences.add(Nd.of("projectField", "Category").absent("No category"))
+check("absences are not counted as failures", absences.unreadableCount(), 0)
+check("absences still count as items", absences.nodeCount(), 4)
+
+Nd oneFailure = absences.section("s2", "Roles")
+oneFailure.add(Nd.of("projectRole", "Users").failed("Read failed: RuntimeException"))
+check("a real failure is counted", absences.unreadableCount(), 1)
+ok("the summary card and the diagnostics list agree",
+    absences.unreadableCount() == absences.allDiagnostics().size())
+
+/* ---- 12c. an observation is not a failure -------------------------------- */
+
+Report observed = new Report()
+Nd actor = Nd.of("roleActor", "old-admins").note("This actor is marked inactive.")
+observed.section("s", "Roles").add(actor)
+check("a note is not a diagnostic", observed.allDiagnostics().size(), 0)
+check("a note is collected as a note", observed.allNotes().size(), 1)
+check("a noted node stays readable", observed.unreadableCount(), 0)
+ok("the note carries its path", observed.allNotes()[0].startsWith("Roles > old-admins: "))
+
+String observedHtml = Render.html(observed, [:] as LinkedHashMap, false)
+ok("observations get their own card", observedHtml.contains("1 observation"))
+ok("observations do not claim a suppressed read", !observedHtml.contains("read was suppressed"))
+ok("an observation is styled apart from a failure", observedHtml.contains("class=\"node-note\""))
+
+Report withFailure = new Report()
+withFailure.section("s", "Roles").add(Nd.of("projectRole", "Users").failed("Read failed: X"))
+String failedHtml = Render.html(withFailure, [:] as LinkedHashMap, false)
+ok("a real failure still says so", failedHtml.contains("read was suppressed"))
+ok("a failure is not filed as an observation", !failedHtml.contains("1 observation"))
+
 /* ---- 13. csv rendering --------------------------------------------------- */
 
 String csvOut = Render.csv(report)
@@ -729,6 +770,69 @@ check("the vanished item's remark is orphaned, not lost", afterShrink.orphanKeys
 ok("the orphaned remark is still on the page", afterShrink.storage.contains("keep this one"))
 ok("the orphan table explains itself",
     afterShrink.storage.contains("Remarks without a matching item"))
+
+/* ---- 20b. a repeated path must not share one remark ---------------------- */
+
+/* Two grants of the same type under one permission produce the identical label
+ * chain. The path is the carry-over key, so left alone that key stamped one
+ * administrator's remark onto every row sharing it, counted it once per row, and on
+ * the next run the parser found the same path twice with text in both and refused to
+ * write anything ever again. Fail-closed, so nothing was lost, but the export
+ * bricked itself two runs after the first remark. */
+Map<String, Object> twins = [
+    reportVersion: Pc.VERSION,
+    project: [key: "SCRUM", name: "Scrum"] as LinkedHashMap,
+    instance: [:] as LinkedHashMap,
+    totals: [:] as LinkedHashMap,
+    sections: [[
+        label: "Permissions: Default", state: "read",
+        children: [[
+            label: "Browse Projects", state: "read",
+            children: [
+                [label: "Project Role", state: "read", value: "Users"],
+                [label: "Project Role", state: "read", value: "Administrators"]
+            ]
+        ]]
+    ]]
+] as LinkedHashMap
+
+ExportOutcome twinPage = Cx.render(twins, new RemarkRead())
+RemarkRead twinRead = Cx.parseRemarks(twinPage.storage)
+check("a page with repeated labels is readable", twinRead.outcome, RemarkRead.PARSED)
+
+List<Map<String, Object>> twinRows = new ArrayList<Map<String, Object>>()
+for (Map<String, Object> section : Cx.rowsOf(twins, "sections")) {
+    Cx.flatten(section, "", twinRows)
+}
+int beforeUnique = (twinRows.collect { Cx.str(it, "path", "") } as Set).size()
+Cx.makePathsUnique(twinRows)
+List<String> uniquePaths = twinRows.collect { Cx.str(it, "path", "") }
+ok("the duplicate existed in the first place", beforeUnique < twinRows.size())
+check("every path is unique afterwards", (uniquePaths as Set).size(), twinRows.size())
+ok("the repeat is marked as a repeat", uniquePaths.any { it.endsWith(" #2") })
+ok("the first occurrence keeps its plain path", uniquePaths.any { it.endsWith("> Project Role") })
+
+/* The whole round trip: annotate one of the twins, carry it over, and the other twin
+ * must NOT inherit it. */
+String twinSeed = "<td>" + Cx.REMARK_SEED + "</td>"
+int firstTwin = twinPage.storage.lastIndexOf(twinSeed)
+String twinEdited = twinPage.storage.substring(0, firstTwin) + "<td>only this one</td>" +
+    twinPage.storage.substring(firstTwin + twinSeed.length())
+RemarkRead twinEditedRead = Cx.parseRemarks(twinEdited)
+check("exactly one remark is read back", twinEditedRead.remarks.size(), 1)
+ExportOutcome twinSecond = Cx.render(twins, twinEditedRead)
+check("it is carried over exactly once", twinSecond.remarksCarried, 1)
+check("and nothing is orphaned by the rename", twinSecond.orphanKeys.size(), 0)
+check("the third run is still writable", Cx.parseRemarks(twinSecond.storage).outcome, RemarkRead.PARSED)
+
+/* ---- 20c. one node, one path, in every channel --------------------------- */
+
+Report crossChannel = new Report()
+crossChannel.section("issueTypeScheme", "Issue types: X").add(Nd.of("issueType", "Bug"))
+String crossHtml = Render.html(crossChannel, [:] as LinkedHashMap, false)
+String crossCsv = Render.csv(crossChannel)
+ok("the html table prefixes the section label", crossHtml.contains("Issue types: X &gt; Bug"))
+ok("the csv prefixes the same label", crossCsv.contains("Issue types: X > Bug"))
 
 /* ---- 21. the write gate --------------------------------------------------- */
 

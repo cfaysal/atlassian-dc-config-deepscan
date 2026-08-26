@@ -43,7 +43,6 @@
  *                                            every section
  *   includeInactive=true|false default true   archived versions, inactive
  *                                             workflows, hidden fields
- *   numbers=de|en             default de      thousands separator style
  *
  * Reporting discipline
  *   A failed read is never rendered as an empty child list. A node with no
@@ -644,6 +643,14 @@ class Nd {
      * nobody reads. */
     List<String> diagnostics = new ArrayList<String>()
 
+    /* Things worth saying that are NOT failures: an inactive role actor, a grant
+     * type the registry did not know, a workflow layer for an issue type this
+     * project does not carry. They used to share the diagnostics list, which made
+     * the report announce "3 reads were suppressed" when nothing had failed. A
+     * report that cries wolf about its own reliability is worse than one that says
+     * nothing, because the next real failure is then read as noise. */
+    List<String> notes = new ArrayList<String>()
+
     List<Nd> children = new ArrayList<Nd>()
 
     Nd(String kind, String label) {
@@ -707,6 +714,14 @@ class Nd {
         return this
     }
 
+    Nd note(String text) {
+        String out = Pc.text(text)
+        if (out != null) {
+            notes.add(out)
+        }
+        return this
+    }
+
     /* The failure reason belongs to the node, not only to the log. */
     Nd failed(String reason) {
         this.state = Pc.UNREADABLE
@@ -757,6 +772,18 @@ class Nd {
 
     /* Every diagnostic in the subtree, prefixed with the path it sits on, so the
      * report can show one honest list without losing where each entry came from. */
+    List<String> collectNotes(String path) {
+        String here = path == null || path.isEmpty() ? Pc.orNa(label) : path + " > " + Pc.orNa(label)
+        List<String> out = new ArrayList<String>()
+        for (String entry : notes) {
+            out.add(here + ": " + entry)
+        }
+        for (Nd child : children) {
+            out.addAll(child.collectNotes(here))
+        }
+        return out
+    }
+
     List<String> collectDiagnostics(String path) {
         String here = path == null || path.isEmpty() ? Pc.orNa(label) : path + " > " + Pc.orNa(label)
         List<String> out = new ArrayList<String>()
@@ -791,6 +818,9 @@ class Nd {
         out.put("state", state)
         if (!diagnostics.isEmpty()) {
             out.put("diagnostics", new ArrayList<String>(diagnostics))
+        }
+        if (!notes.isEmpty()) {
+            out.put("notes", new ArrayList<String>(notes))
         }
         if (!children.isEmpty()) {
             List<Map<String, Object>> kids = new ArrayList<Map<String, Object>>()
@@ -852,8 +882,14 @@ class Report {
         return total
     }
 
+    /* Only UNREADABLE counts. ABSENT is a measured absence - a transition with no
+     * screen, a project with no category - and counting those as failures made a
+     * healthy project report dozens of reads that never failed, on the summary card,
+     * in the JSON totals and on the exported page, while the diagnostics list right
+     * next to it correctly said nothing had been suppressed. Claiming failures that
+     * did not happen is the same defect as hiding ones that did. */
     private int countUnreadable(Nd node) {
-        int total = node.isReadable() ? 0 : 1
+        int total = Pc.UNREADABLE.equals(node.state) ? 1 : 0
         for (Nd child : node.children) {
             total += countUnreadable(child)
         }
@@ -874,6 +910,14 @@ class Report {
             total += countUnlinked(child)
         }
         return total
+    }
+
+    List<String> allNotes() {
+        List<String> out = new ArrayList<String>()
+        for (Nd node : sections) {
+            out.addAll(node.collectNotes(""))
+        }
+        return out
     }
 
     List<String> allDiagnostics() {
@@ -906,6 +950,7 @@ class Report {
         }
         out.put("sections", nodes)
         out.put("diagnostics", allDiagnostics())
+        out.put("notes", allNotes())
         Map<String, Object> totals = new LinkedHashMap<String, Object>()
         totals.put("nodes", Integer.valueOf(nodeCount()))
         totals.put("unreadable", Integer.valueOf(unreadableCount()))
@@ -968,6 +1013,7 @@ class Render {
         out.append(toolbar(activeParams, expandAll))
         out.append(exportCard(report))
         out.append(diagnosticsCard(report))
+        out.append(notesCard(report))
         for (Nd node : report.sections) {
             out.append(section(node, expandAll))
         }
@@ -1089,6 +1135,27 @@ class Render {
      * list of sections and how much sits in each. What matters while a section is
      * closed is written on its header, so a closed section is never mistaken for an
      * empty or a broken one. */
+    /* Kept apart from the diagnostics card on purpose. These are observations, not
+     * failures, and mixing them made the report announce suppressed reads that never
+     * happened. */
+    private static String notesCard(Report report) {
+        List<String> entries = report.allNotes()
+        if (entries.isEmpty()) {
+            return ""
+        }
+        StringBuilder out = new StringBuilder()
+        out.append("<div class=\"diag diag-info\"><strong>")
+        out.append(String.valueOf(entries.size()))
+        out.append(entries.size() == 1 ? " observation" : " observations")
+        out.append(".</strong> Nothing failed to read here. Each one is also marked at the item ")
+        out.append("it belongs to.<ul>")
+        for (String entry : entries) {
+            out.append("<li>").append(Pc.html(entry)).append("</li>")
+        }
+        out.append("</ul></div>\n")
+        return out.toString()
+    }
+
     private static String section(Nd node, boolean expandAll) {
         StringBuilder out = new StringBuilder()
         boolean open = expandAll
@@ -1154,8 +1221,12 @@ class Render {
         out.append("</tr></thead><tbody>")
         List<Nd> flat = new ArrayList<Nd>()
         List<String> paths = new ArrayList<String>()
+        /* The section label is part of the path in the CSV and on the exported page,
+         * so it is part of it here too. The same node reading "Default issue type" in
+         * one channel and "Issue types: X > Default issue type" in another is how a
+         * reader concludes the two are describing different things. */
         for (Nd child : node.children) {
-            flattenInto(child, "", flat, paths)
+            flattenInto(child, Pc.orNa(node.label), flat, paths)
         }
         for (int i = 0; i < flat.size(); i++) {
             Nd row = flat.get(i)
@@ -1237,6 +1308,9 @@ class Render {
         out.append("</div>")
         for (String entry : node.diagnostics) {
             out.append("<div class=\"node-diag\">").append(Pc.html(entry)).append("</div>")
+        }
+        for (String entry : node.notes) {
+            out.append("<div class=\"node-note\">").append(Pc.html(entry)).append("</div>")
         }
         if (hasChildren) {
             out.append("<ul class=\"tree").append(collapse ? " hidden" : "").append("\">")
@@ -1580,6 +1654,8 @@ ul.tree ul.tree { margin: 0; padding-left: 20px; border-left: 1px solid var(--bo
 .node-nolink { font-size: 12px; color: var(--yellow); border-bottom: 1px dotted var(--yellow); cursor: help; }
 .node-diag { font-size: 12px; color: var(--red); background: var(--red-soft);
     border: 1px solid var(--red-border); border-radius: 4px; padding: 2px 8px; margin: 2px 0 2px 22px; }
+.node-note { font-size: 12px; color: var(--text-subtle); background: var(--surface-subtle);
+    border: 1px solid var(--border-subtle); border-radius: 4px; padding: 2px 8px; margin: 2px 0 2px 22px; }
 .state { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; }
 .state-unreadable { color: var(--red); }
 .state-absent { color: var(--text-subtle); }
@@ -2019,7 +2095,6 @@ function exportToConfluence() {
         fail('Request failed, nothing was written: ' + error);
     });
 }
-</script>
 </script>
 """
     }
@@ -2621,6 +2696,7 @@ class Cx {
         for (Map<String, Object> section : rowsOf(request, "sections")) {
             flatten(section, "", rows)
         }
+        makePathsUnique(rows)
 
         boolean truncated = rows.size() > MAX_ROWS
         if (truncated) {
@@ -2680,7 +2756,17 @@ class Cx {
             out.append("</tbody></table>")
         }
 
-        List<Map<String, Object>> diagnostics = new ArrayList<Map<String, Object>>()
+        Object rawNotes = request == null ? null : request.get("notes")
+        if (rawNotes instanceof List && !((List) rawNotes).isEmpty()) {
+            out.append("<h2>Observations</h2>")
+            out.append("<p>Nothing failed to read here. These are things worth knowing about ")
+            out.append("the configuration itself.</p><ul>")
+            for (Object entry : (List) rawNotes) {
+                out.append("<li>").append(esc(String.valueOf(entry))).append("</li>")
+            }
+            out.append("</ul>")
+        }
+
         Object rawDiagnostics = request == null ? null : request.get("diagnostics")
         if (rawDiagnostics instanceof List && !((List) rawDiagnostics).isEmpty()) {
             out.append("<h2>Suppressed reads</h2>")
@@ -2717,6 +2803,29 @@ class Cx {
         rows.add(row)
         for (Map<String, Object> child : rowsOf(node, "children")) {
             flatten(child, path, rows)
+        }
+    }
+
+    /* Two sibling nodes can carry the same label - two grants of the same type under
+     * one permission produce the identical path - and the path is the key a remark is
+     * carried over by. Left alone, that key stamped one administrator's remark onto
+     * every row sharing the path, counted it once per row, and on the run after that
+     * the parser found the same path twice with text in both and refused to write
+     * anything ever again. Fail-closed, so no text was lost, but the export bricked
+     * itself two runs after the first remark. A repeated path therefore gets an
+     * ordinal, which is stable as long as the configuration is. */
+    static void makePathsUnique(List<Map<String, Object>> rows) {
+        Map<String, Integer> seen = new LinkedHashMap<String, Integer>()
+        for (Map<String, Object> row : rows) {
+            String path = str(row, "path", "")
+            Integer count = seen.get(path)
+            if (count == null) {
+                seen.put(path, Integer.valueOf(1))
+                continue
+            }
+            int next = count.intValue() + 1
+            seen.put(path, Integer.valueOf(next))
+            row.put("path", path + " #" + String.valueOf(next))
         }
     }
 
@@ -3344,6 +3453,11 @@ class Scan {
             for (IssueType type : projectIssueTypes()) {
                 issueTypeIds.add(type.getId())
             }
+            if (issueTypesFailure != null) {
+                self.failed("The issue types of this project could not be read (" +
+                    issueTypesFailure + "), so the custom fields in scope could not be determined.")
+                return
+            }
             List<CustomField> fields = manager.getCustomFieldObjects(project.getId(), issueTypeIds)
             if (fields == null || fields.isEmpty()) {
                 self.absent("No custom field is in scope for this project.")
@@ -3579,6 +3693,11 @@ class Scan {
             for (IssueType type : projectIssueTypes()) {
                 issueTypeNames.put(type.getId(), type.getName())
             }
+            boolean issueTypesKnown = issueTypesFailure == null
+            if (!issueTypesKnown) {
+                self.diagnostics.add("The issue types of this project could not be read (" +
+                    issueTypesFailure + "), so a layer cannot be checked against them.")
+            }
 
             Nd defaultLayer = Nd.of("workflowLayer", "Layer: default (every other issue type)")
             if (defaultWorkflow == null) {
@@ -3602,13 +3721,15 @@ class Scan {
                 Nd layer = Nd.of("workflowLayer",
                     "Layer: issue type " + (name == null ? String.valueOf(issueTypeId) : name))
                 layer.ident(issueTypeId)
-                if (name == null) {
+                if (name == null && issueTypesKnown) {
                     /* A layer for an issue type the project does not carry is not a
                      * read failure and not nothing: it is a configuration leftover,
-                     * and naming it is the point of the report. */
-                    layer.diagnostics.add("This layer maps an issue type that is not in the " +
+                     * and naming it is the point of the report. Only claimed when the
+                     * issue types were actually read - otherwise the report would
+                     * invent leftovers out of its own blind spot. */
+                    layer.note("This layer maps an issue type that is not in the " +
                         "issue type scheme of this project.")
-                } else {
+                } else if (name != null) {
                     layer.link(links.projectIssueType(project.getKey(), issueTypeId), null)
                 }
                 layer.add(workflowNode(workflowManager, entry.getValue()))
@@ -3745,14 +3866,6 @@ class Scan {
         }
     }
 
-    private static Nd countNode(String kind, String label, Integer count) {
-        Nd node = Nd.of(kind, label)
-        if (count == null) {
-            return node.failed("The list could not be read, so this is not a count of zero.")
-        }
-        return node.val(String.valueOf(count))
-    }
-
     /* One node per condition, validator or post function, named the way the workflow
      * itself names it. A null list means the read failed and says so; an empty list
      * means there really is none. */
@@ -3850,6 +3963,9 @@ class Scan {
         }
     }
 
+    /* Action pre-functions and result pre/post functions are all reported under one
+     * heading. They are separate lists in the descriptor, and a transition that
+     * carries action-level pre-functions would otherwise show them nowhere. */
     private static List<Object> postFunctions(ActionDescriptor action) {
         try {
             List<Object> all = new ArrayList<Object>()
@@ -3871,61 +3987,6 @@ class Scan {
                 all.addAll(resultPost)
             }
             return all
-        } catch (Exception ignored) {
-            return null
-        }
-    }
-
-    private static Integer listSize(Object list) {
-        if (list == null) {
-            return Integer.valueOf(0)
-        }
-        try {
-            return Integer.valueOf(((Collection) list).size())
-        } catch (Exception ignored) {
-            return null
-        }
-    }
-
-    /* Conditions hang under a restriction, and the accessor for that nesting is
-     * not identical across osworkflow builds. Asking the object rather than
-     * declaring the shape keeps one file working on both. */
-    private static Integer conditionCount(ActionDescriptor action) {
-        try {
-            Object restriction = action.getRestriction()
-            if (restriction == null) {
-                return Integer.valueOf(0)
-            }
-            Object conditions = Pc.duck(restriction, "getConditionsDescriptor", null)
-            if (conditions == null) {
-                return null
-            }
-            Object list = Pc.duck(conditions, "getConditions", null)
-            return listSize(list)
-        } catch (Exception ignored) {
-            return null
-        }
-    }
-
-    private static Integer postFunctionCount(ActionDescriptor action) {
-        try {
-            int total = 0
-            Integer pre = listSize(action.getPreFunctions())
-            Integer post = listSize(action.getPostFunctions())
-            if (pre == null || post == null) {
-                return null
-            }
-            total += pre.intValue() + post.intValue()
-            ResultDescriptor result = action.getUnconditionalResult()
-            if (result != null) {
-                Integer resultPre = listSize(result.getPreFunctions())
-                Integer resultPost = listSize(result.getPostFunctions())
-                if (resultPre == null || resultPost == null) {
-                    return null
-                }
-                total += resultPre.intValue() + resultPost.intValue()
-            }
-            return Integer.valueOf(total)
         } catch (Exception ignored) {
             return null
         }
@@ -4213,7 +4274,7 @@ class Scan {
         }
         node.val(rendered == null ? parameter : rendered)
         if (typeLabel == null) {
-            node.diagnostics.add("The scheme type registry did not know the type '" + rawType +
+            node.note("The scheme type registry did not know the type '" + rawType +
                 "', so the raw type and parameter are shown.")
         }
         return node
@@ -4290,7 +4351,7 @@ class Scan {
                         actorNode.val(Pc.orNa(actor.getType()))
                         actorNode.ident(actor.getId())
                         if (!actor.isActive()) {
-                            actorNode.diagnostics.add("This actor is marked inactive.")
+                            actorNode.note("This actor is marked inactive.")
                         }
                         inner.add(actorNode)
                     }
@@ -4436,15 +4497,30 @@ class Scan {
      * reported by every caller that needed it rather than being hidden in one. */
     private Collection<IssueType> cachedIssueTypes = null
 
+    /* Set when the read failed. An empty list on its own cannot tell a caller whether
+     * this project has no issue types or whether nobody could find out, and three
+     * sections depend on the answer: the workflow section would otherwise accuse every
+     * mapped layer of pointing at an issue type the project does not carry, and the
+     * custom field section would report "no custom field is in scope" - a swallowed
+     * failure rendered as a measured absence, which is the one thing this report
+     * exists not to do. */
+    String issueTypesFailure = null
+
     Collection<IssueType> projectIssueTypes() {
         if (cachedIssueTypes != null) {
             return cachedIssueTypes
         }
         try {
             IssueTypeSchemeManager manager = ComponentAccessor.getComponent(IssueTypeSchemeManager)
-            Collection<IssueType> types = manager == null ? null : manager.getIssueTypesForProject(project)
+            if (manager == null) {
+                issueTypesFailure = "IssueTypeSchemeManager is not available in this instance."
+                cachedIssueTypes = new ArrayList<IssueType>()
+                return cachedIssueTypes
+            }
+            Collection<IssueType> types = manager.getIssueTypesForProject(project)
             cachedIssueTypes = types == null ? new ArrayList<IssueType>() : types
-        } catch (Exception ignored) {
+        } catch (Exception error) {
+            issueTypesFailure = describe(error)
             cachedIssueTypes = new ArrayList<IssueType>()
         }
         return cachedIssueTypes
@@ -4470,7 +4546,7 @@ projectConfig(
 
     String projectKey = Pc.stringParam(queryParams, "project", null)
     String format = Pc.stringParam(queryParams, "format", "html").toLowerCase(Locale.ROOT)
-    String depth = Pc.stringParam(queryParams, "depth", "full").toLowerCase(Locale.ROOT)
+    String depth = Pc.stringParam(queryParams, "depth", "collapsed").toLowerCase(Locale.ROOT)
     boolean includeInactive = Pc.booleanParam(queryParams, "includeInactive", true)
     boolean expandAll = depth == "full"
 
@@ -5658,8 +5734,6 @@ projectConfig(
 
     /* ---- Page export: validate --------------------------------------------- */
 
-    Map<String, Object> options = Cx.sub(request, "options")
-
     String spaceKey = Cx.str(request, "spaceKey", "")
     String title = Cx.str(request, "title", "")
     String parentRaw = Cx.str(request, "parentPageId", "").trim()
@@ -5752,7 +5826,7 @@ projectConfig(
         parentAction = "found"
     }
 
-    /* ---- Decision read ----------------------------------------------------- */
+    /* ---- Remark read ------------------------------------------------------- */
 
     Map<String, Object> existing = confluenceFindPage(factory, spaceKey, title)
     if (existing.get("ok") != Boolean.TRUE) {
