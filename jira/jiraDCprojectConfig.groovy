@@ -2850,7 +2850,7 @@ class Scan {
     /* ---- 1. issue type scheme -------------------------------------------- */
 
     Nd issueTypeScheme() {
-        Nd node = Nd.of("issueTypeScheme", "Issue type scheme")
+        Nd node = Nd.of("issueTypeScheme", "Issue types")
         /* The one link shape in this report that could not be evidenced. Rather
          * than inventing a parameter for ManageIssueTypeSchemes, the node stays
          * unlinked and says so, and its issue types link to the project page that
@@ -2868,7 +2868,7 @@ class Scan {
                 self.absent("No issue type scheme is associated with this project.")
                 return
             }
-            self.label = "Issue type scheme: " + Pc.orNa(scheme.getName())
+            self.label = "Issue types: " + Pc.orNa(scheme.getName())
             self.ident(scheme.getId())
             if (Pc.text(scheme.getDescription()) != null) {
                 self.val(scheme.getDescription())
@@ -2912,7 +2912,7 @@ class Scan {
     /* ---- 2. issue type screen scheme, down to the field ------------------- */
 
     Nd issueTypeScreenScheme() {
-        Nd node = Nd.of("issueTypeScreenScheme", "Issue type screen scheme")
+        Nd node = Nd.of("issueTypeScreenScheme", "Screens")
         node.link(links.projectScreens(project.getKey()), null)
         return guard(node) { Nd self ->
             IssueTypeScreenSchemeManager manager =
@@ -2926,7 +2926,7 @@ class Scan {
                 self.absent("No issue type screen scheme is associated with this project.")
                 return
             }
-            self.label = "Issue type screen scheme: " + Pc.orNa(scheme.getName())
+            self.label = "Screens: " + Pc.orNa(scheme.getName())
             self.ident(scheme.getId())
             self.link(links.issueTypeScreenScheme(scheme.getId()), null)
             if (Pc.text(scheme.getDescription()) != null) {
@@ -3116,7 +3116,7 @@ class Scan {
     /* ---- 3. field configuration scheme ------------------------------------ */
 
     Nd fieldConfigurationScheme() {
-        Nd node = Nd.of("fieldConfigurationScheme", "Field configuration scheme")
+        Nd node = Nd.of("fieldConfigurationScheme", "Fields")
         node.link(links.projectFields(project.getKey()), null)
         return guard(node) { Nd self ->
             FieldLayoutManager manager = ComponentAccessor.getComponent(FieldLayoutManager)
@@ -3126,10 +3126,10 @@ class Scan {
             }
             FieldConfigurationScheme scheme = manager.getFieldConfigurationScheme(project)
             if (scheme == null) {
-                self.label = "Field configuration scheme: System Default Field Configuration"
+                self.label = "Fields: System Default Field Configuration"
                 self.val("No scheme is associated, so every issue type uses the system default.")
             } else {
-                self.label = "Field configuration scheme: " + Pc.orNa(scheme.getName())
+                self.label = "Fields: " + Pc.orNa(scheme.getName())
                 self.ident(scheme.getId())
                 self.link(links.fieldConfigurationScheme(scheme.getId()), null)
                 if (Pc.text(scheme.getDescription()) != null) {
@@ -3246,7 +3246,7 @@ class Scan {
     /* ---- 4. custom field contexts that apply to this project -------------- */
 
     Nd customFields() {
-        Nd node = Nd.of("customFields", "Custom fields in this project")
+        Nd node = Nd.of("customFields", "Custom fields")
         node.link(links.projectFields(project.getKey()), null)
         return guard(node) { Nd self ->
             CustomFieldManager manager = ComponentAccessor.getCustomFieldManager()
@@ -3448,7 +3448,7 @@ class Scan {
     /* ---- 5. workflow scheme, every layer ---------------------------------- */
 
     Nd workflowScheme() {
-        Nd node = Nd.of("workflowScheme", "Workflow scheme")
+        Nd node = Nd.of("workflowScheme", "Workflows")
         node.link(links.projectWorkflows(project.getKey()), null)
         return guard(node) { Nd self ->
             WorkflowSchemeManager schemeManager = ComponentAccessor.getComponent(WorkflowSchemeManager)
@@ -3462,7 +3462,7 @@ class Scan {
                 self.absent("No workflow scheme is associated with this project.")
                 return
             }
-            self.label = "Workflow scheme: " + Pc.orNa(scheme.getName())
+            self.label = "Workflows: " + Pc.orNa(scheme.getName())
             self.ident(scheme.getId())
             self.link(links.workflowScheme(scheme.getId()), null)
             if (Pc.text(scheme.getDescription()) != null) {
@@ -3744,7 +3744,7 @@ class Scan {
     /* ---- 6. permission scheme --------------------------------------------- */
 
     Nd permissionScheme() {
-        Nd node = Nd.of("permissionScheme", "Permission scheme")
+        Nd node = Nd.of("permissionScheme", "Permissions")
         node.link(links.projectPermissions(project.getKey()), null)
         return guard(node) { Nd self ->
             PermissionSchemeManager manager = ComponentAccessor.getComponent(PermissionSchemeManager)
@@ -3757,7 +3757,7 @@ class Scan {
                 self.absent("No permission scheme is associated with this project.")
                 return
             }
-            self.label = "Permission scheme: " + Pc.orNa(scheme.getName())
+            self.label = "Permissions: " + Pc.orNa(scheme.getName())
             self.ident(scheme.getId())
             self.link(links.permissionScheme(scheme.getId()), null)
             if (Pc.text(scheme.getDescription()) != null) {
@@ -3796,7 +3796,7 @@ class Scan {
     /* ---- 7. notification scheme ------------------------------------------- */
 
     Nd notificationScheme() {
-        Nd node = Nd.of("notificationScheme", "Notification scheme")
+        Nd node = Nd.of("notificationScheme", "Notifications")
         node.link(links.projectNotifications(project.getKey()), null)
         return guard(node) { Nd self ->
             NotificationSchemeManager manager = ComponentAccessor.getComponent(NotificationSchemeManager)
@@ -3810,7 +3810,7 @@ class Scan {
                     "so this project sends no notification.")
                 return
             }
-            self.label = "Notification scheme: " + Pc.orNa(scheme.getName())
+            self.label = "Notifications: " + Pc.orNa(scheme.getName())
             self.ident(scheme.getId())
             self.link(links.notificationScheme(scheme.getId()), null)
             if (Pc.text(scheme.getDescription()) != null) {
@@ -3861,7 +3861,7 @@ class Scan {
     /* ---- 8. issue security scheme ----------------------------------------- */
 
     Nd issueSecurityScheme() {
-        Nd node = Nd.of("issueSecurityScheme", "Issue security scheme")
+        Nd node = Nd.of("issueSecurityScheme", "Issue security")
         node.link(links.projectIssueSecurity(project.getKey()), null)
         return guard(node) { Nd self ->
             IssueSecuritySchemeManager manager = ComponentAccessor.getComponent(IssueSecuritySchemeManager)
@@ -3875,7 +3875,7 @@ class Scan {
                     "so no issue in this project carries a security level.")
                 return
             }
-            self.label = "Issue security scheme: " + Pc.orNa(scheme.getName())
+            self.label = "Issue security: " + Pc.orNa(scheme.getName())
             self.ident(scheme.getId())
             self.link(links.issueSecurityScheme(scheme.getId()), null)
             if (Pc.text(scheme.getDescription()) != null) {
@@ -4010,7 +4010,7 @@ class Scan {
     /* ---- 9. project roles -------------------------------------------------- */
 
     Nd projectRoles() {
-        Nd node = Nd.of("projectRoles", "Project roles")
+        Nd node = Nd.of("projectRoles", "Roles")
         node.link(links.projectRoles(project.getKey()), null)
         return guard(node) { Nd self ->
             ProjectRoleManager manager = ComponentAccessor.getComponent(ProjectRoleManager)
@@ -4311,7 +4311,7 @@ projectConfig(
 
     /* ---- Section: project details ----------------------------------------- */
 
-    Nd details = report.section("projectDetails", "Project details")
+    Nd details = report.section("projectDetails", "Details")
     details.link(links.projectSummary(project.getKey()), null)
 
     details.add(Nd.of("projectField", "Key").val(project.getKey()))
