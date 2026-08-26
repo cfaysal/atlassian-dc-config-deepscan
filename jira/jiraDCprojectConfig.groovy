@@ -579,14 +579,22 @@ class Dl {
             "&workflowMode=" + (draft ? "draft" : "live"))
     }
 
-    /* NOT EVIDENCED. The alias ManageIssueTypeSchemes exists in actions.xml, but no
-     * parameter for addressing one specific scheme could be evidenced anywhere in
-     * jira-core or in the shipped plugins. Rather than guess one, the issue type
-     * scheme node links to the project's own issue type page, and this method
-     * stays here to record the gap instead of hiding it. */
+    /* The alias ManageIssueTypeSchemes is evidenced in actions.xml, so the screen
+     * itself can be linked. What could NOT be evidenced anywhere in jira-core or in
+     * the shipped plugins is a parameter that preselects one scheme on it.
+     *
+     * The link therefore goes to the list, and its text says "issue type schemes"
+     * rather than "open in Jira". A reader who lands on a list after clicking a
+     * label that promised one scheme concludes the report pointed at the wrong
+     * thing; the imprecise half of a link belongs in the text somebody clicks, not
+     * in a footnote underneath it. */
+    String issueTypeSchemes() {
+        return admin("ManageIssueTypeSchemes.jspa")
+    }
+
     String issueTypeSchemeUnavailableNote() {
         return "Administration > Issues > Issue type schemes. No evidenced URL parameter " +
-            "addresses a single scheme, so this node is not linked."
+            "addresses a single scheme, so this link opens the list."
     }
 }
 
@@ -654,6 +662,17 @@ class Nd {
     /* A link is attached with the note that applies when it is absent, so the two
      * can never drift apart: passing a null link without a note is what produces
      * an unexplained missing link. */
+    /* What the link is called. Left unset it reads "open in Jira" on a section and
+     * "open" on a node, which is right when the link lands exactly on the item.
+     * When it can only land nearby, that difference belongs in the text a reader
+     * clicks. */
+    String linkLabel
+
+    Nd linkAs(String label) {
+        this.linkLabel = Pc.text(label)
+        return this
+    }
+
     Nd link(String url, String noteIfMissing) {
         String candidate = Pc.text(url)
         if (candidate == null) {
@@ -740,6 +759,9 @@ class Nd {
         }
         if (linkNote != null) {
             out.put("linkNote", linkNote)
+        }
+        if (linkLabel != null) {
+            out.put("linkLabel", linkLabel)
         }
         out.put("state", state)
         if (!diagnostics.isEmpty()) {
@@ -944,6 +966,18 @@ class Render {
         StringBuilder out = new StringBuilder()
         out.append("<div class=\"instance\">")
         out.append("<div><strong>Instance</strong> ").append(Pc.html(Pc.orNa(report.instanceTitle))).append("</div>")
+        /* The base URL is what identifies the instance once the report has left it.
+         * An exported page or a printed PDF that names a title and a version but not
+         * the address describes some Jira, not this one. */
+        String baseUrl = Pc.text(report.instanceBaseUrl)
+        out.append("<div><strong>Address</strong> ")
+        if (baseUrl == null) {
+            out.append("<span class=\"state state-unreadable\">could not be read</span>")
+        } else {
+            out.append("<a href=\"").append(Pc.html(baseUrl))
+            out.append("\" target=\"_blank\" rel=\"noreferrer\">").append(Pc.html(baseUrl)).append("</a>")
+        }
+        out.append("</div>")
         out.append("<div><strong>Jira</strong> ").append(Pc.html(Pc.orNa(report.jiraVersion)))
         if (Pc.text(report.jiraBuild) != null) {
             out.append(" (build ").append(Pc.html(report.jiraBuild)).append(")")
@@ -982,8 +1016,18 @@ class Render {
         out.append("<button class=\"button\" type=\"button\" onclick=\"expandAll(false)\">Collapse all</button>")
         out.append("<button id=\"viewTree\" class=\"button on\" type=\"button\" onclick=\"setView('tree')\">Tree</button>")
         out.append("<button id=\"viewTable\" class=\"button\" type=\"button\" onclick=\"setView('table')\">Table</button>")
-        out.append(button(Pc.link(activeParams, [depth: expandAll ? null : "full"]),
-            expandAll ? "Open collapsed by default" : "Open expanded by default", false))
+        /* There is deliberately no button that turns depth=full ON. It used to be
+         * one click away, and one click was enough to pin "everything expanded"
+         * into the URL, into a bookmark, and into every later visit - at which
+         * point the collapsed default is simply never seen again. Expanding is a
+         * thing you do to the page in front of you, not a setting you carry around,
+         * so Expand all above does it and leaves the URL alone. The parameter still
+         * exists for a link somebody hands to somebody else, and when it is active
+         * the way back out of it is right here. */
+        if (expandAll) {
+            out.append(button(Pc.link(activeParams, [depth: null]),
+                "Leave always-expanded mode", true))
+        }
         out.append(button(Pc.link(activeParams, [format: "json"]), "JSON", false))
         out.append(button(Pc.link(activeParams, [format: "csv"]), "CSV", false))
         out.append(button(Pc.link([:], [:]), "Pick another project", false))
@@ -1044,7 +1088,8 @@ class Render {
         }
         if (node.deepLink != null) {
             out.append("<a class=\"jump\" href=\"").append(Pc.html(node.deepLink))
-            out.append("\" target=\"_blank\" rel=\"noreferrer\">open in Jira</a>")
+            out.append("\" target=\"_blank\" rel=\"noreferrer\">")
+            out.append(Pc.html(node.linkLabel == null ? "open in Jira" : node.linkLabel)).append("</a>")
         }
         out.append("</div>")
 
@@ -1101,7 +1146,8 @@ class Render {
             out.append("</td><td>")
             if (row.deepLink != null) {
                 out.append("<a href=\"").append(Pc.html(row.deepLink))
-                out.append("\" target=\"_blank\" rel=\"noreferrer\">open</a>")
+                out.append("\" target=\"_blank\" rel=\"noreferrer\">")
+                out.append(Pc.html(row.linkLabel == null ? "open" : row.linkLabel)).append("</a>")
             } else if (row.linkNote != null) {
                 out.append("<span class=\"node-nolink\" title=\"").append(Pc.html(row.linkNote))
                 out.append("\">no link</span>")
@@ -1153,7 +1199,8 @@ class Render {
         }
         if (node.deepLink != null) {
             out.append("<a class=\"node-link\" href=\"").append(Pc.html(node.deepLink))
-            out.append("\" target=\"_blank\" rel=\"noreferrer\">open</a>")
+            out.append("\" target=\"_blank\" rel=\"noreferrer\">")
+            out.append(Pc.html(node.linkLabel == null ? "open" : node.linkLabel)).append("</a>")
         } else if (node.linkNote != null) {
             out.append("<span class=\"node-nolink\" title=\"").append(Pc.html(node.linkNote))
             out.append("\">no link</span>")
@@ -1240,24 +1287,7 @@ class Render {
         out.append("item of that project and links each one to the screen where it is maintained.</div>")
         out.append("</div></div>\n")
         out.append(instanceCard(shell))
-        out.append("<div class=\"export-card\"><form method=\"get\" action=\"")
-        out.append(Pc.html(selfPath)).append("\">")
-        out.append("<div class=\"export-grid\">")
-        out.append("<label class=\"export-field\">Project<select name=\"project\" required>")
-        out.append("<option value=\"\">Choose a project</option>")
-        for (Map<String, String> project : projects) {
-            out.append("<option value=\"").append(Pc.html(project.get("key"))).append("\">")
-            out.append(Pc.html(project.get("name"))).append(" (").append(Pc.html(project.get("key"))).append(")")
-            out.append("</option>")
-        }
-        out.append("</select></label>")
-        out.append("<button class=\"button on\" type=\"submit\">OK</button>")
-        out.append("</div></form>")
-        out.append("<div class=\"export-note\">")
-        out.append(String.valueOf(projects.size()))
-        out.append(" projects. The report reads configuration only: no issue is counted and no search is run, ")
-        out.append("so the run is harmless on a production instance.</div>")
-        out.append("</div>\n")
+        out.append(projectPicker(projects, selfPath))
         if (!shell.globalDiagnostics.isEmpty()) {
             out.append("<div class=\"diag diag-warn\"><strong>Some reads were suppressed.</strong><ul>")
             for (String entry : shell.globalDiagnostics) {
@@ -1265,8 +1295,111 @@ class Render {
             }
             out.append("</ul></div>\n")
         }
-        out.append("</div>\n</body>\n</html>\n")
+        out.append("</div>\n").append(pickerScript()).append("</body>\n</html>\n")
         return out.toString()
+    }
+
+    /* How many project rows are visible at once. An instance with several hundred
+     * projects turns a dropdown into a scroll hunt, so the list is searched rather
+     * than scrolled. Every project is already in the page, which is what makes the
+     * search instant and keeps it from costing a request per keystroke. The cap is
+     * on what is shown, and the count line always names the full population, so a
+     * filtered list can never be mistaken for the whole one. */
+    static final int PROJECT_ROWS = 40
+
+    static String projectPicker(List<Map<String, String>> projects, String selfPath) {
+        StringBuilder out = new StringBuilder()
+        out.append("<div class=\"export-card\">")
+        out.append("<div class=\"export-title\">Choose a project</div>")
+        out.append("<div class=\"export-grid\">")
+        out.append("<label class=\"export-field\">Search by key or name")
+        out.append("<input id=\"projectQuery\" class=\"wide\" type=\"search\" autocomplete=\"off\" ")
+        out.append("placeholder=\"Type a project key or part of a name...\" ")
+        out.append("oninput=\"filterProjects()\" onkeydown=\"pickFirstProject(event)\"></label>")
+        out.append("<div class=\"export-chosen\" id=\"projectCount\">")
+        out.append(Pc.html(countLine(projects.size(), projects.size())))
+        out.append("</div></div>")
+
+        out.append("<div id=\"projectResults\" class=\"export-results project-list\">")
+        int shown = 0
+        for (Map<String, String> project : projects) {
+            String key = Pc.orNa(project.get("key"))
+            String name = Pc.orNa(project.get("name"))
+            boolean visible = shown < PROJECT_ROWS
+            if (visible) {
+                shown++
+            }
+            out.append("<a class=\"export-hit").append(visible ? "" : " hidden").append("\" href=\"")
+            out.append(Pc.html(selfPath)).append("?project=").append(Pc.html(Pc.urlQuery(key)))
+            out.append("\" data-find=\"")
+            out.append(Pc.html((key + " " + name).toLowerCase(Locale.ROOT)))
+            out.append("\"><strong>").append(Pc.html(key)).append("</strong> ")
+            out.append(Pc.html(name)).append("</a>")
+        }
+        out.append("</div>")
+        out.append("<div id=\"projectEmpty\" class=\"export-empty hidden\">No project matches that search.</div>")
+
+        out.append("<div class=\"export-note\">The report reads configuration only: no issue is counted ")
+        out.append("and no search is run, so the run is harmless on a production instance.</div>")
+        out.append("</div>\n")
+        return out.toString()
+    }
+
+    /* Rendered on the server for the first paint and recomputed in the browser on
+     * every keystroke. The two must agree, so the wording lives here and the script
+     * below mirrors it; the offline suite checks this one, which is the one a reader
+     * without JavaScript ever sees. */
+    static String countLine(int matching, int total) {
+        if (matching == 0) {
+            return "no match out of " + String.valueOf(total) + " projects"
+        }
+        String tail = matching > PROJECT_ROWS ? ", showing the first " + String.valueOf(PROJECT_ROWS) : ""
+        if (matching == total) {
+            return String.valueOf(total) + " projects" + tail
+        }
+        return String.valueOf(matching) + " of " + String.valueOf(total) + " projects match" + tail
+    }
+
+    /* The picker carries its own script rather than the report's: it has no tree to
+     * fold and no export to stage, and shipping the whole thing here would mean two
+     * pages sharing code only one of them can use. */
+    private static String pickerScript() {
+        return """<script>
+var PROJECT_ROWS = ${PROJECT_ROWS};
+
+function projectCountLine(matching, total) {
+    if (matching === 0) { return 'no match out of ' + total + ' projects'; }
+    var tail = matching > PROJECT_ROWS ? ', showing the first ' + PROJECT_ROWS : '';
+    if (matching === total) { return total + ' projects' + tail; }
+    return matching + ' of ' + total + ' projects match' + tail;
+}
+
+function filterProjects() {
+    var query = (document.getElementById('projectQuery').value || '').trim().toLowerCase();
+    var rows = document.querySelectorAll('#projectResults .export-hit');
+    var matching = 0;
+    var shown = 0;
+    for (var i = 0; i < rows.length; i++) {
+        var isHit = query === '' || rows[i].getAttribute('data-find').indexOf(query) >= 0;
+        if (isHit) { matching++; }
+        var show = isHit && shown < PROJECT_ROWS;
+        if (show) { shown++; }
+        rows[i].classList.toggle('hidden', !show);
+    }
+    document.getElementById('projectCount').textContent = projectCountLine(matching, rows.length);
+    document.getElementById('projectEmpty').classList.toggle('hidden', matching !== 0);
+}
+
+/* Enter opens the first hit. Typing a key you already know should not need the
+   mouse for the last step. */
+function pickFirstProject(event) {
+    if (event.key !== 'Enter') { return; }
+    event.preventDefault();
+    var first = document.querySelector('#projectResults .export-hit:not(.hidden)');
+    if (first) { window.location.href = first.getAttribute('href'); }
+}
+</script>
+"""
     }
 
     /* The export is staged behind its own button on purpose. Rendering the report
@@ -1439,6 +1572,10 @@ table.flat th, table.flat td { border: 1px solid var(--border-subtle); padding: 
 table.flat th { background: var(--surface-subtle); font-weight: 600; position: sticky; top: 0; }
 table.flat tr:nth-child(even) td { background: var(--surface-subtle); }
 .view-table { overflow-x: auto; }
+.project-list { max-height: 460px; overflow-y: auto; margin-top: 10px; }
+.project-list .export-hit { display: block; }
+.project-list .export-hit strong { display: inline-block; min-width: 90px; font-family: ui-monospace,
+    SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
 .section-head { cursor: pointer; user-select: none; gap: 10px; }
 .section-head:hover .section-title { color: var(--blue); }
 .section-head .twisty { font-size: 13px; }
@@ -2718,7 +2855,8 @@ class Scan {
          * than inventing a parameter for ManageIssueTypeSchemes, the node stays
          * unlinked and says so, and its issue types link to the project page that
          * does have an evidenced address. */
-        node.link(null, links.issueTypeSchemeUnavailableNote())
+        node.link(links.issueTypeSchemes(), links.issueTypeSchemeUnavailableNote())
+            .linkAs("open issue type schemes")
         return guard(node) { Nd self ->
             IssueTypeSchemeManager manager = ComponentAccessor.getComponent(IssueTypeSchemeManager)
             if (manager == null) {
@@ -4010,6 +4148,10 @@ class Scan {
      * present plugin raises linkage errors, not exceptions. */
     Nd serviceDesk() {
         Nd node = Nd.of("serviceDesk", "Jira Service Management")
+        /* No address for the Service Management project settings could be evidenced
+         * out of the shipped plugins, so this node names the path rather than
+         * pointing at a URL that may not exist on a given version. */
+        node.link(null, "Project settings > Service Management, inside the project itself.")
         try {
             Class.forName("com.atlassian.servicedesk.api.ServiceDeskService")
         } catch (Throwable ignored) {

@@ -244,11 +244,14 @@ check("level without level id", links.issueSecurityLevel(10001, null), null)
 check("project page without key", links.projectSummary(null), null)
 check("issue type without id", links.projectIssueType("SCRUM", null), null)
 
-/* The one shape that could not be evidenced is recorded as a gap, in words, and
- * not silently replaced by a guessed parameter. */
-ok("the unevidenced issue type scheme link is recorded as a gap",
-    links.issueTypeSchemeUnavailableNote() != null &&
-    links.issueTypeSchemeUnavailableNote().toLowerCase(Locale.ROOT).contains("not linked"))
+/* The screen exists and is evidenced; only the parameter that would preselect one
+ * scheme on it is not. So the list is linked and the gap is stated, rather than a
+ * parameter being invented or the whole link being dropped. */
+check("the issue type scheme list is linked", links.issueTypeSchemes(),
+    "https://jira.example.com/secure/admin/ManageIssueTypeSchemes.jspa")
+ok("the list link carries no invented parameter", !links.issueTypeSchemes().contains("?"))
+ok("the gap is stated in words",
+    links.issueTypeSchemeUnavailableNote().toLowerCase(Locale.ROOT).contains("opens the list"))
 
 /* ---- 10. node behaviour -------------------------------------------------- */
 
@@ -351,6 +354,17 @@ String htmlOut = Render.html(report, [project: "SCRUM"] as LinkedHashMap, false)
 ok("html names the project", htmlOut.contains("Scrum Project"))
 ok("html prints the version", htmlOut.contains("v" + Pc.VERSION))
 ok("html renders the deep link", htmlOut.contains("project-config/SCRUM/summary"))
+ok("a section link is called open in Jira by default", htmlOut.contains(">open in Jira</a>"))
+
+/* A link that can only land near its item says so in the text somebody clicks. */
+Report labelled = new Report()
+labelled.section("issueTypeScheme", "Issue type scheme: X")
+    .link("https://jira.example.com/secure/admin/ManageIssueTypeSchemes.jspa", null)
+    .linkAs("open issue type schemes")
+    .add(Nd.of("issueType", "Bug"))
+String labelledHtml = Render.html(labelled, [:] as LinkedHashMap, false)
+ok("a named link keeps its own text", labelledHtml.contains(">open issue type schemes</a>"))
+ok("a named link does not also claim to be exact", !labelledHtml.contains(">open in Jira</a>"))
 ok("html marks the unreadable node", htmlOut.contains("could not be read"))
 ok("html shows the missing-link note as a tooltip",
     htmlOut.contains("Administration &gt; Issues &gt; Issue type schemes"))
@@ -391,10 +405,25 @@ ok("an expanded page hides no section body", !expanded.contains("class=\"section
 ok("the section header states how many items it holds", collapsed.contains("section-count muted"))
 ok("the section header is reachable by keyboard", collapsed.contains("tabindex=\"0\""))
 
+/* Nothing in the page may switch always-expanded ON. A single click that pins
+ * depth=full into the URL means the collapsed default is never seen again, on this
+ * visit or any later one, and the report then opens as a wall every time. Expanding
+ * is done to the page in front of you; the way back out stays reachable. */
+ok("no control turns always-expanded on", !collapsed.contains("depth=full"))
+ok("the way out of always-expanded is offered while it is on",
+    expanded.contains("Leave always-expanded mode"))
+ok("the way out actually clears the parameter",
+    !Render.html(deep, [project: "X", depth: "full"] as LinkedHashMap, true)
+        .contains("?project=X&depth=full\" >"))
+
 /* The marker is matched, not the sentence. "could not be read" is also the label of
  * a summary card at the top of the page, so asserting on the words alone would pass
  * for a page that never marked the section at all. */
+/* Both fixtures carry a base URL, because an instance whose address could not be
+ * read is itself marked unreadable in the header card, and that marker would drown
+ * out the one these two cases are about. */
 Report brokenSection = new Report()
+brokenSection.instanceBaseUrl = "https://jira.example.com"
 brokenSection.section("s", "Workflow scheme").failed("Read failed: RuntimeException")
 String brokenCollapsed = Render.html(brokenSection, [:] as LinkedHashMap, false)
 ok("a failed read is marked on the header, above the folded body",
@@ -402,8 +431,19 @@ ok("a failed read is marked on the header, above the folded body",
     brokenCollapsed.indexOf("class=\"state state-unreadable\"") < brokenCollapsed.indexOf("section-body"))
 
 Report emptySection = new Report()
+emptySection.instanceBaseUrl = "https://jira.example.com"
 emptySection.section("s", "Components")
 String emptyCollapsed = Render.html(emptySection, [:] as LinkedHashMap, false)
+ok("a readable address is rendered as a link", emptyCollapsed.contains(">https://jira.example.com</a>"))
+
+/* An instance whose address could not be read must not print a blank where the
+ * address belongs: a report that names no instance describes some Jira, not this
+ * one, and a blank would read as though there were nothing to name. */
+Report noAddress = new Report()
+noAddress.section("s", "Components")
+ok("a missing address is marked, not blanked",
+    Render.html(noAddress, [:] as LinkedHashMap, false)
+        .contains("<strong>Address</strong> <span class=\"state state-unreadable\">"))
 ok("an empty section says so on the header, above the folded body",
     emptyCollapsed.indexOf("nothing configured") < emptyCollapsed.indexOf("section-body"))
 ok("empty and unreadable sections still differ while both are closed",
@@ -519,10 +559,41 @@ List<Map<String, String>> projectRows = [
     [key: "OPS", name: "Operations & <Support>"] as LinkedHashMap
 ]
 String pickerHtml = Render.picker(shell, projectRows, "")
-ok("picker lists every project", pickerHtml.contains("value=\"SCRUM\"") && pickerHtml.contains("value=\"OPS\""))
+ok("picker lists every project",
+    pickerHtml.contains("?project=SCRUM") && pickerHtml.contains("?project=OPS"))
 ok("picker escapes a project name", pickerHtml.contains("Operations &amp; &lt;Support&gt;"))
 ok("picker states the count", pickerHtml.contains("2 projects"))
-ok("picker submits with GET", pickerHtml.contains("method=\"get\""))
+ok("picker offers a search field", pickerHtml.contains("id=\"projectQuery\""))
+ok("picker ships its own filter", pickerHtml.contains("function filterProjects"))
+ok("a project row carries a lowercased search key",
+    pickerHtml.contains("data-find=\"ops operations &amp; &lt;support&gt;\""))
+ok("the base URL identifies the instance", pickerHtml.contains("<strong>Address</strong>"))
+
+/* The count line is the guard against a filtered list reading as the whole one, so
+ * every branch of it is pinned. */
+check("all projects, short list", Render.countLine(3, 3), "3 projects")
+check("all projects, long list", Render.countLine(600, 600),
+    "600 projects, showing the first " + Render.PROJECT_ROWS)
+check("a filtered subset names the population", Render.countLine(2, 600),
+    "2 of 600 projects match")
+check("a capped subset says it is capped", Render.countLine(120, 600),
+    "120 of 600 projects match, showing the first " + Render.PROJECT_ROWS)
+check("no match says so against the population", Render.countLine(0, 600),
+    "no match out of 600 projects")
+
+/* A long list is capped in the markup, not just in the browser, so the first paint
+ * is short even before any script runs. */
+List<Map<String, String>> manyProjects = new ArrayList<Map<String, String>>()
+for (int i = 0; i < Render.PROJECT_ROWS + 25; i++) {
+    manyProjects.add([key: "P" + i, name: "Project " + i] as LinkedHashMap)
+}
+String bigPicker = Render.picker(new Report(), manyProjects, "")
+int visibleRows = bigPicker.split("class=\"export-hit\"", -1).length - 1
+check("only the cap is visible on first paint", visibleRows, Render.PROJECT_ROWS)
+ok("every project is still in the page, just hidden",
+    bigPicker.contains("?project=P" + (Render.PROJECT_ROWS + 24)))
+ok("the count line names the full population",
+    bigPicker.contains(String.valueOf(manyProjects.size()) + " projects"))
 
 Report failedShell = new Report()
 failedShell.globalDiagnostics.add("The project list could not be read: RuntimeException. " +
