@@ -3736,20 +3736,7 @@ class Scan {
                 self.val(scheme.getDescription())
             }
 
-            Nd scopeNode = Nd.of("contextScope", "Applies to projects")
-            if (scheme.isGlobal() || scheme.isAllProjects()) {
-                scopeNode.val("every project")
-            } else {
-                List<Project> projects = scheme.getAssociatedProjectObjects()
-                List<String> keys = new ArrayList<String>()
-                if (projects != null) {
-                    for (Project associated : projects) {
-                        keys.add(associated.getKey())
-                    }
-                }
-                scopeNode.val(keys.isEmpty() ? "no project" : keys.join(", "))
-            }
-            self.add(scopeNode)
+            self.add(contextScopeNode(scheme))
 
             Nd typeNode = Nd.of("contextIssueTypes", "Applies to issue types")
             if (scheme.isAllIssueTypes()) {
@@ -3781,6 +3768,56 @@ class Scan {
                     continue
                 }
                 self.add(fieldConfigNode(config, optionsManager))
+            }
+        }
+    }
+
+    /* A context that names other projects is the single most consequential thing on
+     * this page: a change made here reaches every one of them, and the administrator
+     * reading this report can see none of them from the screen they are on. The keys
+     * used to be a comma-joined string, which is unreachable - a node carries one
+     * link, so a list inside one node can carry none. Each project is its own node
+     * now, with its name and a link into that project. */
+    private static final int MAX_CONTEXT_PROJECTS = 50
+
+    private Nd contextScopeNode(FieldConfigScheme scheme) {
+        Nd node = Nd.of("contextScope", "Applies to projects")
+        return guard(node) { Nd self ->
+            if (scheme.isGlobal() || scheme.isAllProjects()) {
+                self.val("every project")
+                self.note("This context is global. A change to it reaches every project on " +
+                    "this instance, not only this one.")
+                return
+            }
+            List<Project> projects = scheme.getAssociatedProjectObjects()
+            if (projects == null || projects.isEmpty()) {
+                self.absent("No project. This context applies nowhere.")
+                return
+            }
+            self.val(Pc.plural(projects.size(), "project"))
+            int shown = 0
+            for (Project associated : projects) {
+                if (shown >= MAX_CONTEXT_PROJECTS) {
+                    break
+                }
+                shown++
+                Nd projectNode = Nd.of("contextProject", Pc.orNa(associated.getKey()))
+                projectNode.ident(associated.getId())
+                projectNode.link(links.projectSummary(associated.getKey()), null)
+                String name = Pc.orNa(associated.getName())
+                /* Which of them is the project this report is about. In a list of
+                 * forty keys that is not obvious, and it is the first thing the
+                 * reader looks for. */
+                boolean isThisProject = associated.getId() != null &&
+                    associated.getId().equals(project.getId())
+                projectNode.val(isThisProject ? name + " - this project" : name)
+                self.add(projectNode)
+            }
+            if (projects.size() > shown) {
+                self.state = Pc.TRUNCATED
+                self.note("Only the first " + String.valueOf(shown) + " of " +
+                    String.valueOf(projects.size()) + " projects are listed. The rest are on " +
+                    "the context, not missing from it.")
             }
         }
     }
