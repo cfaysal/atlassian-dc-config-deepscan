@@ -836,28 +836,38 @@ class Nd {
 
     /* Every diagnostic in the subtree, prefixed with the path it sits on, so the
      * report can show one honest list without losing where each entry came from. */
-    List<String> collectNotes(String path) {
+    /* Grouped by text, not listed one per node. A note that is true of one item is a
+     * finding; the same sentence repeated four hundred times is a property of the
+     * instance, and printing it four hundred times buries every other finding on the
+     * page. Nothing is lost by grouping: the path of every occurrence is kept, and
+     * the note itself still sits on its own node in the tree. */
+    void collectNotes(String path, Map<String, List<String>> into) {
         String here = path == null || path.isEmpty() ? Pc.orNa(label) : path + " > " + Pc.orNa(label)
-        List<String> out = new ArrayList<String>()
         for (String entry : notes) {
-            out.add(here + ": " + entry)
+            group(into, entry, here)
         }
         for (Nd child : children) {
-            out.addAll(child.collectNotes(here))
+            child.collectNotes(here, into)
         }
-        return out
     }
 
-    List<String> collectDiagnostics(String path) {
+    void collectDiagnostics(String path, Map<String, List<String>> into) {
         String here = path == null || path.isEmpty() ? Pc.orNa(label) : path + " > " + Pc.orNa(label)
-        List<String> out = new ArrayList<String>()
         for (String entry : diagnostics) {
-            out.add(here + ": " + entry)
+            group(into, entry, here)
         }
         for (Nd child : children) {
-            out.addAll(child.collectDiagnostics(here))
+            child.collectDiagnostics(here, into)
         }
-        return out
+    }
+
+    static void group(Map<String, List<String>> into, String text, String path) {
+        List<String> where = into.get(text)
+        if (where == null) {
+            where = new ArrayList<String>()
+            into.put(text, where)
+        }
+        where.add(path)
     }
 
     Map<String, Object> toMap() {
@@ -976,20 +986,51 @@ class Report {
         return total
     }
 
-    List<String> allNotes() {
-        List<String> out = new ArrayList<String>()
+    Map<String, List<String>> notesByText() {
+        Map<String, List<String>> out = new LinkedHashMap<String, List<String>>()
         for (Nd node : sections) {
-            out.addAll(node.collectNotes(""))
+            node.collectNotes("", out)
         }
         return out
     }
 
-    List<String> allDiagnostics() {
-        List<String> out = new ArrayList<String>(globalDiagnostics)
+    Map<String, List<String>> diagnosticsByText() {
+        Map<String, List<String>> out = new LinkedHashMap<String, List<String>>()
+        /* A global diagnostic belongs to the run rather than to a node, so it carries
+         * no path. The empty path is what says so. */
+        for (String entry : globalDiagnostics) {
+            Nd.group(out, entry, "")
+        }
         for (Nd node : sections) {
-            out.addAll(node.collectDiagnostics(""))
+            node.collectDiagnostics("", out)
         }
         return out
+    }
+
+    /* The flat form every output channel other than the tree uses. It is a summary,
+     * and it says so: a text that occurred more than once carries its count and the
+     * first place it occurred rather than being repeated. The tree in the same
+     * payload still carries each note on its own node, so this loses nothing. */
+    static List<String> summarise(Map<String, List<String>> grouped) {
+        List<String> out = new ArrayList<String>()
+        for (Map.Entry<String, List<String>> entry : grouped.entrySet()) {
+            List<String> where = entry.getValue()
+            String first = where.isEmpty() ? "" : Pc.orNa(where.get(0))
+            if (where.size() == 1) {
+                out.add(first.isEmpty() || Pc.NA.equals(first) ? entry.getKey() : first + ": " + entry.getKey())
+                continue
+            }
+            out.add(entry.getKey() + " [" + String.valueOf(where.size()) + " items, first: " + first + "]")
+        }
+        return out
+    }
+
+    List<String> allNotes() {
+        return summarise(notesByText())
+    }
+
+    List<String> allDiagnostics() {
+        return summarise(diagnosticsByText())
     }
 
     Map<String, Object> toMap() {
@@ -1175,22 +1216,89 @@ class Render {
             Pc.html(label) + "</a>"
     }
 
+    /* Both cards summarise rather than enumerate. A report that lists one line per
+     * occurrence is unreadable the moment a single sentence is true of hundreds of
+     * items, which is the normal case on an instance with hundreds of custom fields.
+     * One line per distinct text, with how many items it is true of and the first few
+     * of them, is the same information in a form somebody can actually read. */
+    private static final int MAX_CARD_ENTRIES = 200
+    private static final int MAX_CARD_PATHS = 3
+
     private static String diagnosticsCard(Report report) {
-        List<String> entries = report.allDiagnostics()
-        if (entries.isEmpty()) {
+        return summaryCard("diag diag-warn", report.diagnosticsByText(),
+            "Each one is also marked at the item it belongs to. " +
+            "A suppressed read is not a measured absence.",
+            "read was suppressed", "reads were suppressed")
+    }
+
+    private static String summaryCard(String css, Map<String, List<String>> grouped,
+                                      String lead, String singular, String plural) {
+        if (grouped.isEmpty()) {
             return ""
         }
+        int total = 0
+        for (List<String> where : grouped.values()) {
+            total += where.size()
+        }
         StringBuilder out = new StringBuilder()
-        out.append("<div class=\"diag diag-warn\"><strong>")
-        out.append(String.valueOf(entries.size()))
-        out.append(entries.size() == 1 ? " read was suppressed" : " reads were suppressed")
-        out.append(".</strong> Each one is also marked at the item it belongs to. ")
-        out.append("A suppressed read is not a measured absence.<ul>")
-        for (String entry : entries) {
-            out.append("<li>").append(Pc.html(entry)).append("</li>")
+        out.append("<div class=\"").append(css).append("\"><strong>")
+        out.append(String.valueOf(total)).append(" ").append(total == 1 ? singular : plural)
+        if (grouped.size() < total) {
+            out.append(", ").append(String.valueOf(grouped.size())).append(" of them distinct")
+        }
+        out.append(".</strong> ").append(lead).append("<ul>")
+        int shown = 0
+        for (Map.Entry<String, List<String>> entry : grouped.entrySet()) {
+            if (shown >= MAX_CARD_ENTRIES) {
+                break
+            }
+            shown++
+            List<String> where = entry.getValue()
+            out.append("<li>")
+            if (where.size() > 1) {
+                out.append("<strong>").append(String.valueOf(where.size())).append("&#215;</strong> ")
+            }
+            out.append(Pc.html(entry.getKey()))
+            out.append(pathList(where))
+            out.append("</li>")
+        }
+        if (grouped.size() > shown) {
+            out.append("<li class=\"muted\">").append(String.valueOf(grouped.size() - shown))
+            out.append(" further kinds are not listed here. Every one of them is still marked ")
+            out.append("at its own item, and all of them are in the JSON output.</li>")
         }
         out.append("</ul></div>\n")
         return out.toString()
+    }
+
+    /* Where a text occurred. A global entry carries no path, and an empty list is
+     * then correct rather than missing. */
+    private static String pathList(List<String> where) {
+        List<String> named = new ArrayList<String>()
+        for (String path : where) {
+            if (path != null && !path.trim().isEmpty()) {
+                named.add(path)
+            }
+        }
+        if (named.isEmpty()) {
+            return ""
+        }
+        StringBuilder out = new StringBuilder("<div class=\"muted\">")
+        int shown = 0
+        for (String path : named) {
+            if (shown >= MAX_CARD_PATHS) {
+                break
+            }
+            if (shown > 0) {
+                out.append("; ")
+            }
+            out.append(Pc.html(path))
+            shown++
+        }
+        if (named.size() > shown) {
+            out.append(" and ").append(String.valueOf(named.size() - shown)).append(" more")
+        }
+        return out.append("</div>").toString()
     }
 
     /* A section is closed until it is asked for. A project of any size produces
@@ -1203,21 +1311,9 @@ class Render {
      * failures, and mixing them made the report announce suppressed reads that never
      * happened. */
     private static String notesCard(Report report) {
-        List<String> entries = report.allNotes()
-        if (entries.isEmpty()) {
-            return ""
-        }
-        StringBuilder out = new StringBuilder()
-        out.append("<div class=\"diag diag-info\"><strong>")
-        out.append(String.valueOf(entries.size()))
-        out.append(entries.size() == 1 ? " observation" : " observations")
-        out.append(".</strong> Nothing failed to read here. Each one is also marked at the item ")
-        out.append("it belongs to.<ul>")
-        for (String entry : entries) {
-            out.append("<li>").append(Pc.html(entry)).append("</li>")
-        }
-        out.append("</ul></div>\n")
-        return out.toString()
+        return summaryCard("diag diag-info", report.notesByText(),
+            "Nothing failed to read here. Each one is also marked at the item it belongs to.",
+            "observation", "observations")
     }
 
     private static String section(Nd node, boolean expandAll) {
@@ -3767,7 +3863,7 @@ class Scan {
                 if (config == null || !seen.add(config.getId())) {
                     continue
                 }
-                self.add(fieldConfigNode(config, optionsManager))
+                self.add(fieldConfigNode(field, config, optionsManager))
             }
         }
     }
@@ -3784,9 +3880,11 @@ class Scan {
         Nd node = Nd.of("contextScope", "Applies to projects")
         return guard(node) { Nd self ->
             if (scheme.isGlobal() || scheme.isAllProjects()) {
-                self.val("every project")
-                self.note("This context is global. A change to it reaches every project on " +
-                    "this instance, not only this one.")
+                /* Said in the value, not as a note. On an instance with four hundred
+                 * custom fields this is true of four hundred default contexts, and a
+                 * note repeated four hundred times is not an observation - it buries
+                 * every real one under itself. */
+                self.val("every project on this instance, not only this one")
                 return
             }
             List<Project> projects = scheme.getAssociatedProjectObjects()
@@ -3822,14 +3920,14 @@ class Scan {
         }
     }
 
-    Nd fieldConfigNode(FieldConfig config, OptionsManager optionsManager) {
+    Nd fieldConfigNode(CustomField field, FieldConfig config, OptionsManager optionsManager) {
         Nd node = Nd.of("contextConfig", "Configuration: " + Pc.orNa(config.getName()))
         node.ident(config.getId())
         return guard(node) { Nd self ->
             if (Pc.text(config.getDescription()) != null) {
                 self.val(config.getDescription())
             }
-            self.add(defaultValueNode(config))
+            self.add(defaultValueNode(field, config))
             if (optionsManager == null) {
                 self.add(Nd.of("contextOptions", "Options")
                     .failed("OptionsManager is not available, so options could not be read."))
@@ -3864,10 +3962,15 @@ class Scan {
      * an Option, a date, a user - so it is rendered through the type rather than
      * assumed to be a string. A type that has no default says so; a read that failed
      * says something else. */
-    private Nd defaultValueNode(FieldConfig config) {
+    private Nd defaultValueNode(CustomField field, FieldConfig config) {
         Nd node = Nd.of("contextDefault", "Default value")
         return guard(node) { Nd self ->
-            CustomField field = config.getCustomField()
+            /* The field is handed in rather than read back out of the FieldConfig.
+             * FieldConfig.getCustomField() is deprecated since Jira 8.15 in favour of
+             * getConfigurableField(), and ConfigurableField exposes no field type at
+             * all - reaching one through it means an unchecked cast back to
+             * CustomField, which is the deprecated call with the warning removed. The
+             * caller already holds the field, so nothing has to be asked for twice. */
             CustomFieldType type = field == null ? null : field.getCustomFieldType()
             if (type == null) {
                 self.failed("The field type of this context could not be resolved, " +

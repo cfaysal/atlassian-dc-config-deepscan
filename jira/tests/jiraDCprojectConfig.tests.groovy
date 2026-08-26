@@ -321,10 +321,12 @@ check("addAll ignores null", Nd.of("x", "y").addAll(null).children.size(), 0)
 
 Nd diagTree = Nd.of("section", "Workflows")
 diagTree.add(Nd.of("workflowScheme", "SCRUM WFS").add(broken))
-List<String> collected = diagTree.collectDiagnostics("")
+Map<String, List<String>> collected = new LinkedHashMap<String, List<String>>()
+diagTree.collectDiagnostics("", collected)
 check("one diagnostic collected", collected.size(), 1)
+check("and it occurred once", collected.values().iterator().next().size(), 1)
 ok("the diagnostic carries its full path",
-    collected[0].startsWith("Workflows > SCRUM WFS > Bug Workflow: "))
+    collected.values().iterator().next().get(0) == "Workflows > SCRUM WFS > Bug Workflow")
 
 /* ---- 12. report totals --------------------------------------------------- */
 
@@ -1058,6 +1060,73 @@ ok("the lost remark really is on the page",
     nestedWithRemarkBelow.contains("this one is below the pasted table"))
 check("and the read still refuses rather than dropping it",
     Cx.parseRemarks(nestedWithRemarkBelow).outcome, RemarkRead.FAILED)
+
+/* ---- 25. One sentence about four hundred items is one line, not four hundred - */
+
+/* A note that is true of one item is a finding. The same sentence repeated for every
+ * custom field on the instance is a property of the instance, and printing it once
+ * per item buries every real finding underneath it. This is what a real run produced:
+ * 858 observations, almost all of them the same sentence. */
+
+Report floodReport = new Report()
+floodReport.projectKey = "SCRUM"
+floodReport.projectName = "Scrum Project"
+floodReport.instanceBaseUrl = "https://jira.example.com"
+Nd floodSection = floodReport.section("customFields", "Custom fields")
+for (int i = 0; i < 400; i++) {
+    Nd floodField = Nd.of("customField", "Field " + i)
+    floodField.add(Nd.of("contextScope", "Applies to projects").note("This one repeats."))
+    floodSection.add(floodField)
+}
+floodSection.add(Nd.of("customField", "Special").note("This one is on its own."))
+
+Map<String, List<String>> floodGrouped = floodReport.notesByText()
+check("four hundred repeats and one singleton are two kinds", floodGrouped.size(), 2)
+check("the repeated kind knows how often it occurred", floodGrouped.get("This one repeats.").size(), 400)
+ok("and where the first of them was",
+    floodGrouped.get("This one repeats.").get(0) == "Custom fields > Field 0 > Applies to projects")
+
+List<String> floodFlat = floodReport.allNotes()
+check("the flat form carries one entry per kind, not per item", floodFlat.size(), 2)
+ok("a repeated entry says how many it stands for", floodFlat[0].contains("[400 items, first: "))
+ok("a single entry is written out with its path",
+    floodFlat[1] == "Custom fields > Special: This one is on its own.")
+
+String floodHtml = Render.html(floodReport, [:] as LinkedHashMap, false)
+/* Counted inside the card only. The note is deliberately also written at each of the
+ * four hundred nodes it belongs to, and counting the whole page would measure that
+ * instead of the thing under test. */
+int cardStart = floodHtml.indexOf("<div class=\"diag diag-info\">")
+ok("the report carries an observations card", cardStart >= 0)
+String floodCard = floodHtml.substring(cardStart, floodHtml.indexOf("</ul>", cardStart))
+check("the card carries the repeated kind once", countOf(floodCard, "This one repeats."), 1)
+ok("while the tree still marks it at every item it belongs to",
+    countOf(floodHtml, "This one repeats.") > 400)
+ok("the card names the total and the distinct count",
+    floodCard.contains("401 observations, 2 of them distinct"))
+ok("the repeated kind carries its multiplier", floodCard.contains("<strong>400&#215;</strong>"))
+ok("and a few example paths", floodCard.contains("Custom fields &gt; Field 0 &gt; Applies to projects"))
+ok("with the rest counted rather than listed", floodCard.contains("and 397 more"))
+
+/* The singleton must survive the grouping. Burying the one real finding under the
+ * repeated one is the same defect in the other direction. */
+ok("the finding that occurred once is still on the card",
+    floodCard.contains("This one is on its own."))
+
+/* A global diagnostic belongs to the run and has no node, so it must not invent a
+ * path for itself. */
+Report globalReport = new Report()
+globalReport.projectKey = "SCRUM"
+globalReport.projectName = "Scrum Project"
+globalReport.instanceBaseUrl = "https://jira.example.com"
+globalReport.globalDiagnostics.add("The instance version could not be read.")
+globalReport.section("projectDetails", "Details").add(Nd.of("projectField", "Key").val("SCRUM"))
+Map<String, List<String>> globalGrouped = globalReport.diagnosticsByText()
+check("the global diagnostic is collected", globalGrouped.size(), 1)
+ok("and carries no path", globalGrouped.values().iterator().next().get(0).isEmpty())
+String globalHtml = Render.html(globalReport, [:] as LinkedHashMap, false)
+ok("the card shows it", globalHtml.contains("The instance version could not be read."))
+ok("without an empty location line", !globalHtml.contains("<div class=\"muted\"></div>"))
 
 /* ---- result --------------------------------------------------------------- */
 
