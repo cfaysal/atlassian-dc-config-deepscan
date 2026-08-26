@@ -31,10 +31,17 @@ Every section is expanded, not summarised:
 - **Workflow scheme** with every layer, the default layer included, and for each layer the
   workflow, its statuses, and per status every transition with its target, its counts of
   conditions, validators and post functions, and its transition screen.
-- **Permission scheme**, grouped by permission, down to the resolved grant.
+- **Priorities**: the priority scheme of the project, the priorities it offers in picker
+  order, and which one a new issue starts with. Jira models this as a field configuration
+  scheme, so it shows up nowhere in the field section.
+- **Permission scheme**, grouped by permission, down to the resolved grant. A grant to a
+  group lists who is in the group, capped and with the cap stated.
 - **Notification scheme**, grouped by event, down to the resolved recipient.
 - **Issue security scheme** with every level and who holds it.
-- **Project roles** with their actors, **versions** and **components**.
+- **Project roles** with their actors, **versions** with their picker position and
+  **components**, including a component that was deleted but is still attached to issues.
+- **Project properties**: the keys apps have written onto this project. Often the only place
+  an app behaviour is configured, and visible on no administration screen.
 - **Jira Service Management**, on a service project and only on one: the customer portal,
   every request type with the issue type it raises, its portal groups and the fields of its
   customer form, the queues with the filter that defines each one, and the SLA time metrics.

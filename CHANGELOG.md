@@ -16,6 +16,16 @@ First working version.
   field contexts with options and defaults, workflow scheme with every layer and each
   workflow's statuses and transitions, permission, notification and issue security schemes
   down to the resolved grant, project roles with actors, versions and components.
+- Priority scheme of the project with its priorities in picker order and the default for new
+  issues, and the project properties apps have written, which no administration screen shows.
+- The details a project screen does not put in one place: project email, avatar, creation and
+  last change with who made it, and whether the project lead still holds a licensed
+  application role.
+- Per configuration item, what was missing before: custom field default values per context,
+  the default issue security level of the project, an unpublished workflow scheme draft with
+  who left it and when, workflow status and transition properties, tab and field positions on
+  a screen, renderer names instead of plugin keys, custom events told apart from Jira's own,
+  and the members of a group a scheme grants to.
 - Jira Service Management on a service project: the customer portal, every request type
   with the issue type it raises, its portal groups and the fields of its customer form, the
   queues with the filter that defines each one, and the SLA time metrics. The section is

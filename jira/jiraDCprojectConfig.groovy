@@ -20,7 +20,9 @@
  *   this project, with their options and defaults. Workflow scheme with every
  *   layer and that layer's workflow, its statuses and transitions. Permission,
  *   notification and issue security schemes down to the resolved grant. Roles
- *   with their actors, versions, components.
+ *   with their actors, versions, components. The priority scheme with the default
+ *   for new issues. The project properties apps have written, which no
+ *   administration screen shows.
  *
  *   On a service project, and only on one, the Service Management section adds the
  *   customer portal, every request type with the issue type it raises, its portal
@@ -71,23 +73,30 @@ import com.atlassian.applinks.api.ApplicationLinkService
 import com.atlassian.applinks.api.ApplicationType
 import com.atlassian.applinks.api.CredentialsRequiredException
 
+import com.atlassian.jira.avatar.Avatar
 import com.atlassian.jira.bc.project.component.ProjectComponent
 import com.atlassian.jira.bc.project.component.ProjectComponentManager
 import com.atlassian.jira.component.ComponentAccessor
 import com.atlassian.jira.config.properties.ApplicationProperties
+import com.atlassian.jira.entity.property.EntityPropertyType
+import com.atlassian.jira.entity.property.JsonEntityPropertyManager
 import com.atlassian.jira.event.type.EventType
 import com.atlassian.jira.event.type.EventTypeManager
 import com.atlassian.jira.issue.CustomFieldManager
+import com.atlassian.jira.issue.RendererManager
+import com.atlassian.jira.issue.customfields.CustomFieldType
 import com.atlassian.jira.issue.customfields.manager.OptionsManager
 import com.atlassian.jira.issue.customfields.option.Option
 import com.atlassian.jira.issue.fields.CustomField
 import com.atlassian.jira.issue.fields.config.FieldConfig
 import com.atlassian.jira.issue.fields.config.FieldConfigScheme
 import com.atlassian.jira.issue.fields.config.manager.IssueTypeSchemeManager
+import com.atlassian.jira.issue.fields.config.manager.PrioritySchemeManager
 import com.atlassian.jira.issue.fields.layout.field.FieldConfigurationScheme
 import com.atlassian.jira.issue.fields.layout.field.FieldLayout
 import com.atlassian.jira.issue.fields.layout.field.FieldLayoutItem
 import com.atlassian.jira.issue.fields.layout.field.FieldLayoutManager
+import com.atlassian.jira.issue.fields.renderer.JiraRendererPlugin
 import com.atlassian.jira.issue.fields.screen.FieldScreen
 import com.atlassian.jira.issue.fields.screen.FieldScreenScheme
 import com.atlassian.jira.issue.fields.screen.FieldScreenSchemeItem
@@ -97,6 +106,7 @@ import com.atlassian.jira.issue.fields.screen.issuetype.IssueTypeScreenScheme
 import com.atlassian.jira.issue.fields.screen.issuetype.IssueTypeScreenSchemeEntity
 import com.atlassian.jira.issue.fields.screen.issuetype.IssueTypeScreenSchemeManager
 import com.atlassian.jira.issue.issuetype.IssueType
+import com.atlassian.jira.issue.priority.Priority
 import com.atlassian.jira.issue.operation.IssueOperations
 import com.atlassian.jira.issue.operation.ScreenableIssueOperation
 import com.atlassian.jira.issue.security.IssueSecurityLevel
@@ -119,14 +129,20 @@ import com.atlassian.jira.project.version.VersionManager
 import com.atlassian.jira.scheme.Scheme
 import com.atlassian.jira.scheme.SchemeEntity
 import com.atlassian.jira.security.JiraAuthenticationContext
+import com.atlassian.jira.security.groups.GroupManager
 import com.atlassian.jira.security.roles.ProjectRole
 import com.atlassian.jira.security.roles.ProjectRoleActors
 import com.atlassian.jira.security.roles.ProjectRoleManager
 import com.atlassian.jira.security.roles.RoleActor
 import com.atlassian.jira.user.ApplicationUser
+import com.atlassian.jira.application.ApplicationRole
+import com.atlassian.jira.application.ApplicationRoleManager
 import com.atlassian.jira.util.BuildUtilsInfo
 import com.atlassian.jira.util.I18nHelper
+import com.atlassian.jira.util.Page
+import com.atlassian.jira.util.PageRequests
 import com.atlassian.jira.workflow.AssignableWorkflowScheme
+import com.atlassian.jira.workflow.DraftWorkflowScheme
 import com.atlassian.jira.workflow.JiraWorkflow
 import com.atlassian.jira.workflow.WorkflowManager
 import com.atlassian.jira.workflow.WorkflowSchemeManager
@@ -3392,6 +3408,10 @@ class Scan {
             for (FieldScreenTab tab : tabs) {
                 Nd tabNode = Nd.of("screenTab", "Tab: " + Pc.orNa(tab.getName()))
                 tabNode.ident(tab.getId())
+                /* The order of the returned list is not the contract; the position is.
+                 * On a screen the order of the tabs and of the fields on them is part
+                 * of the configuration, so it is read rather than assumed. */
+                tabNode.val("position " + String.valueOf(tab.getPosition()))
                 guard(tabNode) { Nd inner ->
                     List<FieldScreenLayoutItem> layoutItems = tab.getFieldScreenLayoutItems()
                     if (layoutItems == null || layoutItems.isEmpty()) {
@@ -3400,7 +3420,8 @@ class Scan {
                     }
                     for (FieldScreenLayoutItem layoutItem : layoutItems) {
                         Nd fieldNode = Nd.of("screenField", fieldLabel(layoutItem))
-                        fieldNode.val(layoutItem.getFieldId())
+                        fieldNode.val(Pc.orNa(layoutItem.getFieldId()) +
+                            " (position " + String.valueOf(layoutItem.getPosition()) + ")")
                         inner.add(fieldNode)
                     }
                 }
@@ -3523,7 +3544,7 @@ class Scan {
                     List<String> parts = new ArrayList<String>()
                     parts.add(item.isRequired() ? "required" : "optional")
                     parts.add(item.isHidden() ? "hidden" : "visible")
-                    String renderer = Pc.text(item.getRendererType())
+                    String renderer = rendererName(item.getRendererType())
                     if (renderer != null) {
                         parts.add("renderer " + renderer)
                     }
@@ -3535,6 +3556,27 @@ class Scan {
                 }
                 self.add(fieldNode)
             }
+        }
+    }
+
+    /* The renderer type stored on a field is a plugin key, and a plugin key is not
+     * what the field configuration screen shows. The readable name comes from the
+     * renderer's own module descriptor. If it cannot be resolved the raw key stays,
+     * which is exactly what was printed before - so a failure here loses nothing and
+     * invents nothing. */
+    private String rendererName(String rendererType) {
+        String raw = Pc.text(rendererType)
+        if (raw == null) {
+            return null
+        }
+        try {
+            RendererManager manager = ComponentAccessor.getComponent(RendererManager)
+            JiraRendererPlugin renderer = manager == null ? null : manager.getRendererForType(raw)
+            String readable = renderer == null
+                ? null : Pc.text(Pc.duck(renderer.getDescriptor(), "getName", null))
+            return readable == null ? raw : readable + " (" + raw + ")"
+        } catch (Exception ignored) {
+            return raw
         }
     }
 
@@ -3716,6 +3758,7 @@ class Scan {
             if (Pc.text(config.getDescription()) != null) {
                 self.val(config.getDescription())
             }
+            self.add(defaultValueNode(config))
             if (optionsManager == null) {
                 self.add(Nd.of("contextOptions", "Options")
                     .failed("OptionsManager is not available, so options could not be read."))
@@ -3742,6 +3785,55 @@ class Scan {
             }
             self.add(optionsNode)
         }
+    }
+
+    /* What a field is pre-filled with in this context. It is per context, not per
+     * field, so two projects can see different defaults on the same field and the
+     * field list alone never shows it. The value is whatever the field type stores -
+     * an Option, a date, a user - so it is rendered through the type rather than
+     * assumed to be a string. A type that has no default says so; a read that failed
+     * says something else. */
+    private Nd defaultValueNode(FieldConfig config) {
+        Nd node = Nd.of("contextDefault", "Default value")
+        return guard(node) { Nd self ->
+            CustomField field = config.getCustomField()
+            CustomFieldType type = field == null ? null : field.getCustomFieldType()
+            if (type == null) {
+                self.failed("The field type of this context could not be resolved, " +
+                    "so its default value was not read.")
+                return
+            }
+            Object value = type.getDefaultValue(config)
+            if (value == null) {
+                self.absent("No default. The field starts empty.")
+                return
+            }
+            if (value instanceof Collection) {
+                List<String> parts = new ArrayList<String>()
+                for (Object element : (Collection<?>) value) {
+                    parts.add(defaultValueText(element))
+                }
+                self.val(parts.isEmpty() ? "No default. The field starts empty." : parts.join(", "))
+                return
+            }
+            self.val(defaultValueText(value))
+        }
+    }
+
+    /* An Option prints as its value rather than as its class name, and everything
+     * else falls back to what the object itself says it is. */
+    private static String defaultValueText(Object value) {
+        if (value == null) {
+            return Pc.NA
+        }
+        if (value instanceof Option) {
+            return Pc.orNa(((Option) value).getValue())
+        }
+        Object userName = Pc.duck(value, "getDisplayName", null)
+        if (userName != null) {
+            return userName.toString()
+        }
+        return Pc.orNa(value)
     }
 
     private Nd optionNode(Option option) {
@@ -3814,6 +3906,34 @@ class Scan {
                 self.diagnostics.add("The issue types of this project could not be read (" +
                     issueTypesFailure + "), so a layer cannot be checked against them.")
             }
+
+            /* A draft is an edited copy of this scheme that has not been published.
+             * The live layers below are what runs today; the draft is what somebody
+             * left half-finished, and it is invisible on every screen except the
+             * scheme's own. Naming who left it and when is the point. */
+            Nd draftNode = Nd.of("workflowSchemeDraft", "Unpublished draft")
+            guard(draftNode) { Nd inner ->
+                if (!schemeManager.hasDraft(scheme)) {
+                    inner.absent("The scheme has no unpublished draft.")
+                    return
+                }
+                DraftWorkflowScheme draft = schemeManager.getDraftForParent(scheme)
+                if (draft == null) {
+                    inner.failed("The scheme reports a draft that could not be read.")
+                    return
+                }
+                inner.ident(draft.getId())
+                List<String> facts = new ArrayList<String>()
+                ApplicationUser modifier = draft.getLastModifiedUser()
+                facts.add(modifier == null
+                    ? "last changed by an unknown user" : "last changed by " + userLabel(modifier))
+                if (draft.getLastModifiedDate() != null) {
+                    facts.add("on " + Pc.dateText(draft.getLastModifiedDate()))
+                }
+                inner.val(facts.join(", "))
+                inner.note("The draft is not in effect. What the layers below describe is what runs.")
+            }
+            self.add(draftNode)
 
             Nd defaultLayer = Nd.of("workflowLayer", "Layer: default (every other issue type)")
             if (defaultWorkflow == null) {
@@ -3915,6 +4035,8 @@ class Scan {
                 self.failed("The status is linked to no workflow step.")
                 return
             }
+            self.add(metaAttributes("workflowStatusProperties", "Status properties",
+                step.getMetaAttributes(), null))
             List actions = step.getActions()
             if (actions == null || actions.isEmpty()) {
                 self.add(Nd.of("workflowTransition", "Transitions")
@@ -3954,6 +4076,33 @@ class Scan {
         }
     }
 
+    /* Workflow properties. Jira keeps them as meta attributes on the step or on the
+     * transition, and they are what makes a status read-only, what hides a transition
+     * from the UI, and what an app hangs its own behaviour on. Nothing else in this
+     * report shows them. The one attribute that is already reported as the transition
+     * screen is skipped here rather than printed twice. */
+    private static Nd metaAttributes(String kind, String label, Map meta, String skipKey) {
+        Nd node = Nd.of(kind, label)
+        if (meta == null || meta.isEmpty()) {
+            return node.absent("No property is set.")
+        }
+        List<Nd> entries = new ArrayList<Nd>()
+        for (Object rawEntry : meta.entrySet()) {
+            Map.Entry<?, ?> entry = (Map.Entry<?, ?>) rawEntry
+            String key = Pc.text(entry.getKey())
+            if (key == null || key.equals(skipKey)) {
+                continue
+            }
+            entries.add(Nd.of(kind + "Entry", key).val(Pc.orNa(entry.getValue())))
+        }
+        if (entries.isEmpty()) {
+            return node.absent("No property is set.")
+        }
+        node.val(Pc.plural(entries.size(), "property"))
+        node.addAll(entries)
+        return node
+    }
+
     private Nd transitionNode(JiraWorkflow workflow, ActionDescriptor action) {
         Nd node = Nd.of("workflowTransition", "Transition: " + Pc.orNa(action.getName()))
         node.ident(action.getId())
@@ -3979,6 +4128,8 @@ class Scan {
                 screenNode.link(links.screen(screenId), null)
             }
             self.add(screenNode)
+            self.add(metaAttributes("workflowTransitionProperties", "Transition properties",
+                action.getMetaAttributes(), JiraWorkflow.ACTION_SCREEN_ATTRIBUTE))
         }
     }
 
@@ -4239,7 +4390,13 @@ class Scan {
         }
         try {
             EventType type = manager.getEventType(Long.valueOf(entityTypeId.toString()))
-            return type == null ? ("event " + entityTypeId.toString()) : type.getName()
+            if (type == null) {
+                return "event " + entityTypeId.toString()
+            }
+            /* A custom event is one somebody added, and it fires only where a post
+             * function or a listener was wired to fire it. That is worth telling
+             * apart from the events Jira ships with. */
+            return type.isSystemEventType() ? type.getName() : type.getName() + " (custom event)"
         } catch (Exception ignored) {
             return "event " + entityTypeId.toString()
         }
@@ -4298,12 +4455,58 @@ class Scan {
                     .absent("The scheme defines no level, or the levels could not be read."))
                 return
             }
+            /* Which level a new issue gets when nobody picks one. It is set per
+             * project rather than per scheme, so it cannot be read off the scheme and
+             * is invisible in a list of levels. A null default is a real answer: it
+             * means a new issue carries no security level at all. */
+            Long defaultLevel = null
+            boolean defaultLevelKnown = false
+            if (levelManager != null) {
+                try {
+                    defaultLevel = levelManager.getDefaultSecurityLevel(project)
+                    defaultLevelKnown = true
+                } catch (Exception error) {
+                    self.diagnostics.add("The default security level of this project could not be " +
+                        "read: " + describe(error))
+                }
+            }
+            Nd defaultNode = Nd.of("issueSecurityDefault", "Default level for new issues")
+            if (!defaultLevelKnown) {
+                defaultNode.failed("The default security level could not be read.")
+            } else if (defaultLevel == null) {
+                defaultNode.absent("None. A new issue carries no security level unless one is chosen.")
+            } else {
+                defaultNode.ident(defaultLevel)
+                String defaultName = null
+                for (IssueSecurityLevel candidate : levels) {
+                    if (candidate.getId() != null &&
+                            candidate.getId().longValue() == defaultLevel.longValue()) {
+                        defaultName = candidate.getName()
+                    }
+                }
+                defaultNode.val(defaultName == null
+                    ? "level " + String.valueOf(defaultLevel) + ", which this scheme does not define"
+                    : defaultName)
+                if (defaultName == null) {
+                    defaultNode.note("The default names a level that this scheme does not define.")
+                }
+            }
+            self.add(defaultNode)
+
             for (IssueSecurityLevel level : levels) {
                 Nd levelNode = Nd.of("issueSecurityLevel", "Level: " + Pc.orNa(level.getName()))
                 levelNode.ident(level.getId())
                 levelNode.link(links.issueSecurityLevel(scheme.getId(), level.getId()), null)
+                List<String> levelFacts = new ArrayList<String>()
+                if (defaultLevelKnown && defaultLevel != null && level.getId() != null &&
+                        level.getId().longValue() == defaultLevel.longValue()) {
+                    levelFacts.add("default for new issues")
+                }
                 if (Pc.text(level.getDescription()) != null) {
-                    levelNode.val(level.getDescription())
+                    levelFacts.add(level.getDescription())
+                }
+                if (!levelFacts.isEmpty()) {
+                    levelNode.val(levelFacts.join(" - "))
                 }
                 List<SchemeEntity> members = byLevel.get(String.valueOf(level.getId()))
                 if (members == null || members.isEmpty()) {
@@ -4393,7 +4596,52 @@ class Scan {
             node.note("The scheme type registry did not know the type '" + rawType +
                 "', so the raw type and parameter are shown.")
         }
+        if (rawType.toLowerCase(Locale.ROOT).contains("group")) {
+            node.add(groupMembers(parameter))
+        }
         return node
+    }
+
+    /* A grant to a group names the group, and the group is the one thing on this page
+     * whose contents an administrator cannot see from here. Who is actually in it is
+     * the answer they came for. The list is capped hard: jira-software-users can be
+     * five figures, and a report that pastes it is unusable and slow. What the cap cut
+     * is stated, so a shortened list is never mistaken for the whole one. */
+    private static final int MAX_GROUP_MEMBERS = 25
+
+    private Nd groupMembers(String groupName) {
+        Nd node = Nd.of("grantGroupMembers", "Members of " + Pc.orNa(groupName))
+        return guard(node) { Nd self ->
+            GroupManager manager = ComponentAccessor.getComponent(GroupManager)
+            if (manager == null) {
+                self.failed("GroupManager is not available, so the members were not read.")
+                return
+            }
+            int total = manager.getUsersInGroupCount(groupName)
+            if (total <= 0) {
+                self.absent("The group is empty, so this grant reaches nobody.")
+                return
+            }
+            Page<ApplicationUser> page = manager.getUsersInGroup(groupName, Boolean.TRUE,
+                PageRequests.request(Long.valueOf(0L), Integer.valueOf(MAX_GROUP_MEMBERS)))
+            List<ApplicationUser> members = page == null ? null : page.getValues()
+            if (members == null) {
+                self.failed("The group has " + Pc.plural(total, "member") +
+                    ", but they could not be listed.")
+                return
+            }
+            self.val(Pc.plural(total, "member"))
+            for (ApplicationUser member : members) {
+                self.add(Nd.of("grantGroupMember", userLabel(member))
+                    .val(member.isActive() ? "active" : "inactive"))
+            }
+            if (total > members.size()) {
+                self.state = Pc.TRUNCATED
+                self.note("Only the first " + String.valueOf(members.size()) + " of " +
+                    String.valueOf(total) + " members are listed. The rest are in the group, " +
+                    "not missing from it.")
+            }
+        }
     }
 
     /* The three parameter kinds this report can resolve on its own when the
@@ -4506,6 +4754,11 @@ class Scan {
                 if (version.isArchived()) {
                     facts.add("archived")
                 }
+                /* The order versions appear in on every picker is configuration, not
+                 * an accident of the query that read them. */
+                if (version.getSequence() != null) {
+                    facts.add("position " + String.valueOf(version.getSequence()))
+                }
                 if (version.getStartDate() != null) {
                     facts.add("starts " + Pc.dateText(version.getStartDate()))
                 }
@@ -4553,6 +4806,12 @@ class Scan {
                     if (component.isArchived()) {
                         facts.add("archived")
                     }
+                    /* A component marked deleted is still attached to the issues that
+                     * carried it. Gone from the pickers, not gone from the data, which
+                     * is exactly what a configuration report exists to surface. */
+                    if (component.isDeleted()) {
+                        facts.add("deleted, but still on existing issues")
+                    }
                     inner.val(facts.join(", "))
                     if (Pc.text(component.getDescription()) != null) {
                         inner.add(Nd.of("componentDescription", "Description")
@@ -4564,7 +4823,118 @@ class Scan {
         }
     }
 
-    /* ---- 11. Jira Service Management, only on a service project ------------ */
+    /* ---- 11. priority scheme ----------------------------------------------- */
+
+    /* Which priorities this project offers and which one a new issue starts with.
+     * Jira models this as a field configuration scheme rather than as a scheme of its
+     * own, so it appears nowhere in the field section. A project that was never given
+     * a scheme of its own still has one, and which one is part of the answer. */
+    Nd priorityScheme() {
+        Nd node = Nd.of("priorityScheme", "Priorities")
+        node.link(links.projectPriorities(project.getKey()), null)
+        return guard(node) { Nd self ->
+            PrioritySchemeManager manager = ComponentAccessor.getComponent(PrioritySchemeManager)
+            if (manager == null) {
+                self.failed("PrioritySchemeManager is not available in this instance.")
+                return
+            }
+            FieldConfigScheme scheme = manager.getScheme(project)
+            if (scheme == null) {
+                self.absent("No priority scheme is associated with this project.")
+                return
+            }
+            self.label = "Priorities: " + Pc.orNa(scheme.getName())
+            self.ident(scheme.getId())
+            if (Pc.text(scheme.getDescription()) != null) {
+                self.val(scheme.getDescription())
+            }
+            if (manager.isDefaultScheme(scheme)) {
+                self.note("This is the default priority scheme, shared by every project that " +
+                    "was never given one of its own. A change here reaches all of them.")
+            }
+
+            FieldConfig config = manager.getFieldConfigForDefaultMapping(scheme)
+            if (config == null) {
+                self.add(Nd.of("priority", "Priorities").failed(
+                    "The scheme carries no configuration, so its priorities were not read."))
+                return
+            }
+            List<String> ids = manager.getOptions(config)
+            if (ids == null || ids.isEmpty()) {
+                self.add(Nd.of("priority", "Priorities").absent("The scheme offers no priority."))
+                return
+            }
+            String defaultId = manager.getDefaultOption(config)
+
+            Map<String, Priority> byId = new LinkedHashMap<String, Priority>()
+            Collection<Priority> priorities = manager.getPrioritiesFromIds(ids)
+            if (priorities != null) {
+                for (Priority priority : priorities) {
+                    byId.put(priority.getId(), priority)
+                }
+            }
+            /* The order of the id list is the order of the picker, so it is kept
+             * rather than sorted into something more readable. */
+            for (String id : ids) {
+                Priority priority = byId.get(id)
+                Nd priorityNode = Nd.of("priority",
+                    priority == null ? "priority " + Pc.orNa(id) : Pc.orNa(priority.getName()))
+                priorityNode.ident(id)
+                if (priority == null) {
+                    priorityNode.failed("The scheme names a priority that could not be resolved.")
+                    self.add(priorityNode)
+                    continue
+                }
+                List<String> facts = new ArrayList<String>()
+                if (id.equals(defaultId)) {
+                    facts.add("default for new issues")
+                }
+                if (Pc.text(priority.getDescription()) != null) {
+                    facts.add(priority.getDescription())
+                }
+                if (!facts.isEmpty()) {
+                    priorityNode.val(facts.join(" - "))
+                }
+                self.add(priorityNode)
+            }
+            if (defaultId == null) {
+                self.add(Nd.of("priorityDefault", "Default for new issues")
+                    .absent("The scheme names no default priority."))
+            }
+        }
+    }
+
+    /* ---- 12. project entity properties ------------------------------------- */
+
+    /* Where apps keep their per-project configuration. Nothing else in this report
+     * can see it, and on an instance with apps it is often the only place a behaviour
+     * is configured at all. Only the keys are listed: a value can be an arbitrarily
+     * large JSON document, and this report is a map of what is configured rather than
+     * a dump of it. */
+    Nd projectProperties() {
+        Nd node = Nd.of("projectProperties", "Project properties")
+        node.link(null, "On no administration screen. Apps write these through the REST API, " +
+            "and /rest/api/2/project/{key}/properties reads them back.")
+        return guard(node) { Nd self ->
+            JsonEntityPropertyManager manager = ComponentAccessor.getComponent(JsonEntityPropertyManager)
+            if (manager == null) {
+                self.failed("JsonEntityPropertyManager is not available in this instance.")
+                return
+            }
+            String entityName = EntityPropertyType.PROJECT_PROPERTY.getDbEntityName()
+            List<String> keys = manager.findKeys(entityName, project.getId())
+            if (keys == null || keys.isEmpty()) {
+                self.absent("No app has stored a property on this project.")
+                return
+            }
+            self.val(Pc.plural(keys.size(), "property key"))
+            for (String key : keys) {
+                self.add(Nd.of("projectProperty", Pc.orNa(key)))
+            }
+        }
+    }
+
+    /* ---- 13. Jira Service Management, only on a service project ------------ */
 
     static final String SERVICE_DESK_TYPE = "service_desk"
 
@@ -5196,12 +5566,55 @@ projectConfig(
     details.add(Nd.of("projectField", "URL").val(Pc.orNa(project.getUrl())))
 
     try {
+        /* The address incoming mail for this project is collected from. It is
+         * configuration an administrator cannot see anywhere in the project itself. */
+        String email = Pc.text(project.getEmail())
+        details.add(email == null
+            ? Nd.of("projectField", "Project email").absent("None set")
+            : Nd.of("projectField", "Project email").val(email))
+    } catch (Exception error) {
+        details.add(Nd.of("projectField", "Project email").failed(
+            "Read failed: " + error.getClass().getSimpleName()))
+    }
+
+    try {
         ApplicationUser lead = project.getProjectLead()
         Nd node = Nd.of("projectField", "Lead")
         if (lead == null) {
             node.absent("No lead set")
         } else {
             node.val(lead.getDisplayName() + " (" + lead.getName() + ")")
+            if (!lead.isActive()) {
+                node.note("This user is inactive. Everything that falls back to the project " +
+                    "lead - default assignee, lead-based notifications - falls back to a " +
+                    "user who cannot log in.")
+            }
+            /* Whether the lead can even open this project. A lead without a licensed
+             * application role is a common leftover after a licence change, and
+             * nothing on the project screens says so. */
+            Nd accessNode = Nd.of("projectField", "Lead application access")
+            try {
+                ApplicationRoleManager roleManager = ComponentAccessor.getComponent(ApplicationRoleManager)
+                if (roleManager == null) {
+                    accessNode.failed("ApplicationRoleManager is not available in this instance.")
+                } else {
+                    Set<ApplicationRole> roles = roleManager.getRolesForUser(lead)
+                    List<String> names = new ArrayList<String>()
+                    if (roles != null) {
+                        for (ApplicationRole role : roles) {
+                            names.add(Pc.orNa(role.getName()))
+                        }
+                    }
+                    if (names.isEmpty()) {
+                        accessNode.absent("None. The lead holds no licensed application role.")
+                    } else {
+                        accessNode.val(names.join(", "))
+                    }
+                }
+            } catch (Exception inner) {
+                accessNode.failed("Read failed: " + inner.getClass().getSimpleName())
+            }
+            node.add(accessNode)
         }
         details.add(node)
     } catch (Exception error) {
@@ -5260,6 +5673,60 @@ projectConfig(
     }
 
     try {
+        /* A project avatar that is not a system one was uploaded by somebody, which
+         * makes it project configuration rather than a default. */
+        Avatar avatar = project.getAvatar()
+        Nd node = Nd.of("projectField", "Avatar")
+        if (avatar == null) {
+            node.absent("No avatar")
+        } else {
+            node.ident(avatar.getId())
+            node.val(avatar.isSystemAvatar()
+                ? "a system avatar" : "uploaded: " + Pc.orNa(avatar.getFileName()))
+        }
+        details.add(node)
+    } catch (Exception error) {
+        details.add(Nd.of("projectField", "Avatar").failed(
+            "Read failed: " + error.getClass().getSimpleName()))
+    }
+
+    try {
+        /* When the project was made and when its settings were last touched. It
+         * dates every finding in this report, and it is the first thing anybody
+         * asks about a project nobody remembers creating. */
+        Nd node = Nd.of("projectField", "Created")
+        node.val(project.getCreatedAt() == null ? Pc.NA : Pc.dateText(project.getCreatedAt()))
+        details.add(node)
+    } catch (Exception error) {
+        details.add(Nd.of("projectField", "Created").failed(
+            "Read failed: " + error.getClass().getSimpleName()))
+    }
+
+    try {
+        Nd node = Nd.of("projectField", "Last updated")
+        List<String> facts = new ArrayList<String>()
+        if (project.getLastUpdatedAt() != null) {
+            facts.add(Pc.dateText(project.getLastUpdatedAt()))
+        }
+        ApplicationUser updatedBy = project.getLastUpdatedBy()
+        if (updatedBy != null) {
+            /* userLabel lives on Scan and is out of reach here, so the same shape is
+             * written out: display name with the user name in brackets. */
+            facts.add("by " + updatedBy.getDisplayName() + " (" + updatedBy.getName() + ")")
+        }
+        if (facts.isEmpty()) {
+            node.absent("Never recorded")
+        } else {
+            node.val(facts.join(", "))
+        }
+        details.add(node)
+    } catch (Exception error) {
+        details.add(Nd.of("projectField", "Last updated").failed(
+            "Read failed: " + error.getClass().getSimpleName()))
+    }
+
+
+    try {
         Nd node = Nd.of("projectField", "Archived").val(project.isArchived() ? "yes" : "no")
         if (project.isArchived()) {
             ApplicationUser by = project.getArchivedBy()
@@ -5292,6 +5759,7 @@ projectConfig(
     report.sections.add(scan.issueTypeScreenScheme())
     report.sections.add(scan.fieldConfigurationScheme())
     report.sections.add(scan.customFields())
+    report.sections.add(scan.priorityScheme())
     report.sections.add(scan.workflowScheme())
     report.sections.add(scan.permissionScheme())
     report.sections.add(scan.notificationScheme())
@@ -5299,6 +5767,7 @@ projectConfig(
     report.sections.add(scan.projectRoles())
     report.sections.add(scan.versions(includeInactive))
     report.sections.add(scan.components())
+    report.sections.add(scan.projectProperties())
     /* The Service Management section exists only on a service project. On anything
      * else scan.serviceDesk() returns null and the section is left out rather than
      * rendered empty: an empty section reads as a service desk nobody configured. */
