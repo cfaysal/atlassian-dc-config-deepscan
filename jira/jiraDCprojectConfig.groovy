@@ -312,6 +312,12 @@ class Pc {
         }
     }
 
+    /* "1 grants" is the kind of detail that makes a reader distrust the numbers next
+     * to it. */
+    static String plural(int count, String noun) {
+        return String.valueOf(count) + " " + noun + (count == 1 ? "" : "s")
+    }
+
     static String flag(boolean value) {
         return value ? "yes" : "no"
     }
@@ -720,6 +726,25 @@ class Nd {
 
     boolean isReadable() {
         return Pc.READ.equals(state)
+    }
+
+    /* The distinct ids of one node kind anywhere below here. Distinct, because the
+     * same screen scheme is reached once per issue type that maps to it, and a
+     * summary that counted those visits would report six screen schemes where the
+     * project has two. */
+    Set<String> idsOfKind(String wanted) {
+        Set<String> found = new LinkedHashSet<String>()
+        collectIds(wanted, found)
+        return found
+    }
+
+    private void collectIds(String wanted, Set<String> found) {
+        if (wanted.equals(kind)) {
+            found.add(id == null ? label : id)
+        }
+        for (Nd child : children) {
+            child.collectIds(wanted, found)
+        }
     }
 
     int countDescendants() {
@@ -2041,6 +2066,18 @@ class Cx {
      * the page would stop being readable and would start failing to save, so the
      * table is cut - and the cut is stated in the page itself, because a shortened
      * table that looks complete is worse than no table. */
+    /* Ten seconds to reach the far side, two minutes to let it finish. The asymmetry
+     * is deliberate: an unreachable Confluence should fail fast, a busy one should be
+     * waited for.
+     *
+     * They live on this class rather than at script level because a typed variable
+     * declared at the top level of a Groovy script is a local of run() and is not
+     * visible inside the script's own methods. That compiles perfectly and then
+     * fails at runtime with MissingPropertyException, inside a catch block that
+     * would have reported it as "the call to Confluence failed". */
+    static final int CONNECT_TIMEOUT_MS = 10000
+    static final int READ_TIMEOUT_MS = 120000
+
     static final int MAX_ROWS = 5000
 
     static String title(String projectKey) {
@@ -2954,32 +2991,80 @@ class Scan {
                 return a.compareTo(b)
             }
 
+            /* The screen scheme is the level the administration screen puts first,
+             * and it is the level a question is actually about: which screens does
+             * this project use, and for what. Hanging it under the issue type buried
+             * it two levels deep AND repeated the whole screen tree once per issue
+             * type that maps to the same scheme. So the scheme is the node, and the
+             * issue types it serves are listed on it. */
+            Map<String, FieldScreenScheme> schemesById = new LinkedHashMap<String, FieldScreenScheme>()
+            Map<String, List<String>> usedBy = new LinkedHashMap<String, List<String>>()
+            List<String> withoutScheme = new ArrayList<String>()
+
             for (IssueTypeScreenSchemeEntity entry : ordered) {
                 String label = "Default (every other issue type)"
-                Object entryId = null
                 try {
                     IssueType type = entry.getIssueTypeObject()
                     if (type != null) {
-                        label = "Issue type: " + type.getName()
-                        entryId = type.getId()
+                        label = type.getName()
                     }
+                } catch (Exception ignored) {
+                    label = "issue type " + Pc.orNa(entry.getIssueTypeId())
+                }
+                FieldScreenScheme screenScheme = null
+                try {
+                    screenScheme = entry.getFieldScreenScheme()
                 } catch (Exception error) {
-                    label = "Issue type " + Pc.orNa(entry.getIssueTypeId())
+                    self.diagnostics.add("The screen scheme for " + label + " could not be read: " +
+                        describe(error))
+                    continue
                 }
-                Nd entryNode = Nd.of("issueTypeScreenSchemeEntry", label)
-                if (entryId != null) {
-                    entryNode.link(links.projectIssueType(project.getKey(), entryId), null)
+                if (screenScheme == null) {
+                    withoutScheme.add(label)
+                    continue
                 }
-                guard(entryNode) { Nd inner ->
-                    FieldScreenScheme screenScheme = entry.getFieldScreenScheme()
-                    if (screenScheme == null) {
-                        inner.absent("The entry references no screen scheme.")
-                        return
-                    }
-                    inner.add(screenSchemeNode(screenScheme))
+                String key = String.valueOf(screenScheme.getId())
+                if (!schemesById.containsKey(key)) {
+                    schemesById.put(key, screenScheme)
+                    usedBy.put(key, new ArrayList<String>())
                 }
-                self.add(entryNode)
+                usedBy.get(key).add(label)
             }
+
+            for (Map.Entry<String, FieldScreenScheme> entry : schemesById.entrySet()) {
+                Nd schemeNode = screenSchemeNode(entry.getValue())
+                List<String> users = usedBy.get(entry.getKey())
+                schemeNode.children.add(0, Nd.of("appliesTo", "Used by issue types")
+                    .val(users.isEmpty() ? "nothing" : users.join(", ")))
+                self.add(schemeNode)
+            }
+
+            if (!withoutScheme.isEmpty()) {
+                /* An entry that names no screen scheme is a real configuration state,
+                 * not a read failure, and it is worth seeing: those issue types fall
+                 * back to whatever Jira decides. */
+                self.add(Nd.of("issueTypeScreenSchemeEntry", "Issue types with no screen scheme")
+                    .val(withoutScheme.join(", ")))
+            }
+
+            /* What is underneath has to be visible while the section is shut. A
+             * header that says only "Screens" answers none of the questions an
+             * administrator opens this section with. */
+            Set<String> schemes = new LinkedHashSet<String>()
+            Set<String> screens = new LinkedHashSet<String>()
+            for (Nd child : self.children) {
+                schemes.addAll(child.idsOfKind("screenScheme"))
+                screens.addAll(child.idsOfKind("screen"))
+                if ("screenScheme".equals(child.kind)) {
+                    schemes.add(child.id == null ? child.label : child.id)
+                }
+            }
+            List<String> summary = new ArrayList<String>()
+            summary.add(Pc.plural(schemes.size(), "screen scheme"))
+            summary.add(Pc.plural(screens.size(), "screen"))
+            summary.add(Pc.plural(ordered.size(), "issue type entry").replace("entrys", "entries"))
+            String description = Pc.text(self.value)
+            self.val(summary.join(", ") + (description == null ? "" : ". " + description))
         }
     }
 
@@ -3639,12 +3724,13 @@ class Scan {
             String target = targetStatusName(workflow, action)
             self.val(target == null ? "target not readable" : "to " + target)
 
-            /* Counting is the honest summary here. Printing every argument of every
-             * post function would bury the transition, and claiming there are none
-             * when the list could not be read would be worse than either. */
-            self.add(countNode("workflowCondition", "Conditions", conditionCount(action)))
-            self.add(countNode("workflowValidator", "Validators", listSize(action.getValidators())))
-            self.add(countNode("workflowFunction", "Post functions", postFunctionCount(action)))
+            /* Named, not counted. "4 post functions" tells an administrator that
+             * something happens on this transition without telling them what, which
+             * is the one thing they opened the transition to find out. A list that
+             * could not be read still says so rather than reporting nothing. */
+            self.add(descriptorGroup("workflowCondition", "Conditions", conditions(action)))
+            self.add(descriptorGroup("workflowValidator", "Validators", safeList(action.getValidators())))
+            self.add(descriptorGroup("workflowFunction", "Post functions", postFunctions(action)))
 
             Map meta = action.getMetaAttributes()
             Object screenId = meta == null ? null : meta.get(JiraWorkflow.ACTION_SCREEN_ATTRIBUTE)
@@ -3665,6 +3751,129 @@ class Scan {
             return node.failed("The list could not be read, so this is not a count of zero.")
         }
         return node.val(String.valueOf(count))
+    }
+
+    /* One node per condition, validator or post function, named the way the workflow
+     * itself names it. A null list means the read failed and says so; an empty list
+     * means there really is none. */
+    private static Nd descriptorGroup(String kind, String label, List<Object> items) {
+        Nd node = Nd.of(kind, label)
+        if (items == null) {
+            return node.failed("The list could not be read, so this is not an empty list.")
+        }
+        if (items.isEmpty()) {
+            return node.absent("none")
+        }
+        node.val(Pc.plural(items.size(), "entry").replace("entrys", "entries"))
+        for (Object item : items) {
+            Nd child = Nd.of(kind + "Item", descriptorLabel(item))
+            String type = Pc.text(Pc.duck(item, "getType", null))
+            if (type != null) {
+                child.val(type)
+            }
+            node.add(child)
+        }
+        return node
+    }
+
+    /* The workflow descriptor keeps the implementation in its arguments rather than
+     * in a name: class.name for a scripted or built-in entry, full.module.key for one
+     * that comes from a plugin module. Both are printed as they are found, and the
+     * type is the fallback - nothing here is translated into a friendlier name that
+     * would no longer match what the workflow XML says. */
+    private static String descriptorLabel(Object descriptor) {
+        Object rawArgs = Pc.duck(descriptor, "getArgs", null)
+        if (rawArgs instanceof Map) {
+            Map<?, ?> args = (Map<?, ?>) rawArgs
+            String moduleKey = Pc.text(args.get("full.module.key"))
+            if (moduleKey != null) {
+                return moduleKey
+            }
+            String className = Pc.text(args.get("class.name"))
+            if (className != null) {
+                int dot = className.lastIndexOf(".")
+                return dot < 0 ? className : className.substring(dot + 1)
+            }
+        }
+        String name = Pc.text(Pc.duck(descriptor, "getName", null))
+        if (name != null) {
+            return name
+        }
+        String type = Pc.text(Pc.duck(descriptor, "getType", null))
+        return type == null ? "unnamed entry" : type
+    }
+
+    private static List<Object> safeList(Object list) {
+        if (list == null) {
+            return new ArrayList<Object>()
+        }
+        try {
+            return new ArrayList<Object>((Collection) list)
+        } catch (Exception ignored) {
+            return null
+        }
+    }
+
+    /* Conditions hang under a restriction and may nest inside further condition
+     * groups, so the tree is flattened. The accessor for that nesting is not
+     * identical across osworkflow builds, which is why it is asked for rather than
+     * declared. */
+    private static List<Object> conditions(ActionDescriptor action) {
+        try {
+            Object restriction = action.getRestriction()
+            if (restriction == null) {
+                return new ArrayList<Object>()
+            }
+            Object group = Pc.duck(restriction, "getConditionsDescriptor", null)
+            if (group == null) {
+                return null
+            }
+            List<Object> flat = new ArrayList<Object>()
+            flattenConditions(group, flat)
+            return flat
+        } catch (Exception ignored) {
+            return null
+        }
+    }
+
+    private static void flattenConditions(Object group, List<Object> flat) {
+        Object raw = Pc.duck(group, "getConditions", null)
+        if (!(raw instanceof Collection)) {
+            return
+        }
+        for (Object entry : (Collection) raw) {
+            if (Pc.duck(entry, "getConditions", null) instanceof Collection) {
+                flattenConditions(entry, flat)
+            } else {
+                flat.add(entry)
+            }
+        }
+    }
+
+    private static List<Object> postFunctions(ActionDescriptor action) {
+        try {
+            List<Object> all = new ArrayList<Object>()
+            List<Object> pre = safeList(action.getPreFunctions())
+            List<Object> post = safeList(action.getPostFunctions())
+            if (pre == null || post == null) {
+                return null
+            }
+            all.addAll(pre)
+            all.addAll(post)
+            ResultDescriptor result = action.getUnconditionalResult()
+            if (result != null) {
+                List<Object> resultPre = safeList(result.getPreFunctions())
+                List<Object> resultPost = safeList(result.getPostFunctions())
+                if (resultPre == null || resultPost == null) {
+                    return null
+                }
+                all.addAll(resultPre)
+                all.addAll(resultPost)
+            }
+            return all
+        } catch (Exception ignored) {
+            return null
+        }
     }
 
     private static Integer listSize(Object list) {
@@ -3783,8 +3992,9 @@ class Scan {
                 byPermission.get(permission).add(entity)
             }
             for (Map.Entry<String, List<SchemeEntity>> entry : byPermission.entrySet()) {
-                Nd permissionNode = Nd.of("permission", entry.getKey())
-                permissionNode.val(String.valueOf(entry.getValue().size()) + " grants")
+                Nd permissionNode = Nd.of("permission", permissionLabel(entry.getKey()))
+                permissionNode.ident(entry.getKey())
+                permissionNode.val(Pc.plural(entry.getValue().size(), "grant"))
                 for (SchemeEntity entity : entry.getValue()) {
                     permissionNode.add(grantNode(entity, typeManager))
                 }
@@ -3834,7 +4044,7 @@ class Scan {
             }
             for (Map.Entry<String, List<SchemeEntity>> entry : byEvent.entrySet()) {
                 Nd eventNode = Nd.of("event", entry.getKey())
-                eventNode.val(String.valueOf(entry.getValue().size()) + " recipients")
+                eventNode.val(Pc.plural(entry.getValue().size(), "recipient"))
                 for (SchemeEntity entity : entry.getValue()) {
                     eventNode.add(grantNode(entity, typeManager))
                 }
@@ -3929,6 +4139,45 @@ class Scan {
                 }
                 self.add(levelNode)
             }
+        }
+    }
+
+    /* ADMINISTER_PROJECTS is what the database stores; "Administer Projects" is what
+     * the administration screen shows and what an administrator is looking for. Both
+     * are printed, because the key is what a support conversation or a database query
+     * needs. The readable half comes out of Jira's own permission registry and its
+     * own translations, so it matches the screen instead of a table kept here. */
+    private String permissionLabel(String key) {
+        String raw = Pc.text(key)
+        if (raw == null) {
+            return "unknown permission"
+        }
+        try {
+            Object manager = ComponentAccessor.getComponent(
+                Class.forName("com.atlassian.jira.security.plugin.ProjectPermissionTypesManager"))
+            if (manager == null || i18n == null) {
+                return raw
+            }
+            Object permissionKey = Class.forName("com.atlassian.jira.security.plugin.ProjectPermissionKey")
+                .getConstructor(String).newInstance(raw)
+            Object option = Pc.duck(manager, "withKey", permissionKey)
+            if (option == null || !Boolean.TRUE.equals(Pc.duck(option, "isDefined", null))) {
+                return raw
+            }
+            Object permission = Pc.duck(option, "get", null)
+            String nameKey = Pc.text(Pc.duck(permission, "getNameI18nKey", null))
+            if (nameKey == null) {
+                return raw
+            }
+            String name = Pc.text(i18n.getText(nameKey))
+            /* An unresolved i18n key comes back as the key itself. Printing that would
+             * replace a readable constant with an unreadable one. */
+            if (name == null || name.equals(nameKey)) {
+                return raw
+            }
+            return name + " (" + raw + ")"
+        } catch (Throwable ignored) {
+            return raw
         }
     }
 
@@ -4728,6 +4977,16 @@ Map<String, Object> confluenceCall(ApplicationLinkRequestFactory factory, Reques
     try {
         def request = factory.createRequest(method, url)
         request.addHeader("Accept", "application/json")
+        /* The default read timeout is tuned for small REST calls. A configuration
+         * report of a large project is a storage document of several megabytes, and
+         * Confluence spends real time parsing and storing one. Measured on a test
+         * instance 2026-08-26: the write failed with SocketTimeoutException while
+         * Confluence was still working, which reads to an administrator as "the
+         * export is broken" when in fact nothing had gone wrong yet. Connecting is
+         * kept short, because a link that cannot be reached should fail fast; only
+         * the reading side waits. */
+        request.setConnectionTimeout(Cx.CONNECT_TIMEOUT_MS)
+        request.setSoTimeout(Cx.READ_TIMEOUT_MS)
         if (jsonBody != null && !jsonBody.isEmpty()) {
             request.addHeader("Content-Type", "application/json")
             request.setRequestBody(jsonBody)
@@ -5139,7 +5398,7 @@ Map<String, Object> confluenceWritePage(ApplicationLinkRequestFactory factory, S
     } else {
         Map<String, Object> version = new LinkedHashMap<String, Object>()
         version.put("number", Integer.valueOf(existingVersion + 1))
-        version.put("message", "Jira App Footprint Analysis export")
+        version.put("message", "Jira project configuration export")
 
         payload.put("id", existingId)
         payload.put("version", version)
@@ -5427,8 +5686,16 @@ projectConfig(
     if (title.length() > Cx.MAX_TITLE_CHARS) {
         return refuse(400, "validate", "The page title exceeds " + String.valueOf(Cx.MAX_TITLE_CHARS) + " characters.")
     }
-    if (Cx.rowsOf(request, "apps").isEmpty()) {
-        return refuse(400, "validate", "The export payload carries no apps. Nothing is written.")
+    /* The payload has to be a report of this endpoint, and the check has to name
+     * this report's own shape. It asked for "apps" until now, which is the shape of
+     * the sibling app-footprint endpoint this transport was taken from: every
+     * export refused with a sentence about apps that this report has never had. */
+    if (Cx.rowsOf(request, "sections").isEmpty()) {
+        return refuse(400, "validate", "The export payload carries no configuration sections. " +
+            "Nothing is written. Reload the report and press the button again.")
+    }
+    if (Pc.text(Cx.str(Cx.sub(request, "project"), "key", null)) == null) {
+        return refuse(400, "validate", "The export payload names no project. Nothing is written.")
     }
 
     /* ---- Application link -------------------------------------------------- */

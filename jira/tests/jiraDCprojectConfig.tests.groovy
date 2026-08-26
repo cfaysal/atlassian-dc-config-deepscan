@@ -295,6 +295,26 @@ level2.add(Nd.of("tab", "Field Tab").add(Nd.of("field", "Summary")))
 level1.add(level2)
 root.add(level1)
 check("descendants counted through every level", root.countDescendants(), 4)
+
+/* The same screen scheme is reached once per issue type that maps to it, so a
+ * summary built by counting visits would report a project as having six screen
+ * schemes when it has two. */
+Nd shared = Nd.of("section", "Screens")
+shared.add(Nd.of("entry", "Issue type: Bug")
+    .add(Nd.of("screenScheme", "Default").ident(7).add(Nd.of("screen", "Edit").ident(101))))
+shared.add(Nd.of("entry", "Issue type: Task")
+    .add(Nd.of("screenScheme", "Default").ident(7).add(Nd.of("screen", "Edit").ident(101))))
+shared.add(Nd.of("entry", "Issue type: Story")
+    .add(Nd.of("screenScheme", "Story SS").ident(8).add(Nd.of("screen", "Story").ident(102))))
+check("a shared screen scheme is counted once", shared.idsOfKind("screenScheme").size(), 2)
+check("a shared screen is counted once", shared.idsOfKind("screen").size(), 2)
+check("a kind nobody carries counts zero", shared.idsOfKind("workflow").size(), 0)
+/* Without an id there is nothing to deduplicate on, so the label stands in - two
+ * different things with the same label are one entry, which is the safe direction:
+ * it under-reports rather than inventing variety. */
+check("a node without an id falls back to its label",
+    Nd.of("x", "root").add(Nd.of("screen", "No id")).add(Nd.of("screen", "No id"))
+        .idsOfKind("screen").size(), 1)
 check("a leaf has no descendants", Nd.of("field", "Summary").countDescendants(), 0)
 check("add ignores null", Nd.of("x", "y").add(null).children.size(), 0)
 check("addAll ignores null", Nd.of("x", "y").addAll(null).children.size(), 0)
