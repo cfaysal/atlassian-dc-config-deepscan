@@ -125,24 +125,52 @@ jobs:
           done
           exit $fail
 
-      # Producing a report must contact nothing outside the instance, in every
-      # format. Note what a raw-HTTP grep alone would miss: an application link call
-      # goes through ApplicationLinkRequestFactory and matches none of the HTTP
-      # patterns, so the job would report green while an outbound call existed. Both
-      # families are therefore checked. When the Confluence export lands, its
-      # applinks usage gets an explicit allowance here and nowhere else.
-      - name: Assert no outbound network call
+      # Producing a report must contact nothing outside the instance, in any format.
+      # Two families are checked, and the second is the one a naive job would miss:
+      # an application link call goes through ApplicationLinkRequestFactory and
+      # matches none of the raw-HTTP patterns, so a grep for URLConnection alone
+      # would report green while an outbound call existed.
+      #
+      # Raw HTTP is forbidden outright. Application links are allowed in exactly one
+      # place, the Confluence export transport, and the job proves that rather than
+      # trusting it: every applinks hit must sit at or below the line where that
+      # section starts. An applinks call that drifts into the analysis - which is
+      # what would turn a read-only report into one that phones out - fails here.
+      - name: Assert no undeclared outbound network call
         run: |
           set -uo pipefail
           fail=0
           files=$(git ls-files '*.groovy')
           [ -z "$files" ] && exit 0
-          pattern='new URL\(|URLConnection|HttpURLConnection|HttpClient|\.toURL\(\)|Socket\(|ApplicationLink|createAuthenticatedRequestFactory|createImpersonatingAuthenticatedRequestFactory'
+          raw='new URL\(|URLConnection|HttpURLConnection|HttpClient|\.toURL\(\)|Socket\('
+          applinks='ApplicationLink|createAuthenticatedRequestFactory|createImpersonatingAuthenticatedRequestFactory'
+          banner='^ \* Confluence application link transport$'
           for f in $files; do
-            hits=$(grep -nE "$pattern" "$f" || true)
+            hits=$(grep -nE "$raw" "$f" || true)
             if [ -n "$hits" ]; then
-              echo "::error file=$f::Possible outbound network call, which this project does not allow"
+              echo "::error file=$f::Raw HTTP, which this project does not allow anywhere"
               echo "$hits"
+              fail=1
+            fi
+
+            # An import declares nothing and calls nothing, and Groovy requires it at
+            # the top of the file, so it cannot live inside the transport section. The
+            # rule is about where the CALLS are, so import lines are excluded here and
+            # nowhere else.
+            applinkHits=$(grep -nE "$applinks" "$f" | grep -vE '^[0-9]+:import ' || true)
+            [ -z "$applinkHits" ] && continue
+
+            start=$(grep -nE "$banner" "$f" | head -1 | cut -d: -f1 || true)
+            if [ -z "$start" ]; then
+              echo "::error file=$f::This file uses application links but declares no transport section."
+              echo "$applinkHits"
+              fail=1
+              continue
+            fi
+            stray=$(echo "$applinkHits" | awk -F: -v s="$start" '$1 < s')
+            if [ -n "$stray" ]; then
+              echo "::error file=$f::Application link use outside the declared transport section (starts at line $start)"
+              echo "$stray"
               fail=1
             fi
           done

@@ -368,16 +368,36 @@ ok("html escapes the project name", !hostileHtml.contains("<script>alert(1)</scr
 ok("html escapes a node label", !hostileHtml.contains("<img onerror=x>"))
 ok("html keeps the escaped text", hostileHtml.contains("&lt;script&gt;alert(1)&lt;/script&gt;"))
 
-/* depth=top collapses everything below the first level, and it does so by
- * marking the list rather than by dropping the nodes: the data is still there. */
+/* Collapsed is the default, and it collapses by marking the list rather than by
+ * dropping nodes: the data is in the page either way, which is what lets the
+ * in-page Expand all work without another request. */
 Report deep = new Report()
 Nd deepSection = deep.section("s", "Screens")
 deepSection.add(Nd.of("screenScheme", "SS").add(Nd.of("screen", "Edit Screen")))
-String expanded = Render.html(deep, [:] as LinkedHashMap, false)
-String collapsed = Render.html(deep, [:] as LinkedHashMap, true)
+String expanded = Render.html(deep, [:] as LinkedHashMap, true)
+String collapsed = Render.html(deep, [:] as LinkedHashMap, false)
 ok("collapsed output still contains the nested node", collapsed.contains("Edit Screen"))
 ok("collapsed output hides the nested list", collapsed.contains("class=\"tree hidden\""))
 ok("expanded output hides nothing", !expanded.contains("class=\"tree hidden\""))
+ok("the collapsed node says how much it hides", collapsed.contains("class=\"node-count muted\""))
+
+/* Both views ship in the same page, so the table can never describe a different
+ * tree than the one next to it. */
+ok("the tree view is rendered", collapsed.contains("class=\"tree view-tree\""))
+ok("the table view is rendered too", collapsed.contains("class=\"view-table hidden\""))
+ok("the table carries the path column", collapsed.contains("<th>Path</th>"))
+ok("the table carries the deepest node", collapsed.contains("SS &gt; Edit Screen"))
+ok("both views offer a switch",
+    collapsed.contains("setView('tree')") && collapsed.contains("setView('table')"))
+ok("the page can expand and collapse itself",
+    collapsed.contains("expandAll(true)") && collapsed.contains("expandAll(false)"))
+
+/* A section without children has nothing to tabulate, and an empty table would
+ * read as a measured emptiness. */
+Report noChildren = new Report()
+noChildren.section("s", "Components")
+ok("a childless section renders no table",
+    !Render.html(noChildren, [:] as LinkedHashMap, false).contains("class=\"view-table hidden\""))
 
 /* ---- 15. the discrimination this report exists for ----------------------- */
 
@@ -454,6 +474,170 @@ ok("a failed project list is not shown as an empty instance",
     failedPicker.contains("could not be read") && failedPicker.contains("not an empty instance"))
 ok("an empty instance and a failed read produce different pickers",
     Render.picker(new Report(), [], "") != failedPicker)
+
+/* ---- 18. the Confluence export ------------------------------------------- */
+
+check("title carries the project key", Cx.title("SCRUM"), "Jira project configuration - SCRUM")
+check("title without a key still says what it is", Cx.title(null),
+    "Jira project configuration - unknown project")
+ok("title stays inside the Confluence limit",
+    Cx.title("K" * 400).length() <= Cx.MAX_TITLE_CHARS)
+
+check("storage escaping", Cx.esc("<b>&\"x\"</b>"), "&lt;b&gt;&amp;&quot;x&quot;&lt;/b&gt;")
+
+/* A space key is an identifier and is checked, not cleaned. A personal space key
+ * keeps its tilde: stripping it turns "~cfaysal" into a key that exists nowhere,
+ * and Confluence answers that with zero hits and no error. */
+check("a normal space key passes", Cx.spaceKeyProblem("DOCS"), "")
+check("a personal space key passes", Cx.spaceKeyProblem("~cfaysal"), "")
+ok("an empty key is refused with a reason", Cx.spaceKeyProblem("  ").length() > 0)
+ok("a lone tilde is refused with a reason", Cx.spaceKeyProblem("~").length() > 0)
+ok("a quote in a key is refused", Cx.spaceKeyProblem("DO\"CS").length() > 0)
+
+/* cqlTerm sanitises a search term. It must never be used on a space key, which is
+ * why the two have separate functions and separate tests. */
+ok("cqlTerm removes what could end a literal", !Cx.cqlTerm("a\"b*c?d~e").contains("\""))
+ok("cqlTerm removes wildcards", !Cx.cqlTerm("a*b?c").contains("*") && !Cx.cqlTerm("a*b?c").contains("?"))
+
+check("no parent requested", Cx.moveDecision("", "10"), Cx.MOVE_NOT_REQUESTED)
+check("parent already correct", Cx.moveDecision("10", "10"), Cx.MOVE_ALREADY_THERE)
+check("parent must move", Cx.moveDecision("11", "10"), Cx.MOVE_REQUESTED)
+
+ok("a request may not carry both a parent id and a parent title",
+    Cx.parentProblem("10", "Some page", "Report") == Cx.PARENT_BOTH)
+check("a request with only an id is fine", Cx.parentProblem("10", "", "Report"), "")
+check("a request with neither is fine", Cx.parentProblem("", "", "Report"), "")
+
+/* ---- 19. flattening and the carry-over key -------------------------------- */
+
+Map<String, Object> flatRoot = [
+    label: "Screens", state: "read",
+    children: [[label: "Screen Scheme", state: "read",
+                children: [[label: "Edit Screen", state: "read", value: "2 tabs"]]]]
+] as LinkedHashMap
+List<Map<String, Object>> flatRows = new ArrayList<Map<String, Object>>()
+Cx.flatten(flatRoot, "", flatRows)
+check("every node becomes a row", flatRows.size(), 3)
+check("the path is the chain of labels", flatRows[2].get("path"), "Screens > Screen Scheme > Edit Screen")
+check("the root path is the root label", flatRows[0].get("path"), "Screens")
+
+/* ---- 20. render, then read the remarks back ------------------------------- */
+
+Map<String, Object> exportModel = [
+    reportVersion: Pc.VERSION,
+    generatedAt: "2026-08-26 12:00:00 CEST",
+    instance: [title: "Example Jira", jiraVersion: "10.3.19"] as LinkedHashMap,
+    project: [key: "SCRUM", name: "Scrum Project"] as LinkedHashMap,
+    totals: [nodes: 3, unreadable: 1, unlinked: 0] as LinkedHashMap,
+    diagnostics: ["Screens > Screen Scheme: Read failed: RuntimeException"],
+    sections: [[
+        label: "Permission scheme: Default", state: "read",
+        deepLink: "https://jira.example.com/secure/admin/EditPermissions.jspa?schemeId=0",
+        children: [
+            [label: "Browse Projects", state: "read", value: "2 grants"],
+            [label: "Administer Projects", state: "unreadable"]
+        ]
+    ]]
+] as LinkedHashMap
+
+ExportOutcome fresh = Cx.render(exportModel, new RemarkRead())
+ok("the page carries the export marker", fresh.storage.contains(Cx.MARKER))
+ok("the page carries the remark column header", fresh.storage.contains("<th>" + Cx.COL_REMARK + "</th>"))
+ok("the unreadable node is named as unreadable", fresh.storage.contains("could not be read"))
+ok("a fresh page seeds every remark cell", fresh.storage.contains(Cx.REMARK_SEED))
+ok("the deep link is rendered as a link", fresh.storage.contains("EditPermissions.jspa?schemeId=0"))
+ok("the suppressed read is listed", fresh.storage.contains("Suppressed reads"))
+check("nothing was carried over into a fresh page", fresh.remarksCarried, 0)
+
+/* The round trip is the property the whole export rests on: what an administrator
+ * typed must come back out of the page it was typed into, unchanged. */
+RemarkRead readBack = Cx.parseRemarks(fresh.storage)
+check("a page this export wrote can be read", readBack.outcome, RemarkRead.PARSED)
+check("a seeded cell is not a remark", readBack.remarks.size(), 0)
+
+/* Exactly one cell is edited, the last one, which belongs to the child row
+ * "Administer Projects". Editing every cell would make the orphan check below
+ * meaningless, because the section root survives every shrink. */
+String seedCell = "<td>" + Cx.REMARK_SEED + "</td>"
+int lastSeed = fresh.storage.lastIndexOf(seedCell)
+ok("the fresh page has a seeded cell to edit", lastSeed >= 0)
+String edited = fresh.storage.substring(0, lastSeed) + "<td>keep this one</td>" +
+    fresh.storage.substring(lastSeed + seedCell.length())
+RemarkRead afterEdit = Cx.parseRemarks(edited)
+check("the edited remark is read back", afterEdit.remarks.size(), 1)
+ok("the remark keeps its text", afterEdit.remarks.values().iterator().next().contains("keep this one"))
+
+ExportOutcome second = Cx.render(exportModel, afterEdit)
+check("the remark is carried into the new page", second.remarksCarried, 1)
+ok("the carried remark is verbatim", second.storage.contains("keep this one"))
+check("nothing was orphaned", second.orphanKeys.size(), 0)
+
+/* A remark whose item has disappeared is kept, not dropped. */
+Map<String, Object> shrunk = Cx.copyMap(exportModel)
+shrunk.put("sections", [[label: "Permission scheme: Default", state: "read"]])
+ExportOutcome afterShrink = Cx.render(shrunk, afterEdit)
+check("the vanished item's remark is orphaned, not lost", afterShrink.orphanKeys.size(), 1)
+ok("the orphaned remark is still on the page", afterShrink.storage.contains("keep this one"))
+ok("the orphan table explains itself",
+    afterShrink.storage.contains("Remarks without a matching item"))
+
+/* ---- 21. the write gate --------------------------------------------------- */
+
+/* Every one of these is a page this export did not write, or a page it can no
+ * longer read. None of them may be overwritten. */
+List<List<Object>> refusals = [
+    ["an empty body", Cx.parseRemarks("")],
+    ["a null body", Cx.parseRemarks(null)],
+    ["a foreign page", Cx.parseRemarks("<p>Somebody else's page</p>")],
+    ["a marked page whose table is gone", Cx.parseRemarks("<p>" + Cx.MARKER + "</p>")]
+]
+for (List<Object> entry : refusals) {
+    RemarkRead refused = (RemarkRead) entry[1]
+    check("refused: " + entry[0], refused.outcome, RemarkRead.FAILED)
+    ok("no write allowed for " + entry[0], !refused.isWriteAllowed())
+    ok("the refusal says why for " + entry[0], Pc.text(refused.reason) != null)
+    check("a refused read carries no remarks for " + entry[0], refused.remarks.size(), 0)
+}
+
+ok("a fresh read allows writing", new RemarkRead().isWriteAllowed())
+ok("a parsed read allows writing", readBack.isWriteAllowed())
+
+/* Two remarks for the same path are ambiguous. Guessing which one to keep would
+ * silently discard an administrator's text, so nothing is written at all. */
+/* The duplicate has to repeat a path that already carries a real remark. A second
+ * row against a path whose cell is still seeded is not ambiguous at all, because a
+ * seed is not a remark - which is itself worth pinning down, so it is checked
+ * right after. */
+String duplicatePath = afterEdit.remarks.keySet().iterator().next()
+String duplicated = edited.replace("</tbody></table>",
+    "<tr><td>" + Cx.esc(duplicatePath) + "</td><td>x</td><td></td><td></td><td></td>" +
+    "<td>second remark</td></tr></tbody></table>")
+RemarkRead ambiguous = Cx.parseRemarks(duplicated)
+check("a duplicated path is refused", ambiguous.outcome, RemarkRead.FAILED)
+ok("no write allowed on ambiguity", !ambiguous.isWriteAllowed())
+
+/* A second row against a still-seeded path is NOT ambiguous: the seed carries no
+ * text of anybody's, so there is nothing that could be lost by keeping the other. */
+String seededTwice = edited.replace("</tbody></table>",
+    "<tr><td>Permission scheme: Default</td><td>x</td><td></td><td></td><td></td>" +
+    "<td>only remark for this path</td></tr></tbody></table>")
+RemarkRead notAmbiguous = Cx.parseRemarks(seededTwice)
+check("a seed does not collide with a real remark", notAmbiguous.outcome, RemarkRead.PARSED)
+check("both real remarks are read", notAmbiguous.remarks.size(), 2)
+
+/* ---- 22. the row cap is stated, never silent ------------------------------ */
+
+List<Map<String, Object>> manyChildren = new ArrayList<Map<String, Object>>()
+for (int i = 0; i < Cx.MAX_ROWS + 10; i++) {
+    manyChildren.add([label: "Field " + i, state: "read"] as LinkedHashMap)
+}
+Map<String, Object> hugeModel = Cx.copyMap(exportModel)
+hugeModel.put("sections", [[label: "Fields", state: "read", children: manyChildren]])
+ExportOutcome huge = Cx.render(hugeModel, new RemarkRead())
+ok("a cut table says it is cut", huge.storage.contains("This table is not complete"))
+ok("the cut is reported to the caller as well", !huge.warnings.isEmpty())
+ok("the last row beyond the cap is absent", !huge.storage.contains("Field " + (Cx.MAX_ROWS + 9)))
+ok("an uncut table makes no such claim", !fresh.storage.contains("This table is not complete"))
 
 /* ---- result --------------------------------------------------------------- */
 

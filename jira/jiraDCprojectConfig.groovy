@@ -55,6 +55,12 @@
  *   The provenance of every link shape used here is recorded in Dl below.
  * ========================================================================== */
 
+import com.atlassian.applinks.api.ApplicationLink
+import com.atlassian.applinks.api.ApplicationLinkRequestFactory
+import com.atlassian.applinks.api.ApplicationLinkService
+import com.atlassian.applinks.api.ApplicationType
+import com.atlassian.applinks.api.CredentialsRequiredException
+
 import com.atlassian.jira.bc.project.component.ProjectComponent
 import com.atlassian.jira.bc.project.component.ProjectComponentManager
 import com.atlassian.jira.component.ComponentAccessor
@@ -116,16 +122,19 @@ import com.atlassian.jira.workflow.WorkflowManager
 import com.atlassian.jira.workflow.WorkflowSchemeManager
 
 import com.opensymphony.workflow.loader.ActionDescriptor
-import com.opensymphony.workflow.loader.FunctionDescriptor
 import com.opensymphony.workflow.loader.ResultDescriptor
 import com.opensymphony.workflow.loader.StepDescriptor
-import com.opensymphony.workflow.loader.ValidatorDescriptor
 
+import com.atlassian.sal.api.component.ComponentLocator
+import com.atlassian.sal.api.net.Request
+
+import com.adaptavist.hapi.jira.users.Users
 import com.onresolve.scriptrunner.runner.rest.common.CustomEndpointDelegate
 
 import org.codehaus.groovy.runtime.InvokerHelper
 
 import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
 import groovy.transform.BaseScript
 
 import java.time.ZonedDateTime
@@ -898,7 +907,7 @@ class Render {
 
     /* ---- HTML ----------------------------------------------------------- */
 
-    static String html(Report report, Map<String, Object> activeParams, boolean topOnly) {
+    static String html(Report report, Map<String, Object> activeParams, boolean expandAll) {
         StringBuilder out = new StringBuilder()
         out.append("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n")
         out.append("<meta charset=\"UTF-8\">\n")
@@ -909,10 +918,11 @@ class Render {
         out.append(header(report))
         out.append(instanceCard(report))
         out.append(summaryCards(report))
-        out.append(toolbar(activeParams, topOnly))
+        out.append(toolbar(activeParams, expandAll))
+        out.append(exportCard(report))
         out.append(diagnosticsCard(report))
         for (Nd node : report.sections) {
-            out.append(section(node, topOnly))
+            out.append(section(node, expandAll))
         }
         out.append(footer(report))
         out.append("</div>\n").append(script()).append("</body>\n</html>\n")
@@ -962,11 +972,18 @@ class Render {
             "</div><div class=\"summary-label\">" + Pc.html(label) + "</div></div>"
     }
 
-    private static String toolbar(Map<String, Object> activeParams, boolean topOnly) {
+    private static String toolbar(Map<String, Object> activeParams, boolean expandAll) {
         StringBuilder out = new StringBuilder()
         out.append("<div class=\"actions\">")
-        out.append(button(Pc.link(activeParams, [depth: topOnly ? null : "top"]),
-            topOnly ? "Expand everything" : "First level only", false))
+        /* Expanding and collapsing happens in the page. The link below is the
+         * bookmarkable variant of the same thing, for a URL that should open fully
+         * expanded for somebody else. */
+        out.append("<button class=\"button\" type=\"button\" onclick=\"expandAll(true)\">Expand all</button>")
+        out.append("<button class=\"button\" type=\"button\" onclick=\"expandAll(false)\">Collapse all</button>")
+        out.append("<button id=\"viewTree\" class=\"button on\" type=\"button\" onclick=\"setView('tree')\">Tree</button>")
+        out.append("<button id=\"viewTable\" class=\"button\" type=\"button\" onclick=\"setView('table')\">Table</button>")
+        out.append(button(Pc.link(activeParams, [depth: expandAll ? null : "full"]),
+            expandAll ? "Open collapsed by default" : "Open expanded by default", false))
         out.append(button(Pc.link(activeParams, [format: "json"]), "JSON", false))
         out.append(button(Pc.link(activeParams, [format: "csv"]), "CSV", false))
         out.append(button(Pc.link([:], [:]), "Pick another project", false))
@@ -997,11 +1014,15 @@ class Render {
         return out.toString()
     }
 
-    private static String section(Nd node, boolean topOnly) {
+    private static String section(Nd node, boolean expandAll) {
         StringBuilder out = new StringBuilder()
         out.append("<div class=\"section\">")
         out.append("<div class=\"section-head\">")
         out.append("<h2 class=\"section-title\">").append(Pc.html(Pc.orNa(node.label))).append("</h2>")
+        if (!node.children.isEmpty()) {
+            out.append("<span class=\"section-count muted\">")
+            out.append(String.valueOf(node.countDescendants())).append(" items</span>")
+        }
         if (node.deepLink != null) {
             out.append("<a class=\"jump\" href=\"").append(Pc.html(node.deepLink))
             out.append("\" target=\"_blank\" rel=\"noreferrer\">open in Jira</a>")
@@ -1022,20 +1043,74 @@ class Render {
                 out.append("<div class=\"muted empty\">Nothing configured here.</div>")
             }
         } else {
-            out.append("<ul class=\"tree\">")
+            out.append("<ul class=\"tree view-tree\">")
             for (Nd child : node.children) {
-                out.append(treeNode(child, topOnly, 1))
+                out.append(treeNode(child, expandAll, 1))
             }
             out.append("</ul>")
+            out.append(sectionTable(node))
         }
         out.append("</div>\n")
         return out.toString()
     }
 
-    private static String treeNode(Nd node, boolean topOnly, int level) {
+    /* The same subtree as a flat table. A tree is the honest shape of this data and
+     * stays the default, but a table is what gets scanned for one value, sorted in a
+     * spreadsheet and pasted into a hand-over document. Both are rendered into the
+     * page and the toggle only switches which one is shown, so neither view can go
+     * stale against the other. */
+    private static String sectionTable(Nd node) {
+        StringBuilder out = new StringBuilder()
+        out.append("<div class=\"view-table hidden\"><table class=\"flat\"><thead><tr>")
+        out.append("<th>Path</th><th>Item</th><th>Value</th><th>State</th><th>In Jira</th>")
+        out.append("</tr></thead><tbody>")
+        List<Nd> flat = new ArrayList<Nd>()
+        List<String> paths = new ArrayList<String>()
+        for (Nd child : node.children) {
+            flattenInto(child, "", flat, paths)
+        }
+        for (int i = 0; i < flat.size(); i++) {
+            Nd row = flat.get(i)
+            out.append("<tr>")
+            out.append("<td class=\"mono\">").append(Pc.html(paths.get(i))).append("</td>")
+            out.append("<td>").append(Pc.html(Pc.orNa(row.label))).append("</td>")
+            out.append("<td>").append(Pc.html(row.value == null ? "" : row.value)).append("</td>")
+            out.append("<td>")
+            if (!row.isReadable()) {
+                out.append("<span class=\"state state-").append(Pc.html(row.state)).append("\">")
+                out.append(Pc.html(stateLabel(row.state))).append("</span>")
+            }
+            out.append("</td><td>")
+            if (row.deepLink != null) {
+                out.append("<a href=\"").append(Pc.html(row.deepLink))
+                out.append("\" target=\"_blank\" rel=\"noreferrer\">open</a>")
+            } else if (row.linkNote != null) {
+                out.append("<span class=\"node-nolink\" title=\"").append(Pc.html(row.linkNote))
+                out.append("\">no link</span>")
+            }
+            out.append("</td></tr>")
+        }
+        out.append("</tbody></table></div>")
+        return out.toString()
+    }
+
+    private static void flattenInto(Nd node, String parentPath, List<Nd> flat, List<String> paths) {
+        String path = parentPath.isEmpty() ? Pc.orNa(node.label) : parentPath + " > " + Pc.orNa(node.label)
+        flat.add(node)
+        paths.add(path)
+        for (Nd child : node.children) {
+            flattenInto(child, path, flat, paths)
+        }
+    }
+
+    private static String treeNode(Nd node, boolean expandAll, int level) {
         StringBuilder out = new StringBuilder()
         boolean hasChildren = !node.children.isEmpty()
-        boolean collapse = topOnly && level >= 1 && hasChildren
+        /* Collapsed is the default. A deep scan of a real project is thousands of
+         * nodes, and a page that opens with all of them expanded is a wall, not a
+         * report. Every twisty is one click, and Expand all is one click for the
+         * whole page. */
+        boolean collapse = hasChildren && !expandAll
         out.append("<li class=\"node node-").append(Pc.html(node.kind)).append("\">")
         out.append("<div class=\"node-line\">")
         if (hasChildren) {
@@ -1046,6 +1121,12 @@ class Render {
             out.append("<span class=\"twisty-spacer\"></span>")
         }
         out.append("<span class=\"node-label\">").append(Pc.html(Pc.orNa(node.label))).append("</span>")
+        if (hasChildren) {
+            /* A collapsed node that does not say how much it hides invites the
+             * reader to assume it hides nothing. */
+            out.append("<span class=\"node-count muted\">")
+            out.append(String.valueOf(node.countDescendants())).append("</span>")
+        }
         if (node.value != null) {
             out.append("<span class=\"node-value\">").append(Pc.html(node.value)).append("</span>")
         }
@@ -1070,7 +1151,7 @@ class Render {
         if (hasChildren) {
             out.append("<ul class=\"tree").append(collapse ? " hidden" : "").append("\">")
             for (Nd child : node.children) {
-                out.append(treeNode(child, topOnly, level + 1))
+                out.append(treeNode(child, expandAll, level + 1))
             }
             out.append("</ul>")
         }
@@ -1137,6 +1218,71 @@ class Render {
         }
         out.append("</div>\n</body>\n</html>\n")
         return out.toString()
+    }
+
+    /* The export is staged behind its own button on purpose. Rendering the report
+     * contacts nothing; the click is what lists the application links, choosing a
+     * target loads that target's spaces, choosing a space opens the parent search,
+     * and only then can a page be written. Each stage is one POST to this same
+     * endpoint. Nothing leaves this instance until the button is pressed. */
+    static String exportCard(Report report) {
+        String payload = Pc.html(JsonOutput.toJson(report.toMap()))
+        String defaultTitle = Pc.html(Cx.title(report.projectKey))
+        return """<div class="export-card">
+    <div class="export-title">Export to Confluence</div>
+    <div class="export-note">
+        Writes this configuration report into a Confluence page over a Jira application link and updates
+        that same page on every later run. The <strong>Remark</strong> column stays untouched: it is read
+        back from the existing page and carried over verbatim. If that read fails, nothing is written at
+        all. A remark whose configuration item has disappeared is kept in a second table rather than
+        dropped. A page that does not carry this export's marker is never overwritten. Nothing is read
+        from Confluence until the button below is pressed.
+    </div>
+    <div class="export-grid">
+        <button id="exportOpen" class="button" type="button" onclick="openExport()">Export to Confluence</button>
+    </div>
+    <div id="exportSettings" class="export-settings hidden">
+        <div class="export-grid">
+            <label class="export-field">Target Confluence
+                <select id="exportTarget" onchange="targetChosen()"></select>
+            </label>
+            <div class="export-chosen" id="exportTargetNote">Reading the application links...</div>
+        </div>
+        <div id="exportSpaceStage" class="export-stage hidden">
+            <div class="export-grid">
+                <label class="export-field">Space - search by name or key
+                    <input id="exportSpaceQuery" class="wide" type="search" autocomplete="off"
+                           placeholder="Type at least ${Cx.MIN_SEARCH_CHARS} characters..." oninput="searchSpaces()"
+                           onkeydown="pickFirstHit(event, 'exportSpaceResults')">
+                </label>
+                <div class="export-chosen" id="exportSpaceChosen">No space selected.</div>
+            </div>
+            <div id="exportSpaceResults" class="export-results"></div>
+        </div>
+        <div id="exportPageStage" class="export-stage hidden">
+            <div class="export-grid">
+                <label class="export-field">Parent page - search by title (optional)
+                    <input id="exportParentQuery" class="wide" type="search" autocomplete="off"
+                           placeholder="Type at least ${Cx.MIN_SEARCH_CHARS} characters..." oninput="parentTyped()"
+                           onkeydown="pickFirstHit(event, 'exportParentResults')">
+                </label>
+                <div class="export-chosen" id="exportParentChosen">No parent page: the page is created at the top level of the space.</div>
+            </div>
+            <div id="exportParentResults" class="export-results"></div>
+            <div class="export-grid">
+                <label class="export-field">Page title
+                    <input id="exportTitle" class="wide" type="text" value="${defaultTitle}">
+                </label>
+                <button id="exportRun" class="button" type="button" onclick="exportToConfluence()">Generate Confluence Page</button>
+            </div>
+        </div>
+    </div>
+    <div id="exportStatus" class="export-status muted">Not written yet.</div>
+    <input id="exportPayload" type="hidden" value="${payload}">
+    <input id="exportSpace" type="hidden" value="">
+    <input id="exportParent" type="hidden" value="">
+</div>
+"""
     }
 
     private static String style() {
@@ -1235,6 +1381,47 @@ ul.tree ul.tree { margin: 0; padding-left: 20px; border-left: 1px solid var(--bo
     font-size: 12px; padding: 0; width: 14px; }
 .twisty-spacer { display: inline-block; width: 14px; }
 .footer { font-size: 12px; margin-top: 24px; }
+.section-count { font-size: 12px; }
+.node-count { font-size: 11px; color: var(--text-subtle); background: var(--surface-subtle);
+    border: 1px solid var(--border-subtle); border-radius: 8px; padding: 0 6px; }
+table.flat { border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 13px; }
+table.flat th, table.flat td { border: 1px solid var(--border-subtle); padding: 5px 8px;
+    text-align: left; vertical-align: top; }
+table.flat th { background: var(--surface-subtle); font-weight: 600; position: sticky; top: 0; }
+table.flat tr:nth-child(even) td { background: var(--surface-subtle); }
+.view-table { overflow-x: auto; }
+.export-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    padding: 14px 18px; margin-bottom: 18px; box-shadow: var(--shadow);
+}
+.export-title { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+.export-note { color: var(--text-subtle); font-size: 13px; max-width: 1080px; }
+.export-grid { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-top: 12px; }
+.export-field {
+    display: flex; flex-direction: column; gap: 4px; color: var(--text-subtle);
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .035em;
+}
+.export-field input, .export-field select {
+    height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: 4px;
+    background: var(--surface); color: var(--text); font-size: 14px; font-weight: 400;
+    text-transform: none; letter-spacing: 0;
+}
+.export-field select { min-width: 300px; }
+.export-field input.wide { min-width: 320px; }
+.export-card button.button { cursor: pointer; height: 34px; }
+.export-card button.button[disabled] { opacity: .55; cursor: not-allowed; }
+.export-status { margin-top: 10px; font-size: 12px; }
+.export-settings { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-subtle); }
+.export-stage { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border-subtle); }
+.export-chosen { align-self: flex-end; padding-bottom: 8px; color: var(--text-subtle); font-size: 12px; }
+.export-results { margin-top: 8px; max-width: 680px; }
+.export-hit {
+    display: block; width: 100%; margin-bottom: 4px; padding: 6px 10px; text-align: left;
+    border: 1px solid var(--border); border-radius: 4px; background: var(--surface-subtle);
+    color: var(--text); font-size: 13px; cursor: pointer;
+}
+.export-hit:hover { border-color: var(--blue); background: var(--blue-soft); }
+.export-empty { color: var(--text-subtle); font-size: 12px; font-style: italic; }
 </style>
 """
     }
@@ -1254,9 +1441,1103 @@ document.addEventListener('click', function (event) {
     button.setAttribute('aria-expanded', open ? 'true' : 'false');
     button.innerHTML = open ? '&#9662;' : '&#9656;';
 });
+
+function setTwisty(item, open) {
+    var list = item.querySelector(':scope > ul.tree');
+    if (!list) { return; }
+    list.classList.toggle('hidden', !open);
+    var button = item.querySelector(':scope > .node-line > .twisty');
+    if (button) {
+        button.setAttribute('aria-expanded', open ? 'true' : 'false');
+        button.innerHTML = open ? '&#9662;' : '&#9656;';
+    }
+}
+
+function expandAll(open) {
+    var items = document.querySelectorAll('li.node');
+    for (var i = 0; i < items.length; i++) { setTwisty(items[i], open); }
+}
+
+/* Both views are already in the page. Switching only changes which one is shown,
+   so the table can never drift away from the tree it was built from. */
+function setView(name) {
+    var wantTable = name === 'table';
+    var trees = document.querySelectorAll('.view-tree');
+    var tables = document.querySelectorAll('.view-table');
+    for (var i = 0; i < trees.length; i++) { trees[i].classList.toggle('hidden', wantTable); }
+    for (var j = 0; j < tables.length; j++) { tables[j].classList.toggle('hidden', !wantTable); }
+    var treeButton = document.getElementById('viewTree');
+    var tableButton = document.getElementById('viewTable');
+    if (treeButton) { treeButton.classList.toggle('on', !wantTable); }
+    if (tableButton) { tableButton.classList.toggle('on', wantTable); }
+}
+
+var exportSpaceList = [];
+var exportPageSeq = 0;
+var exportPageTimer = null;
+
+function el(id) { return document.getElementById(id); }
+function say(cssClass, text) {
+    var node = el('exportStatus');
+    node.className = 'export-status ' + cssClass;
+    node.textContent = text;
+    return node;
+}
+function exportPost(payload) {
+    return fetch(window.location.pathname, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-Atlassian-Token': 'no-check' },
+        body: JSON.stringify(payload)
+    }).then(function (response) {
+        return response.json().then(function (parsed) { return { ok: response.ok, status: response.status, body: parsed }; });
+    });
+}
+function hit(label, onPick) {
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'export-hit';
+    button.textContent = label;
+    button.onclick = onPick;
+    return button;
+}
+function emptyNote(text) {
+    var note = document.createElement('div');
+    note.className = 'export-empty';
+    note.textContent = text;
+    return note;
+}
+/* Enter picks the first hit. The results are buttons in document order, so the
+   first one in the box is the first match. Enter with no hit does nothing, the
+   default is always suppressed so Enter can never submit or reload the page, and
+   picking a hit with the mouse keeps working unchanged. */
+function pickFirstHit(event, boxId) {
+    if (event.key !== 'Enter') { return; }
+    event.preventDefault();
+    var first = el(boxId).querySelector('.export-hit');
+    if (first) { first.click(); }
+}
+
+/* Stage 1. The first lookup of the whole report: which Confluence links exist. */
+function openExport() {
+    el('exportOpen').disabled = true;
+    el('exportSettings').classList.remove('hidden');
+    say('muted', 'Reading the Confluence application links...');
+    exportPost({ action: 'links' }).then(function (result) {
+        var body = result.body || {};
+        var select = el('exportTarget');
+        if (!result.ok || body.ok !== true) {
+            el('exportSettings').classList.add('hidden');
+            el('exportOpen').disabled = false;
+            say('bad', body.error || 'The Confluence application links could not be read.');
+            return;
+        }
+        var links = body.links || [];
+        select.innerHTML = '';
+        if (links.length > 1) { select.appendChild(new Option('Select a Confluence...', '')); }
+        for (var i = 0; i < links.length; i++) {
+            var label = links[i].name + (links[i].primary ? ' (primary)' : '') +
+                (links[i].displayUrl ? ' - ' + links[i].displayUrl : '');
+            var option = new Option(label, links[i].id);
+            if (links[i].primary || links.length === 1) { option.selected = true; }
+            select.appendChild(option);
+        }
+        el('exportTargetNote').textContent = links.length === 1
+            ? 'One Confluence application link, preselected.'
+            : String(links.length) + ' Confluence application links configured.';
+        say('muted', 'Pick the target Confluence, then the space.');
+        targetChosen();
+    }).catch(function (error) {
+        el('exportOpen').disabled = false;
+        say('bad', 'The Confluence application links could not be read: ' + error);
+    });
+}
+
+/* Stage 2. A target was picked, so that target's spaces may be listed. */
+function targetChosen() {
+    el('exportSpace').value = '';
+    el('exportSpaceQuery').value = '';
+    el('exportSpaceResults').innerHTML = '';
+    el('exportSpaceChosen').textContent = 'No space selected.';
+    el('exportPageStage').classList.add('hidden');
+    exportSpaceList = [];
+    if (!el('exportTarget').value) { el('exportSpaceStage').classList.add('hidden'); return; }
+    el('exportSpaceStage').classList.remove('hidden');
+    say('muted', 'Reading the spaces of the selected Confluence...');
+    exportPost({ action: 'spaces', applicationLinkId: el('exportTarget').value }).then(function (result) {
+        var body = result.body || {};
+        if (!result.ok || body.ok !== true) {
+            el('exportSpaceStage').classList.add('hidden');
+            say('bad', body.error || 'The Confluence space list could not be read.');
+            return;
+        }
+        exportSpaceList = body.spaces || [];
+        say('muted', String(exportSpaceList.length) + ' space(s) available' +
+            (body.truncated === true ? ', and the list is truncated - the instance has more' : '') +
+            '. Type at least ${Cx.MIN_SEARCH_CHARS} characters to search by name or key.');
+    }).catch(function (error) {
+        el('exportSpaceStage').classList.add('hidden');
+        say('bad', 'The Confluence space list could not be read: ' + error);
+    });
+}
+
+/* Stage 3a. Search, not a dropdown: only matches are ever put into the page. */
+function searchSpaces() {
+    var query = el('exportSpaceQuery').value.trim().toLowerCase();
+    var box = el('exportSpaceResults');
+    box.innerHTML = '';
+    if (query.length < ${Cx.MIN_SEARCH_CHARS}) { return; }
+    var shown = 0;
+    for (var i = 0; i < exportSpaceList.length && shown < ${Cx.SEARCH_LIMIT}; i++) {
+        var space = exportSpaceList[i];
+        if (space.name.toLowerCase().indexOf(query) < 0 && space.key.toLowerCase().indexOf(query) < 0) { continue; }
+        box.appendChild(hit(space.name + '  (' + space.key + ')', chooseSpace(space)));
+        shown++;
+    }
+    if (shown === 0) { box.appendChild(emptyNote('No space matches "' + query + '".')); }
+}
+function chooseSpace(space) {
+    return function () {
+        el('exportSpace').value = space.key;
+        el('exportSpaceQuery').value = space.name;
+        el('exportSpaceResults').innerHTML = '';
+        el('exportSpaceChosen').textContent = 'Space: ' + space.name + ' (' + space.key + ')';
+        /* A parent search that is still running belongs to the previous space, so
+           it is discarded here as well - otherwise its answer would drop a list of
+           foreign pages into the field of the space just picked. */
+        if (exportPageTimer) { window.clearTimeout(exportPageTimer); }
+        exportPageSeq++;
+        el('exportParent').value = '';
+        el('exportParentQuery').value = '';
+        el('exportParentResults').innerHTML = '';
+        el('exportParentChosen').textContent = 'No parent page: the page is created at the top level of the space.';
+        el('exportPageStage').classList.remove('hidden');
+        say('muted', 'Space ' + space.key + ' selected. Pick a parent page or leave it empty, then generate.');
+    };
+}
+
+/* Stage 3b. The parent field has no button: typing is what starts the search,
+   after a short idle pause rather than on every keystroke. The list that comes
+   back STAYS until an entry is picked or the field falls below the minimum - a
+   list that disappears while it is being read cannot confirm anything, which is
+   what made the previous version unusable. Out-of-order answers are dropped, so
+   a slow answer to an older term never replaces the list of the current one. */
+function parentTyped() {
+    /* Editing the term drops the picked parent, so a stale id can never travel
+       with a title the administrator has since changed. What travels then is the
+       title, and the generating run adopts or creates that page. */
+    el('exportParent').value = '';
+    var query = el('exportParentQuery').value.trim();
+    el('exportParentChosen').textContent = query
+        ? 'Parent page "' + query + '": pick it below if it is listed, otherwise it is created when the page is generated.'
+        : 'No parent page: the page is created at the top level of the space.';
+    if (exportPageTimer) { window.clearTimeout(exportPageTimer); }
+    if (query.length < ${Cx.MIN_SEARCH_CHARS}) {
+        /* Bumping the sequence here discards an answer that is still in flight,
+           so an empty field never fills back up on its own. */
+        exportPageSeq++;
+        el('exportParentResults').innerHTML = '';
+        return;
+    }
+    exportPageTimer = window.setTimeout(searchParents, ${Cx.SEARCH_IDLE_MS});
+}
+function searchParents() {
+    var query = el('exportParentQuery').value.trim();
+    var box = el('exportParentResults');
+    if (query.length < ${Cx.MIN_SEARCH_CHARS}) { box.innerHTML = ''; return; }
+    var seq = ++exportPageSeq;
+    exportPost({
+        action: 'pages',
+        applicationLinkId: el('exportTarget').value,
+        spaceKey: el('exportSpace').value,
+        query: query
+    }).then(function (result) {
+        if (seq !== exportPageSeq) { return; }
+        var body = result.body || {};
+        box.innerHTML = '';
+        if (!result.ok || body.ok !== true) {
+            box.appendChild(emptyNote(body.error || 'The page search failed.'));
+            return;
+        }
+        var pages = body.pages || [];
+        if (pages.length === 0) {
+            box.appendChild(emptyNote('Not found - will be created'));
+            return;
+        }
+        for (var i = 0; i < pages.length; i++) {
+            box.appendChild(hit(pages[i].title + '  #' + pages[i].id, chooseParent(pages[i])));
+        }
+        if (body.truncated === true) {
+            box.appendChild(emptyNote('More pages match than are listed here. Type more of the title to narrow it down.'));
+        }
+    }).catch(function (error) {
+        if (seq === exportPageSeq) {
+            box.innerHTML = '';
+            box.appendChild(emptyNote('The page search failed: ' + error));
+        }
+    });
+}
+function chooseParent(page) {
+    return function () {
+        el('exportParent').value = page.id;
+        el('exportParentQuery').value = page.title;
+        el('exportParentResults').innerHTML = '';
+        el('exportParentChosen').textContent = 'Parent page: ' + page.title + ' (id ' + page.id + ')';
+    };
+}
+
+/* Stage 4. The write. */
+function exportToConfluence() {
+    var button = el('exportRun');
+    function fail(text) { say('bad', text); }
+    var payload;
+    try { payload = JSON.parse(el('exportPayload').value); }
+    catch (error) { fail('Export payload could not be read: ' + error); return; }
+    payload.applicationLinkId = el('exportTarget').value;
+    payload.spaceKey = el('exportSpace').value;
+    /* Either the id of a page that was picked, or the title that was typed and
+       never picked - never both. The server refuses a request that carries two
+       parent instructions, so the choice is made here and only here. */
+    payload.parentPageId = el('exportParent').value.trim();
+    payload.parentTitle = payload.parentPageId ? '' : el('exportParentQuery').value.trim();
+    payload.title = el('exportTitle').value.trim();
+    if (!payload.applicationLinkId) { fail('Select the target Confluence first.'); return; }
+    if (!payload.spaceKey) { fail('Select a space first.'); return; }
+    if (!payload.title) { fail('Enter a page title first.'); return; }
+    button.disabled = true;
+    say('muted', 'Writing page...');
+    exportPost(payload).then(function (result) {
+        button.disabled = false;
+        var body = result.body || {};
+        if (!result.ok || body.ok !== true) {
+            fail('Nothing was written (' + result.status + '): ' + (body.error || 'unknown error'));
+            return;
+        }
+        var version = body.pageVersion === null ? 'unknown' : body.pageVersion;
+        /* Found and created are reported apart. An administrator who reads
+           "found" believes the parent was already there and stops looking for
+           the page this run has just made. */
+        var parent = '';
+        if (body.parentAction === 'created') {
+            parent = ' Parent page created: "' + body.parentTitle + '" (id ' + body.parentPageId + ').';
+        } else if (body.parentAction === 'found') {
+            parent = ' Parent page found: "' + body.parentTitle + '" (id ' + body.parentPageId + ').';
+        }
+        /* A parent that was named and not applied is said plainly, and the line
+           stops reading as a plain success. A silent mismatch is the worst outcome
+           here: the run looks like it worked and the report is not where it was
+           put. The three states are compared as strings on purpose - "unknown" is
+           not a failure and is never reported as one. */
+        var tone = 'good';
+        if (body.parentApplied === 'false') {
+            tone = 'bad';
+            parent += ' PARENT NOT APPLIED. ' +
+                (body.parentAppliedReason || 'The page was not moved under the parent page.');
+        } else if (body.parentApplied === 'unknown') {
+            tone = 'warn';
+            parent += ' PARENT NOT CONFIRMED. ' +
+                (body.parentAppliedReason || 'The position could not be read back.');
+        }
+        var status = say(tone, 'Page ' + body.action + ': "' + body.title + '" in ' + body.spaceKey +
+            ' (version ' + version + '). Remark read: ' + body.remarkRead +
+            ', carried over: ' + body.remarksCarried + ' of ' + body.remarksRead +
+            ', without a matching item: ' + body.orphanedRemarks + '.' + parent);
+        if (body.pageUrl) {
+            var link = document.createElement('a');
+            link.href = body.pageUrl;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.textContent = ' Open the page';
+            status.appendChild(link);
+        }
+    }).catch(function (error) {
+        button.disabled = false;
+        fail('Request failed, nothing was written: ' + error);
+    });
+}
+</script>
 </script>
 """
     }
+}
+
+/* =============================================================================
+ * Confluence page export - storage format and remark carry-over
+ *
+ * The report can be written into a Confluence page and that same page is updated
+ * on every later run. Two rules make that safe enough to point at a production
+ * space:
+ *
+ *   A page is only ever updated when it carries the marker below. A page this
+ *   export did not create is never rewritten, whatever its title.
+ *
+ *   The Remark column belongs to the administrator, not to this export. It is
+ *   read back from the existing page and carried over verbatim, and if that read
+ *   fails for any reason NOTHING is written. A remark that cannot be read is a
+ *   remark that must not be overwritten.
+ *
+ * Everything here is a pure function of its input, so the whole export is
+ * exercised by the offline suite without a Confluence instance in sight.
+ * ========================================================================== */
+
+class Cx {
+
+    /* Bumping this string orphans every existing page, which is the point: a page
+     * written by an older, differently shaped export is not silently adopted. */
+    static final String MARKER = "cfcon-project-config-export/1"
+
+    static final String COL_PATH = "Path"
+    static final String COL_ITEM = "Item"
+    static final String COL_VALUE = "Value"
+    static final String COL_STATE = "State"
+    static final String COL_LINK = "In Jira"
+    static final String COL_REMARK = "Remark"
+
+    static final String DEFAULT_TITLE_PREFIX = "Jira project configuration - "
+
+    static final int MAX_PAYLOAD_CHARS = 4000000
+    static final int MAX_TITLE_CHARS = 255
+
+    /* A deep scan of a large project runs into five figures of rows. Past this cap
+     * the page would stop being readable and would start failing to save, so the
+     * table is cut - and the cut is stated in the page itself, because a shortened
+     * table that looks complete is worse than no table. */
+    static final int MAX_ROWS = 5000
+
+    static String title(String projectKey) {
+        String key = projectKey == null ? "" : projectKey.trim()
+        String candidate = DEFAULT_TITLE_PREFIX + (key.isEmpty() ? "unknown project" : key)
+        return candidate.length() > MAX_TITLE_CHARS ? candidate.substring(0, MAX_TITLE_CHARS) : candidate
+    }
+
+    /* A request carries either the id of a picked parent or the title of one to
+     * be created, never both. The refusal text is a constant so the offline
+     * suite can assert on the contract rather than on a copy of the sentence. */
+    static final String PARENT_BOTH = "The request carries a parent page id and a parent page title at the same time. " +
+        "Exactly one of them is expected: the id of a page that was picked, or the title of a page to create. " +
+        "Nothing is written."
+
+    static String parentProblem(String parentId, String parentTitle, String reportTitle) {
+        String id = parentId == null ? "" : parentId.trim()
+        String parent = parentTitle == null ? "" : parentTitle.trim()
+        String report = reportTitle == null ? "" : reportTitle.trim()
+        if (!id.isEmpty() && !parent.isEmpty()) {
+            return PARENT_BOTH
+        }
+        if (parent.length() > MAX_TITLE_CHARS) {
+            return "The parent page title exceeds " + String.valueOf(MAX_TITLE_CHARS) + " characters."
+        }
+        /* A page cannot be its own parent, and Confluence titles are unique per
+         * space, so the two titles being equal has no outcome that works. Caught
+         * here rather than halfway through: otherwise the container page is
+         * created first and the report write then fails on the duplicate title,
+         * leaving a page behind that nothing was ever filed under. */
+        if (!parent.isEmpty() && parent.equalsIgnoreCase(report)) {
+            return "The parent page and the report page carry the same title \"" + parent +
+                "\". A page cannot be its own parent. Nothing is written."
+        }
+        return ""
+    }
+
+    /* ---- Parent position ---------------------------------------------------- */
+
+    /* What this run does about the position of the report page.
+     *
+     * A parent named in THIS run - picked from the search or created from a typed
+     * title - is an instruction, and it is carried out even when the report page
+     * already exists. That is the defect this replaces: the parent was applied on
+     * the create branch only, so a second run rewrote the report and left it
+     * wherever it was, while the response still reported the parent.
+     *
+     * The protection the old guard was built for is kept, narrowed to the case it
+     * actually covers: a run that names no parent does not touch the position, so
+     * a page an administrator moved by hand stays moved. */
+    static final String MOVE_REQUESTED = "move"
+    static final String MOVE_NOT_REQUESTED = "not-requested"
+    static final String MOVE_ALREADY_THERE = "already-there"
+
+    /* Pure decision, no instance needed, so the offline suite checks the rule and
+     * not a run that happened to behave. An unknown current position resolves to
+     * "move": carrying out the instruction is the safe direction, and only a
+     * positive match skips. The skip exists so an unchanged repeat run does not
+     * rewrite the page into the position it already holds. */
+    static String moveDecision(String requestedParentId, String currentParentId) {
+        String requested = requestedParentId == null ? "" : requestedParentId.trim()
+        if (requested.isEmpty()) {
+            return MOVE_NOT_REQUESTED
+        }
+        String current = currentParentId == null ? "" : currentParentId.trim()
+        if (!current.isEmpty() && current.equals(requested)) {
+            return MOVE_ALREADY_THERE
+        }
+        return MOVE_REQUESTED
+    }
+
+    /* Three states and no fourth. They are strings rather than a JSON boolean with
+     * a special case, because a browser that writes if (!body.parentApplied) reads
+     * a mixed boolean-or-string field as a success - which is exactly the silent
+     * mismatch this measurement exists to prevent. */
+    static final String PARENT_APPLIED_TRUE = "true"
+    static final String PARENT_APPLIED_FALSE = "false"
+    static final String PARENT_APPLIED_UNKNOWN = "unknown"
+
+    /* The direct parent named by a Confluence content response, kept apart from the
+     * case where no ancestors arrived at all. Ancestors run from the root of the
+     * space downwards, so the direct parent is the last entry that names an id.
+     *
+     * measured=true with a null parentId means the response carried an ancestor
+     * array and it was empty, so the page sits at the top level of the space - a
+     * real measurement. measured=false means the response carried no ancestor
+     * array at all, which measures nothing and must never be read as "the page has
+     * no parent". rowsOf is deliberately not used here: it answers an absent key
+     * and an empty array with the same empty list, and that is the one distinction
+     * this method exists to make. */
+    static Map<String, Object> innermostAncestor(Map<String, Object> content) {
+        Map<String, Object> out = new LinkedHashMap<String, Object>()
+        out.put("measured", Boolean.FALSE)
+        out.put("parentId", null)
+        if (content == null) {
+            return out
+        }
+        Object node = content.get("ancestors")
+        if (!(node instanceof List)) {
+            return out
+        }
+        out.put("measured", Boolean.TRUE)
+        List<Object> rows = (List<Object>) node
+        for (int i = rows.size() - 1; i >= 0; i--) {
+            Object row = rows.get(i)
+            if (!(row instanceof Map)) {
+                continue
+            }
+            Object id = ((Map<String, Object>) row).get("id")
+            if (id != null && !String.valueOf(id).trim().isEmpty()) {
+                out.put("parentId", String.valueOf(id).trim())
+                return out
+            }
+        }
+        return out
+    }
+
+    /* The verdict on the position, and it is a measurement or it is nothing.
+     *
+     * "true"    - the read-back answered and named the requested parent.
+     * "false"   - the read-back answered and named something else, or nothing.
+     * "unknown" - the read-back itself did not answer.
+     *
+     * A failed or empty read is never reported as a successful move, and never as
+     * a failed one either: neither was measured, so neither is claimed. applied
+     * stays null when this run named no parent, because then there is no question
+     * to answer and the position was deliberately left alone.
+     *
+     * A move call that returned without throwing is a report about itself and is
+     * deliberately not an input here. moveError only sharpens the wording of a
+     * verdict that was measured either way. */
+    static Map<String, Object> parentOutcome(String requestedParentId, boolean readBackOk,
+                                             String actualParentId, String moveError) {
+        Map<String, Object> out = new LinkedHashMap<String, Object>()
+        out.put("applied", null)
+        out.put("reason", null)
+
+        String requested = requestedParentId == null ? "" : requestedParentId.trim()
+        if (requested.isEmpty()) {
+            return out
+        }
+
+        String failure = moveError == null ? "" : moveError.trim()
+
+        if (!readBackOk) {
+            out.put("applied", PARENT_APPLIED_UNKNOWN)
+            out.put("reason", "The report page was written, but its position could not be read back" +
+                (failure.isEmpty() ? "" : " and the move reported \"" + failure + "\"") +
+                ", so whether it sits under the parent page was not measured. Open the parent page and " +
+                "check before relying on this run.")
+            return out
+        }
+
+        String actual = actualParentId == null ? "" : actualParentId.trim()
+        if (actual.equals(requested)) {
+            out.put("applied", PARENT_APPLIED_TRUE)
+            return out
+        }
+
+        out.put("applied", PARENT_APPLIED_FALSE)
+        out.put("reason", "The report page was written, but it does not sit under the parent page that was " +
+            "requested: it sits " + (actual.isEmpty() ? "at the top level of the space" : "under page " + actual) +
+            "." + (failure.isEmpty() ? "" : " The move reported \"" + failure + "\"."))
+        return out
+    }
+
+    /* Body of a parent page this export creates. Minimal on purpose: it says what
+     * the page is for and where it came from, and it holds no report data, which
+     * lives on the child page and is rewritten on every run. */
+    static final String PARENT_BODY = "<p>Container page for the Jira project configuration export. " +
+        "It was created by that export because the chosen parent page did not exist yet. " +
+        "The report itself is the child page below; this page carries no report data and is never rewritten.</p>"
+
+    /* Space picker paging. 20 pages of 200 covers every instance we have seen;
+     * past that the picker reports itself truncated rather than showing a short
+     * list that looks complete. */
+    static final int SPACE_PAGE_SIZE = 200
+    static final int MAX_SPACE_PAGES = 20
+
+    /* Search stages. The page search asks Confluence for at most this many titles
+     * and refuses a shorter term, so a single keystroke never pulls a whole space
+     * back. The space list is filtered against the same minimum in the browser. */
+    static final int SEARCH_LIMIT = 25
+    static final int MIN_SEARCH_CHARS = 2
+
+    /* Idle pause before a typed title is searched for. The parent field has no
+     * button, so the search is what typing does - but not once per keystroke:
+     * that is a call per character and a list that is rebuilt faster than it can
+     * be read. */
+    static final int SEARCH_IDLE_MS = 300
+
+    /* A CQL string literal ends at a quote, and CQL documents "*" and "?" as
+     * wildcards and "~" as an operator character, but documents no escaping rule
+     * for literals. Everything that could change the meaning of a query is
+     * therefore removed rather than escaped, and the caller appends the one
+     * wildcard it wants - which also makes a leading wildcard impossible, as the
+     * CQL text-search documentation requires. */
+    static final String CQL_STRIP = "\"\\*?~\n\r"
+
+    static String cqlTerm(String value) {
+        if (value == null) {
+            return ""
+        }
+        StringBuilder out = new StringBuilder()
+        for (int i = 0; i < value.length(); i++) {
+            String character = value.substring(i, i + 1)
+            out.append(CQL_STRIP.contains(character) ? " " : character)
+        }
+        return out.toString().trim()
+    }
+
+    /* A space key is an identifier, not a search term, and must never go through
+     * cqlTerm(): that sanitiser drops "~", so the personal space "~cfaysal"
+     * silently became the key "cfaysal", which exists nowhere. Confluence then
+     * answers zero hits and no error, and the mistake is invisible. The key is
+     * therefore checked instead of cleaned, and a key that fails the check is
+     * refused by name rather than searched for in a mangled form.
+     *
+     * The set below is a whitelist. A leading "~" marks a personal space; after
+     * it stands the user key, which is not documented to be alphanumeric, so the
+     * punctuation user keys are known to carry is admitted as well. Nothing in
+     * the set can end a CQL string literal or act as a wildcard, which is what
+     * cqlTerm() was protecting against in the first place. */
+    static final String SPACE_KEY_CHARS =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ" + "abcdefghijklmnopqrstuvwxyz" + "0123456789" + "_-.@"
+
+    /* Empty on success, otherwise the reason in words. A reason rather than a
+     * boolean, so the caller can name the offending value AND say what is wrong
+     * with it - "invalid space key" sends an administrator guessing. */
+    static String spaceKeyProblem(String value) {
+        String key = value == null ? "" : value.trim()
+        if (key.isEmpty()) {
+            return "it is empty"
+        }
+        String body = key.startsWith("~") ? key.substring(1) : key
+        if (body.isEmpty()) {
+            return "a personal space key carries the user key after the tilde, \"~\" on its own is not a key"
+        }
+        for (int i = 0; i < body.length(); i++) {
+            String character = body.substring(i, i + 1)
+            if (SPACE_KEY_CHARS.contains(character)) {
+                continue
+            }
+            if (character == "~") {
+                return "only a leading tilde is allowed, and it marks a personal space"
+            }
+            if (character.trim().isEmpty()) {
+                return "a space key contains no whitespace"
+            }
+            return "the character \"" + character + "\" is not allowed in a space key"
+        }
+        return ""
+    }
+
+    /* Confluence hands empty cells back self-closed after an editor round trip,
+     * so both forms are matched. The self-closing alternative has to come first,
+     * otherwise <td/> is consumed by the open-tag branch and swallows the row. */
+    static final java.util.regex.Pattern TBODY = java.util.regex.Pattern.compile("(?s)<tbody[^>]*>(.*?)</tbody>")
+    static final java.util.regex.Pattern ROW = java.util.regex.Pattern.compile("(?s)<tr[^>]*>(.*?)</tr>")
+    static final java.util.regex.Pattern CELL = java.util.regex.Pattern.compile("(?s)<t[hd][^>]*/>|<t[hd][^>]*>(.*?)</t[hd]>")
+    static final java.util.regex.Pattern TAG = java.util.regex.Pattern.compile("<[^>]+>")
+
+    static String plainText(String cellHtml) {
+        if (cellHtml == null) {
+            return ""
+        }
+        String value = TAG.matcher(cellHtml).replaceAll(" ")
+        value = value.replace("&nbsp;", " ").replace("&#160;", " ").replace("\u00A0", " ")
+        value = value.replace("&lt;", "<").replace("&gt;", ">")
+        value = value.replace("&quot;", "\"").replace("&#39;", "'").replace("&apos;", "'")
+        value = value.replace("&amp;", "&")
+        return value.replaceAll("\\s+", " ").trim()
+    }
+
+    /* Whitespace, a non-breaking space and the wrappers an editor leaves behind
+     * carry no remark. Anything else that is still a tag does: a status
+     * lozenge, an image, an emoticon, a link. */
+    static final java.util.regex.Pattern LAYOUT_TAG =
+        java.util.regex.Pattern.compile("(?i)</?(?:p|br|div|span)(?:\\s[^>]*)?/?>")
+
+    /* A cell is empty only when it holds neither text nor element content.
+     * Deciding that on the plain text alone dropped every cell whose markup
+     * carries no text node, and the row was not even counted as read. */
+    static boolean isEmptyCell(String cellHtml) {
+        if (cellHtml == null) {
+            return true
+        }
+        if (!plainText(cellHtml).isEmpty()) {
+            return false
+        }
+        String rest = LAYOUT_TAG.matcher(cellHtml).replaceAll("")
+        rest = rest.replace("&nbsp;", "").replace("&#160;", "").replace("\u00A0", "")
+        return rest.trim().isEmpty()
+    }
+
+    /* The placeholder written into a row that carries no remark: a grey status
+     * lozenge the administrator edits instead of building one. The Confluence
+     * status macro takes a colour and a title and carries no body. */
+    static final String REMARK_SEED =
+        "<ac:structured-macro ac:name=\"status\" ac:schema-version=\"1\">" +
+        "<ac:parameter ac:name=\"colour\">Grey</ac:parameter>" +
+        "<ac:parameter ac:name=\"title\">TBD</ac:parameter>" +
+        "</ac:structured-macro>"
+
+    static final java.util.regex.Pattern MACRO_ID =
+        java.util.regex.Pattern.compile("\\s+ac:macro-id=\"[^\"]*\"")
+
+    /* The seed is this export's own markup, never an administrator's note, so it
+     * reads back as no remark. An editor round trip stamps a macro-id onto
+     * every macro and may wrap the cell in a paragraph, so the comparison is made
+     * on the normalised form. Change the colour or the title and it is a remark
+     * again, carried over verbatim like any other. */
+    static boolean isRemarkSeed(String cellHtml) {
+        if (cellHtml == null) {
+            return false
+        }
+        String value = cellHtml.trim()
+        if (value.startsWith("<p>") && value.endsWith("</p>")) {
+            value = value.substring(3, value.length() - 4).trim()
+        }
+        value = MACRO_ID.matcher(value).replaceAll("")
+        return value.replaceAll(">\\s+<", "><").trim() == REMARK_SEED
+    }
+
+    static List<String> cellsOf(String rowHtml) {
+        List<String> cells = new ArrayList<String>()
+        if (rowHtml == null) {
+            return cells
+        }
+        java.util.regex.Matcher matcher = CELL.matcher(rowHtml)
+        while (matcher.find()) {
+            String inner = matcher.group(1)
+            cells.add(inner == null ? "" : inner)
+        }
+        return cells
+    }
+
+    static int headerIndex(List<String> header, String name) {
+        for (int i = 0; i < header.size(); i++) {
+            if (plainText(header.get(i)).equalsIgnoreCase(name)) {
+                return i
+            }
+        }
+        return -1
+    }
+
+    /* Exception class plus message. Both the remark read and the write path
+     * report a failure in exactly this wording. */
+    static String errorDetail(Throwable error) {
+        String detail = error.getClass().getSimpleName()
+        String message = error.getMessage()
+        if (message != null && !message.trim().isEmpty()) {
+            detail = detail + ": " + message.trim()
+        }
+        return detail
+    }
+
+    /* Reads every remark table on the page, not just the first one: the
+     * orphaned-remark table is a second table and its notes have to survive
+     * as well. Anything unexpected is FAILED, never an empty success. */
+    static RemarkRead parseRemarks(String storage) {
+        RemarkRead read = new RemarkRead()
+
+        try {
+            if (storage == null || storage.trim().isEmpty()) {
+                return read.fail("The existing page has an empty body. It was not produced by this export, so it is not overwritten.")
+            }
+            if (!storage.contains(MARKER)) {
+                return read.fail("The existing page does not carry the export marker \"" + MARKER + "\". It was not produced by this export, so it is not overwritten.")
+            }
+
+            int tablesMatched = 0
+            java.util.regex.Matcher bodyMatcher = TBODY.matcher(storage)
+
+            while (bodyMatcher.find()) {
+                List<String> rows = new ArrayList<String>()
+                java.util.regex.Matcher rowMatcher = ROW.matcher(bodyMatcher.group(1))
+                while (rowMatcher.find()) {
+                    rows.add(rowMatcher.group(1))
+                }
+                if (rows.isEmpty()) {
+                    continue
+                }
+
+                List<String> header = cellsOf(rows.get(0))
+                int keyIndex = headerIndex(header, COL_PATH)
+                int remarkIndex = headerIndex(header, COL_REMARK)
+                if (keyIndex < 0 || remarkIndex < 0) {
+                    continue
+                }
+                tablesMatched++
+
+                int required = Math.max(keyIndex, remarkIndex) + 1
+                for (int i = 1; i < rows.size(); i++) {
+                    List<String> cells = cellsOf(rows.get(i))
+                    if (cells.isEmpty()) {
+                        continue
+                    }
+                    if (cells.size() < required) {
+                        return read.fail("Row " + String.valueOf(i) + " of a remark table carries " + String.valueOf(cells.size()) +
+                            " cell(s) where " + String.valueOf(required) + " are needed. The table structure was changed; nothing is written.")
+                    }
+
+                    String key = plainText(cells.get(keyIndex))
+                    String remarkHtml = cells.get(remarkIndex).trim()
+                    if (key.isEmpty() || isEmptyCell(remarkHtml) || isRemarkSeed(remarkHtml)) {
+                        continue
+                    }
+                    if (read.remarks.containsKey(key)) {
+                        return read.fail("Path \"" + key + "\" carries more than one remark on the existing page. That is ambiguous; nothing is written.")
+                    }
+                    read.remarks.put(key, remarkHtml)
+                }
+            }
+
+            if (tablesMatched == 0) {
+                return read.fail("No table with the columns \"" + COL_PATH + "\" and \"" + COL_REMARK +
+                    "\" was found on the existing page. The read is inconclusive; nothing is written.")
+            }
+
+            read.outcome = RemarkRead.PARSED
+            return read
+        } catch (Throwable error) {
+            return read.fail("The remark read failed (" + errorDetail(error) + "); nothing is written.")
+        }
+    }
+
+    /* ---- Payload accessors (the POST body is JSON, so nothing is assumed) --- */
+
+    static String str(Map<String, Object> source, String key, String fallback) {
+        Object raw = source == null ? null : source.get(key)
+        if (raw == null) {
+            return fallback
+        }
+        String value = raw.toString().trim()
+        return value.isEmpty() ? fallback : value
+    }
+
+    static long lng(Map<String, Object> source, String key) {
+        Object raw = source == null ? null : source.get(key)
+        if (raw instanceof Number) {
+            return ((Number) raw).longValue()
+        }
+        if (raw == null) {
+            return 0L
+        }
+        try {
+            return Long.parseLong(raw.toString().trim())
+        } catch (NumberFormatException ignored) {
+            return 0L
+        }
+    }
+
+    /* A payload figure, formatted the way the report itself formats it. */
+    static String numberOf(Map<String, Object> source, String key, Locale locale) {
+        return Pc.number(Long.valueOf(lng(source, key)), locale)
+    }
+
+    static boolean flag(Map<String, Object> source, String key) {
+        Object raw = source == null ? null : source.get(key)
+        if (raw instanceof Boolean) {
+            return ((Boolean) raw).booleanValue()
+        }
+        return raw != null && raw.toString().trim().equalsIgnoreCase("true")
+    }
+
+    static Map<String, Object> sub(Map<String, Object> source, String key) {
+        Object raw = source == null ? null : source.get(key)
+        return raw instanceof Map ? copyMap((Map<?, ?>) raw) : new LinkedHashMap<String, Object>()
+    }
+
+    static Map<String, Object> copyMap(Map<?, ?> source) {
+        Map<String, Object> result = new LinkedHashMap<String, Object>()
+        if (source == null) {
+            return result
+        }
+        for (Map.Entry<?, ?> entry : source.entrySet()) {
+            Object rawKey = entry.getKey()
+            if (rawKey != null) {
+                result.put(rawKey.toString(), entry.getValue())
+            }
+        }
+        return result
+    }
+
+    static List<Map<String, Object>> rowsOf(Map<String, Object> source, String key) {
+        List<Map<String, Object>> result = new ArrayList<Map<String, Object>>()
+        Object raw = source == null ? null : source.get(key)
+        if (!(raw instanceof List)) {
+            return result
+        }
+        for (Object element : (List<?>) raw) {
+            if (element instanceof Map) {
+                result.add(copyMap((Map<?, ?>) element))
+            }
+        }
+        return result
+    }
+
+    /* ---- Rendering ---------------------------------------------------------- */
+
+    /* The payload is the report the GET branch serialised for this run, so the page
+     * shows exactly the tree the administrator saw. It travels through the browser,
+     * which means an administrator could tamper with it - the same administrator
+     * who may edit any page they can reach anyway. Everything is escaped on the way
+     * into storage format, and the remark carry-over is unaffected by it: remarks
+     * come from the existing page and are read there. */
+    static ExportOutcome render(Map<String, Object> request, RemarkRead read) {
+        ExportOutcome outcome = new ExportOutcome()
+        outcome.remarksRead = read == null ? 0 : read.remarks.size()
+
+        Map<String, Object> project = sub(request, "project")
+        Map<String, Object> instance = sub(request, "instance")
+        Map<String, Object> totals = sub(request, "totals")
+
+        StringBuilder out = new StringBuilder()
+
+        out.append("<p>Complete configuration of project <strong>")
+        out.append(esc(str(project, "name", "unknown"))).append("</strong> (")
+        out.append(esc(str(project, "key", "?"))).append(") on ")
+        out.append(esc(str(instance, "title", "this instance")))
+        out.append(", Jira ").append(esc(str(instance, "jiraVersion", "unknown version")))
+        out.append(". Generated ").append(esc(str(request, "generatedAt", "unknown")))
+        out.append(" by the project configuration report v")
+        out.append(esc(str(request, "reportVersion", "?"))).append(".</p>")
+
+        out.append("<p>")
+        out.append(esc(str(totals, "nodes", "0"))).append(" configuration items, ")
+        out.append(esc(str(totals, "unreadable", "0"))).append(" of them unreadable, ")
+        out.append(esc(str(totals, "unlinked", "0"))).append(" without a deep link. ")
+        out.append("An unreadable item is not an empty one: it is an item whose configuration ")
+        out.append("could not be read, and it is marked as such in the State column.</p>")
+
+        out.append("<p>The <strong>").append(esc(COL_REMARK)).append("</strong> column belongs to you. ")
+        out.append("It is read back and carried over on every later run of this export. ")
+        out.append("Everything else on this page is overwritten each time.</p>")
+
+        /* Rows first, so the truncation notice can be placed above the table it
+         * applies to rather than below it, where it would be read too late. */
+        List<Map<String, Object>> rows = new ArrayList<Map<String, Object>>()
+        for (Map<String, Object> section : rowsOf(request, "sections")) {
+            flatten(section, "", rows)
+        }
+
+        boolean truncated = rows.size() > MAX_ROWS
+        if (truncated) {
+            outcome.warnings.add("The table was cut at " + String.valueOf(MAX_ROWS) + " of " +
+                String.valueOf(rows.size()) + " rows.")
+            out.append("<p><strong>This table is not complete.</strong> It carries the first ")
+            out.append(String.valueOf(MAX_ROWS)).append(" of ").append(String.valueOf(rows.size()))
+            out.append(" configuration items. The rest is in the report itself and in its ")
+            out.append("CSV and JSON output; it is missing here, not missing from the project.</p>")
+            rows = rows.subList(0, MAX_ROWS)
+        }
+
+        Set<String> used = new LinkedHashSet<String>()
+        out.append("<table><tbody>")
+        out.append(headerRow([COL_PATH, COL_ITEM, COL_VALUE, COL_STATE, COL_LINK, COL_REMARK]))
+        for (Map<String, Object> row : rows) {
+            String path = str(row, "path", "")
+            String remark = read == null ? null : read.remarks.get(path)
+            if (remark != null) {
+                used.add(path)
+                outcome.remarksCarried++
+            }
+            out.append("<tr>")
+            out.append(cell(esc(path)))
+            out.append(cell(esc(str(row, "label", ""))))
+            out.append(cell(esc(str(row, "value", ""))))
+            out.append(cell(esc(stateText(str(row, "state", "read")))))
+            out.append(cell(linkCell(str(row, "deepLink", null), str(row, "linkNote", null))))
+            out.append(cell(remark == null ? REMARK_SEED : remark))
+            out.append("</tr>")
+        }
+        out.append("</tbody></table>")
+
+        /* A remark whose row is gone is not deleted. The configuration it commented
+         * on may come back, and even if it does not, an administrator's own words
+         * are not this export's to discard. */
+        List<String> orphans = new ArrayList<String>()
+        if (read != null) {
+            for (Map.Entry<String, String> entry : read.remarks.entrySet()) {
+                if (!used.contains(entry.getKey())) {
+                    orphans.add(entry.getKey())
+                }
+            }
+        }
+        if (!orphans.isEmpty()) {
+            outcome.orphanKeys.addAll(orphans)
+            out.append("<h2>Remarks without a matching item</h2>")
+            out.append("<p>These remarks were carried over from the previous version of this page, ")
+            out.append("but the configuration item they belong to is no longer in the project. ")
+            out.append("They are kept here rather than dropped. Delete a row to be rid of it.</p>")
+            out.append("<table><tbody>")
+            out.append(headerRow([COL_PATH, COL_REMARK]))
+            for (String key : orphans) {
+                out.append("<tr>").append(cell(esc(key)))
+                out.append(cell(read.remarks.get(key))).append("</tr>")
+            }
+            out.append("</tbody></table>")
+        }
+
+        List<Map<String, Object>> diagnostics = new ArrayList<Map<String, Object>>()
+        Object rawDiagnostics = request == null ? null : request.get("diagnostics")
+        if (rawDiagnostics instanceof List && !((List) rawDiagnostics).isEmpty()) {
+            out.append("<h2>Suppressed reads</h2>")
+            out.append("<p>Each entry is a read that failed. It is not an absence of configuration.</p><ul>")
+            for (Object entry : (List) rawDiagnostics) {
+                out.append("<li>").append(esc(String.valueOf(entry))).append("</li>")
+            }
+            out.append("</ul>")
+        }
+
+        out.append("<p><em>").append(esc(MARKER)).append("</em></p>")
+
+        outcome.storage = out.toString()
+        return outcome
+    }
+
+    /* The path is the carry-over key, so it has to be stable across runs. It is
+     * built from labels rather than from ids because an administrator who renames a
+     * scheme expects the remark to follow the name they see, and because the same
+     * report has to work on an instance where ids differ. */
+    static void flatten(Map<String, Object> node, String parentPath, List<Map<String, Object>> rows) {
+        if (node == null) {
+            return
+        }
+        String label = str(node, "label", "")
+        String path = parentPath.isEmpty() ? label : parentPath + " > " + label
+        Map<String, Object> row = new LinkedHashMap<String, Object>()
+        row.put("path", path)
+        row.put("label", label)
+        row.put("value", str(node, "value", ""))
+        row.put("state", str(node, "state", "read"))
+        row.put("deepLink", str(node, "deepLink", null))
+        row.put("linkNote", str(node, "linkNote", null))
+        rows.add(row)
+        for (Map<String, Object> child : rowsOf(node, "children")) {
+            flatten(child, path, rows)
+        }
+    }
+
+    static String stateText(String state) {
+        if ("unreadable".equals(state)) {
+            return "could not be read"
+        }
+        if ("absent".equals(state)) {
+            return "not configured"
+        }
+        if ("truncated".equals(state)) {
+            return "shortened"
+        }
+        return ""
+    }
+
+    static String linkCell(String deepLink, String linkNote) {
+        if (deepLink != null && !deepLink.trim().isEmpty()) {
+            return "<a href=\"" + esc(deepLink) + "\">open</a>"
+        }
+        if (linkNote != null && !linkNote.trim().isEmpty()) {
+            return esc(linkNote)
+        }
+        return ""
+    }
+
+    static String headerRow(List<String> names) {
+        StringBuilder out = new StringBuilder("<tr>")
+        for (String name : names) {
+            out.append("<th>").append(esc(name)).append("</th>")
+        }
+        return out.append("</tr>").toString()
+    }
+
+    static String cell(String html) {
+        return "<td>" + (html == null || html.isEmpty() ? "" : html) + "</td>"
+    }
+
+    /* Storage format is XHTML, so an unescaped angle bracket from a scheme name is
+     * not a cosmetic problem: it produces a page Confluence refuses to save. */
+    static String esc(Object value) {
+        if (value == null) {
+            return ""
+        }
+        return value.toString()
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\"", "&quot;")
+            .replace("'", "&#39;")
+    }
+}
+
+/* What a remark read found, and whether writing is allowed at all. */
+class RemarkRead {
+
+    static final String NONE = "none"
+    static final String PARSED = "parsed"
+    static final String FAILED = "failed"
+
+    String outcome = NONE
+    String reason
+    String pageId
+    int pageVersion
+
+    Map<String, String> remarks = new LinkedHashMap<String, String>()
+
+    /* The single gate every write path has to pass. FAILED never gets through. */
+    boolean isWriteAllowed() {
+        return outcome == NONE || outcome == PARSED
+    }
+
+    RemarkRead fail(String why) {
+        outcome = FAILED
+        reason = why
+        remarks.clear()
+        return this
+    }
+
+    Map<String, Object> asMap() {
+        Map<String, Object> result = new LinkedHashMap<String, Object>()
+        result.put("outcome", outcome)
+        result.put("reason", reason)
+        result.put("remarks", Integer.valueOf(remarks.size()))
+        result.put("pageId", pageId)
+        result.put("pageVersion", Integer.valueOf(pageVersion))
+        return result
+    }
+}
+
+/* Rendered storage format plus what happened to the carried-over remarks. */
+class ExportOutcome {
+    String storage
+    int remarksRead
+    int remarksCarried
+    List<String> orphanKeys = new ArrayList<String>()
+    List<String> warnings = new ArrayList<String>()
 }
 
 /* =============================================================================
@@ -1355,7 +2636,7 @@ class Scan {
 
             IssueType defaultType = null
             try {
-                defaultType = manager.getDefaultValue(project.getGenericValue())
+                defaultType = manager.getDefaultIssueType(project)
             } catch (Exception ignored) {
                 /* The default issue type is a convenience, not the scheme. If the
                  * accessor is not available on this line the scheme still reports
@@ -1984,6 +3265,14 @@ class Scan {
 
             for (Map.Entry<String, String> entry : mappings.entrySet()) {
                 String issueTypeId = entry.getKey()
+                /* The mapping carries the default workflow under a null issue type
+                 * id. That is the same layer the block above already reported by
+                 * name, so rendering it again would produce a second, nameless
+                 * "issue type null" row for a layer that is neither nameless nor a
+                 * second one. */
+                if (issueTypeId == null) {
+                    continue
+                }
                 String name = issueTypeNames.get(issueTypeId)
                 Nd layer = Nd.of("workflowLayer",
                     "Layer: issue type " + (name == null ? String.valueOf(issueTypeId) : name))
@@ -2205,7 +3494,7 @@ class Scan {
             if (step == null) {
                 return null
             }
-            Status status = workflow.getLinkedStatusObject((StepDescriptor) step)
+            Status status = workflow.getLinkedStatus((StepDescriptor) step)
             return status == null ? null : status.getName()
         } catch (Exception ignored) {
             return null
@@ -2459,9 +3748,14 @@ class Scan {
                 }
             }
             if (type.toLowerCase(Locale.ROOT).contains("user")) {
-                ApplicationUser user = ComponentAccessor.getUserManager().getUserByKey(parameter)
+                /* HAPI rather than ComponentAccessor, which is what the ScriptRunner
+                 * editor asks for here. Both getByKey and getByName return the same
+                 * ApplicationUser, so this is a straight substitution and not a change
+                 * of behaviour: a scheme grant stores either a user key or a user
+                 * name depending on its age, so both are still tried, in that order. */
+                ApplicationUser user = Users.getByKey(parameter)
                 if (user == null) {
-                    user = ComponentAccessor.getUserManager().getUserByName(parameter)
+                    user = Users.getByName(parameter)
                 }
                 if (user != null) {
                     return userLabel(user)
@@ -2685,12 +3979,12 @@ projectConfig(
     String format = Pc.stringParam(queryParams, "format", "html").toLowerCase(Locale.ROOT)
     String depth = Pc.stringParam(queryParams, "depth", "full").toLowerCase(Locale.ROOT)
     boolean includeInactive = Pc.booleanParam(queryParams, "includeInactive", true)
-    boolean topOnly = depth == "top"
+    boolean expandAll = depth == "full"
 
     Map<String, Object> activeParams = [
         project: projectKey,
         format: format == "html" ? null : format,
-        depth: topOnly ? "top" : null,
+        depth: expandAll ? "full" : null,
         includeInactive: includeInactive ? null : "false"
     ] as LinkedHashMap
 
@@ -2912,5 +4206,1166 @@ projectConfig(
             "attachment; filename=\"project-config-" + report.projectKey + ".csv\"")
         return Http.build(responseClass, 200, Render.csv(report), Http.CSV, headers)
     }
-    return Http.ok(responseClass, Render.html(report, activeParams, topOnly), Http.HTML)
+    return Http.ok(responseClass, Render.html(report, activeParams, expandAll), Http.HTML)
+}
+
+/* =============================================================================
+ * Confluence application link transport
+ *
+ * The only outbound path in this file. A Jira JVM holds no Confluence type, so
+ * the space list, the existence check and the write all travel over the Jira
+ * application link. Every helper here returns a result map and never throws:
+ * a failed call must arrive at the caller as a failure, never as an empty
+ * answer that a later branch could mistake for "nothing there".
+ * ========================================================================== */
+
+/* The concrete Confluence application type, resolved at runtime instead of being
+ * imported. The applinks API documents
+ * com.atlassian.applinks.api.application.confluence.ConfluenceApplicationType as a
+ * public interface extending ApplicationType since applinks 3.0, and that is what
+ * makes the typed getApplicationLinks(Class) and getPrimaryApplicationLink(Class)
+ * usable here instead of a class-name string comparison. Whether ScriptRunner
+ * exposes that sub-package on a given instance is NOT documented, so a missing
+ * class degrades to the old simple-name match rather than breaking the endpoint -
+ * the same runtime resolution the JAX-RS Response class uses above. */
+Class<? extends ApplicationType> confluenceApplicationType() {
+    try {
+        return (Class<? extends ApplicationType>)
+            Class.forName("com.atlassian.applinks.api.application.confluence.ConfluenceApplicationType")
+    } catch (Throwable ignored) {
+        return null
+    }
+}
+
+/* Reading one link, each getter guarded on its own: a half-configured link must
+ * shorten the label, not abort the list. */
+String confluenceLinkId(ApplicationLink link) {
+    try {
+        return link == null || link.getId() == null ? null : link.getId().get()
+    } catch (Exception ignored) {
+        return null
+    }
+}
+
+String confluenceLinkName(ApplicationLink link) {
+    try {
+        String name = link == null ? null : link.getName()
+        return name == null || name.trim().isEmpty() ? "Confluence" : name
+    } catch (Exception ignored) {
+        return "Confluence"
+    }
+}
+
+String confluenceLinkUrl(ApplicationLink link) {
+    try {
+        Object url = link == null ? null : link.getDisplayUrl()
+        return url == null ? null : url.toString()
+    } catch (Exception ignored) {
+        return null
+    }
+}
+
+/* Every Confluence application link this Jira has, primary first, then by name.
+ *
+ * This used to return the first link whose type simple-name matched, silently. On
+ * an instance with two Confluence links the export could write to the wrong site
+ * with no way to tell, so the administrator now picks the target and the picked id
+ * travels with every later stage of the same export.
+ *
+ * The ApplicationId is passed inside one export cycle only and is NEVER persisted.
+ * The applinks documentation states on getId() that the id changes when an
+ * administrator upgrades the remote application to use Unified Application Links,
+ * and that a plugin storing the id has to listen for ApplicationLinksIDChangedEvent.
+ * Nothing here outlives the request, so no listener is needed - do not start
+ * storing this id without adding that listener. */
+Map<String, Object> confluenceApplicationLinks() {
+    Map<String, Object> result = new LinkedHashMap<String, Object>()
+    List<ApplicationLink> links = new ArrayList<ApplicationLink>()
+    result.put("ok", Boolean.FALSE)
+    result.put("error", null)
+    result.put("links", links)
+    result.put("primaryId", null)
+    result.put("typed", Boolean.FALSE)
+    result.put("seen", Integer.valueOf(-1))
+    result.put("seenTypes", "")
+
+    ApplicationLinkService service = null
+    try {
+        service = ComponentLocator.getComponent(ApplicationLinkService)
+    } catch (Exception error) {
+        result.put("error", "The application link service could not be read (" + Cx.errorDetail(error) + ").")
+        return result
+    }
+    if (service == null) {
+        result.put("error", "The application link service is not available in this Jira instance.")
+        return result
+    }
+
+    Class<? extends ApplicationType> type = confluenceApplicationType()
+    result.put("typed", Boolean.valueOf(type != null))
+    String primaryId = null
+
+    try {
+        if (type != null) {
+            for (ApplicationLink link : service.getApplicationLinks(type)) {
+                if (link != null) {
+                    links.add(link)
+                }
+            }
+            try {
+                primaryId = confluenceLinkId(service.getPrimaryApplicationLink(type))
+            } catch (Exception ignored) {
+                primaryId = null
+            }
+        }
+
+        /* The typed lookup only works if this script and the applinks plugin resolve
+         * the very same ConfluenceApplicationType class. Across OSGi class loaders
+         * that is not guaranteed, and a mismatch returns an EMPTY LIST rather than an
+         * error, which reads as "no link configured" on an instance that plainly has
+         * one. Measured on jira-test 2026-08-22. So whenever the typed lookup finds
+         * nothing, fall back to the untyped scan that confluence-addon-analysis.groovy
+         * has used in production for years. The reported flag follows the path that
+         * actually produced the list, not the one that was attempted. */
+        if (links.isEmpty()) {
+            result.put("typed", Boolean.FALSE)
+            primaryId = null
+            int seen = 0
+            Set<String> seenTypes = new TreeSet<String>()
+            for (ApplicationLink link : service.getApplicationLinks()) {
+                if (link == null) {
+                    continue
+                }
+                seen++
+                String typeName = link.getType() == null ? "unknown" : link.getType().getClass().getSimpleName()
+                seenTypes.add(typeName)
+                if (typeName == "ConfluenceApplicationTypeImpl" || typeName.contains("Confluence")) {
+                    links.add(link)
+                }
+            }
+            /* What the instance actually offered, so a refusal is a measurement and
+             * not a dead end. Without this the administrator is told to create a link
+             * that may already exist. */
+            result.put("seen", Integer.valueOf(seen))
+            result.put("seenTypes", seenTypes.isEmpty() ? "none" : seenTypes.join(", "))
+        }
+    } catch (Exception error) {
+        result.put("error", "The Confluence application links could not be listed (" +
+            Cx.errorDetail(error) + ").")
+        return result
+    }
+
+    /* Without the typed lookup the primary comes from the link itself, which the
+     * applinks API documents as isPrimary(). */
+    if (primaryId == null) {
+        for (ApplicationLink link : links) {
+            boolean primary = false
+            try {
+                primary = link.isPrimary()
+            } catch (Exception ignored) {
+                primary = false
+            }
+            if (primary) {
+                primaryId = confluenceLinkId(link)
+                break
+            }
+        }
+    }
+
+    final String preselected = primaryId
+    links.sort { ApplicationLink a, ApplicationLink b ->
+        boolean aPrimary = preselected != null && preselected == confluenceLinkId(a)
+        boolean bPrimary = preselected != null && preselected == confluenceLinkId(b)
+        if (aPrimary != bPrimary) {
+            return aPrimary ? -1 : 1
+        }
+        return confluenceLinkName(a).compareToIgnoreCase(confluenceLinkName(b))
+    }
+
+    result.put("ok", Boolean.TRUE)
+    result.put("primaryId", primaryId)
+    return result
+}
+
+/* The target the administrator picked, plus its request factory. The id is matched
+ * inside the Confluence list rather than handed to getApplicationLink(ApplicationId),
+ * so a request naming a link of any other type resolves to nothing instead of to a
+ * foreign target. Every stage - space search, page search and write - resolves the
+ * same way, so they cannot disagree about where they are pointing. */
+Map<String, Object> confluenceTarget(List<ApplicationLink> links, String applicationLinkId) {
+    Map<String, Object> result = new LinkedHashMap<String, Object>()
+    result.put("ok", Boolean.FALSE)
+    result.put("error", null)
+    result.put("link", null)
+    result.put("factory", null)
+
+    if (applicationLinkId == null || applicationLinkId.trim().isEmpty()) {
+        result.put("error", "No target Confluence was selected, so there is nowhere to look and nothing is written.")
+        return result
+    }
+
+    ApplicationLink link = null
+    for (ApplicationLink candidate : links) {
+        String id = confluenceLinkId(candidate)
+        if (id != null && id == applicationLinkId) {
+            link = candidate
+            break
+        }
+    }
+    if (link == null) {
+        result.put("error", "The selected Confluence application link is not among this instance's Confluence links. " +
+            "Reopen the export and pick the target again. Nothing is written.")
+        return result
+    }
+
+    ApplicationLinkRequestFactory factory = null
+    try {
+        factory = link.createAuthenticatedRequestFactory()
+    } catch (Exception error) {
+        result.put("error", "The Confluence application link \"" + confluenceLinkName(link) + "\" did not hand out an " +
+            "authenticated request factory (" + Cx.errorDetail(error) + "). Nothing is written.")
+        return result
+    }
+    if (factory == null) {
+        result.put("error", "The Confluence application link \"" + confluenceLinkName(link) + "\" did not hand out an " +
+            "authenticated request factory. Nothing is written.")
+        return result
+    }
+
+    result.put("ok", Boolean.TRUE)
+    result.put("link", link)
+    result.put("factory", factory)
+    return result
+}
+
+/* Browse URL of a written page, built from the link's own address. */
+String confluencePageUrl(ApplicationLink link, String pageId) {
+    if (link == null || pageId == null || pageId.trim().isEmpty()) {
+        return null
+    }
+    Object base = null
+    try {
+        base = link.getDisplayUrl()
+    } catch (Exception ignored) {
+        base = null
+    }
+    if (base == null) {
+        try {
+            base = link.getRpcUrl()
+        } catch (Exception ignored) {
+            return null
+        }
+    }
+    if (base == null) {
+        return null
+    }
+    String prefix = base.toString()
+    while (prefix.endsWith("/")) {
+        prefix = prefix.substring(0, prefix.length() - 1)
+    }
+    return prefix + "/pages/viewpage.action?pageId=" + pageId
+}
+
+/* One authenticated call. The three failure modes an administrator actually
+ * meets are separated: no factory, no authorisation for the impersonated user,
+ * and a refusal from Confluence itself. */
+Map<String, Object> confluenceCall(ApplicationLinkRequestFactory factory, Request.MethodType method, String url, String jsonBody) {
+    Map<String, Object> result = new LinkedHashMap<String, Object>()
+    result.put("ok", Boolean.FALSE)
+    result.put("error", null)
+    result.put("json", null)
+
+    if (factory == null) {
+        result.put("error", "The Confluence application link exists but did not hand out an authenticated request factory.")
+        return result
+    }
+
+    String raw = null
+    try {
+        def request = factory.createRequest(method, url)
+        request.addHeader("Accept", "application/json")
+        if (jsonBody != null && !jsonBody.isEmpty()) {
+            request.addHeader("Content-Type", "application/json")
+            request.setRequestBody(jsonBody)
+        }
+        raw = request.execute()
+    } catch (CredentialsRequiredException ignored) {
+        result.put("error", "Confluence did not accept the impersonated call: this Jira user has not authorised the " +
+            "Confluence application link yet. Authorise it once from a page that offers the link's authentication " +
+            "prompt, then run the export again.")
+        return result
+    } catch (Exception error) {
+        String detail = Cx.errorDetail(error)
+        String message = "The call to Confluence failed for " + url + " (" + detail + ")."
+        /* A 401 over an application link is almost never a wrong path. This factory
+         * impersonates the calling Jira user on the Confluence side, so the usual
+         * cause is that this user has no account there, or none with permission.
+         * Measured on a customer instance 2026-08-22: link found and preselected,
+         * space call 401, user did not exist in Confluence. Saying so turns a dead
+         * end into the next step. */
+        if (detail != null && detail.contains("401")) {
+            message = message + " A 401 here means Confluence refused the call, not that the address was wrong. " +
+                "The export calls Confluence as the Jira user who runs it, so check that this user exists in " +
+                "Confluence and may read spaces there."
+        }
+        result.put("error", message)
+        return result
+    }
+
+    if (raw == null || raw.trim().isEmpty()) {
+        result.put("error", "Confluence returned an empty response for " + url + ".")
+        return result
+    }
+
+    Object parsed = null
+    try {
+        parsed = new JsonSlurper().parseText(raw)
+    } catch (Exception error) {
+        result.put("error", "Confluence returned a response that is not JSON for " + url +
+            " (" + Cx.errorDetail(error) + ").")
+        return result
+    }
+    if (!(parsed instanceof Map)) {
+        result.put("error", "Confluence returned a JSON value that is not an object for " + url + ".")
+        return result
+    }
+
+    /* A Confluence REST refusal carries statusCode and message in the body. It is
+     * not documented that execute() throws on a 4xx, so the body is inspected as
+     * well - a refusal must never pass as a successful empty answer. */
+    Map<String, Object> json = Cx.copyMap((Map<?, ?>) parsed)
+    Object statusCode = json.get("statusCode")
+    if (statusCode instanceof Number && ((Number) statusCode).intValue() >= 400) {
+        result.put("error", "Confluence refused the call to " + url + " with HTTP " +
+            String.valueOf(((Number) statusCode).intValue()) + ": " + Cx.str(json, "message", "no message"))
+        return result
+    }
+
+    result.put("ok", Boolean.TRUE)
+    result.put("json", json)
+    return result
+}
+
+/* Every current space, paged. GET /rest/api/space is documented with start and
+ * limit; the loop stops when a page comes back shorter than the page size, and
+ * the page cap keeps a changed paging contract from turning into an endless
+ * loop. A truncated list says so rather than looking complete. */
+Map<String, Object> confluenceSpaces(ApplicationLinkRequestFactory factory) {
+    Map<String, Object> result = new LinkedHashMap<String, Object>()
+    List<Map<String, Object>> spaces = new ArrayList<Map<String, Object>>()
+    result.put("ok", Boolean.FALSE)
+    result.put("error", null)
+    result.put("spaces", spaces)
+    result.put("truncated", Boolean.FALSE)
+
+    Set<String> seen = new HashSet<String>()
+    int start = 0
+
+    for (int page = 0; page < Cx.MAX_SPACE_PAGES; page++) {
+        String url = "/rest/api/space?status=current&limit=" + String.valueOf(Cx.SPACE_PAGE_SIZE) +
+            "&start=" + String.valueOf(start)
+        Map<String, Object> call = confluenceCall(factory, Request.MethodType.GET, url, null)
+        if (call.get("ok") != Boolean.TRUE) {
+            result.put("error", call.get("error"))
+            return result
+        }
+
+        List<Map<String, Object>> rows = Cx.rowsOf((Map<String, Object>) call.get("json"), "results")
+        for (Map<String, Object> row : rows) {
+            String key = Cx.str(row, "key", "")
+            if (key.isEmpty() || !seen.add(key)) {
+                continue
+            }
+            Map<String, Object> space = new LinkedHashMap<String, Object>()
+            space.put("key", key)
+            space.put("name", Cx.str(row, "name", key))
+            spaces.add(space)
+        }
+
+        if (rows.size() < Cx.SPACE_PAGE_SIZE) {
+            result.put("ok", Boolean.TRUE)
+            return result
+        }
+        start += Cx.SPACE_PAGE_SIZE
+    }
+
+    result.put("ok", Boolean.TRUE)
+    result.put("truncated", Boolean.TRUE)
+    return result
+}
+
+/* The parent page, resolved and located. A parent that does not exist or sits in
+ * another space is refused before anything is written. */
+Map<String, Object> confluenceParentPage(ApplicationLinkRequestFactory factory, String parentId) {
+    Map<String, Object> result = new LinkedHashMap<String, Object>()
+    result.put("ok", Boolean.FALSE)
+    result.put("error", null)
+    result.put("spaceKey", null)
+    result.put("title", null)
+
+    Map<String, Object> call = confluenceCall(factory, Request.MethodType.GET,
+        "/rest/api/content/" + parentId + "?expand=space", null)
+    if (call.get("ok") != Boolean.TRUE) {
+        result.put("error", "The parent page " + parentId + " could not be read from Confluence: " +
+            String.valueOf(call.get("error")))
+        return result
+    }
+
+    Map<String, Object> json = (Map<String, Object>) call.get("json")
+    String id = Cx.str(json, "id", "")
+    if (id.isEmpty()) {
+        result.put("error", "There is no Confluence page with the ID " + parentId + ".")
+        return result
+    }
+
+    String parentSpace = Cx.str(Cx.sub(json, "space"), "key", "")
+    if (parentSpace.isEmpty()) {
+        result.put("error", "The space of the parent page " + parentId + " could not be read, so its location " +
+            "cannot be confirmed. Nothing is written.")
+        return result
+    }
+
+    result.put("ok", Boolean.TRUE)
+    result.put("spaceKey", parentSpace)
+    result.put("title", Cx.str(json, "title", ""))
+    return result
+}
+
+/* Parent page candidates, searched by title inside one space, so the administrator
+ * never has to look up a raw page id. GET /rest/api/content/search takes a cql
+ * query; the CQL reference documents the fields type, space and title, documents
+ * "~" (CONTAINS) on title, and documents "*" as the multi-character wildcard that
+ * must not be the first character of a term. The answer is the same paginated
+ * content collection the existence check already reads, so results is parsed the
+ * same way. An empty result set is an empty result set; every failure carries its
+ * reason instead. */
+Map<String, Object> confluenceSearchPages(ApplicationLinkRequestFactory factory, String spaceKey, String query) {
+    Map<String, Object> result = new LinkedHashMap<String, Object>()
+    List<Map<String, Object>> pages = new ArrayList<Map<String, Object>>()
+    result.put("ok", Boolean.FALSE)
+    result.put("error", null)
+    result.put("pages", pages)
+    result.put("truncated", Boolean.FALSE)
+
+    /* The space key is validated, not sanitised. It used to run through cqlTerm()
+     * exactly like the search term below, which cost every personal space its
+     * leading tilde and turned the search into one over a space that does not
+     * exist - answered with zero hits and no error. Only the title is a search
+     * term and only the title is still cleaned. */
+    String space = spaceKey == null ? "" : spaceKey.trim()
+    String spaceProblem = Cx.spaceKeyProblem(space)
+    if (!spaceProblem.isEmpty()) {
+        result.put("error", "The space key \"" + String.valueOf(spaceKey) + "\" cannot be searched in: " +
+            spaceProblem + ".")
+        return result
+    }
+    String term = Cx.cqlTerm(query)
+    if (term.isEmpty()) {
+        result.put("error", "The search term holds nothing that can be searched for.")
+        return result
+    }
+
+    String cql = "type=page and space=\"" + space + "\" and title~\"" + term + "*\""
+    String url = "/rest/api/content/search?limit=" + String.valueOf(Cx.SEARCH_LIMIT) +
+        "&cql=" + URLEncoder.encode(cql, "UTF-8")
+    Map<String, Object> call = confluenceCall(factory, Request.MethodType.GET, url, null)
+    if (call.get("ok") != Boolean.TRUE) {
+        result.put("error", "The page search in \"" + spaceKey + "\" failed: " + String.valueOf(call.get("error")))
+        return result
+    }
+
+    List<Map<String, Object>> rows = Cx.rowsOf((Map<String, Object>) call.get("json"), "results")
+    /* The request carries a limit, so a full page of hits means there may be more.
+     * Saying so is the point: a silently cut list reads as "that is everything". */
+    if (rows.size() >= Cx.SEARCH_LIMIT) {
+        result.put("truncated", Boolean.TRUE)
+    }
+    for (Map<String, Object> row : rows) {
+        String id = Cx.str(row, "id", "")
+        String title = Cx.str(row, "title", "")
+        if (id.isEmpty() || title.isEmpty()) {
+            continue
+        }
+        Map<String, Object> page = new LinkedHashMap<String, Object>()
+        page.put("id", id)
+        page.put("title", title)
+        pages.add(page)
+    }
+    pages.sort { Map<String, Object> a, Map<String, Object> b ->
+        return Cx.str(a, "title", "").compareToIgnoreCase(Cx.str(b, "title", ""))
+    }
+
+    result.put("ok", Boolean.TRUE)
+    return result
+}
+
+/* The parent page named by a title: adopted when it already exists, created when
+ * it does not. There is no Create button - this runs as part of the generating
+ * request, which is the only moment at which the answer is still current.
+ *
+ * The exact-title check sits here, immediately before the create, and not only in
+ * the search the browser ran earlier. That covers the page somebody else created
+ * in between and the administrator who saw a hit, did not click it and generated
+ * anyway. Neither produces a second page carrying the same title.
+ *
+ * created=true is set on the create path only, so the caller can report finding
+ * and creating apart. A failed lookup carries its reason and never degrades into
+ * "no such page", which the caller would answer by creating a duplicate. The
+ * 401 hint about a Jira user without a Confluence account arrives through
+ * confluenceCall, the same path the export itself uses. */
+Map<String, Object> confluenceParentByTitle(ApplicationLinkRequestFactory factory, String spaceKey, String title) {
+    Map<String, Object> result = new LinkedHashMap<String, Object>()
+    result.put("ok", Boolean.FALSE)
+    result.put("error", null)
+    result.put("id", null)
+    result.put("created", Boolean.FALSE)
+
+    String lookupUrl = "/rest/api/content?type=page&spaceKey=" + URLEncoder.encode(spaceKey, "UTF-8") +
+        "&title=" + URLEncoder.encode(title, "UTF-8") + "&limit=2"
+    Map<String, Object> lookup = confluenceCall(factory, Request.MethodType.GET, lookupUrl, null)
+    if (lookup.get("ok") != Boolean.TRUE) {
+        result.put("error", "The parent page \"" + title + "\" could not be looked up in \"" + spaceKey + "\": " +
+            String.valueOf(lookup.get("error")) + " That is a failed read, not a space without that page, so " +
+            "nothing was created.")
+        return result
+    }
+
+    List<Map<String, Object>> rows = Cx.rowsOf((Map<String, Object>) lookup.get("json"), "results")
+    if (!rows.isEmpty()) {
+        String existingId = Cx.str(rows.get(0), "id", "")
+        if (existingId.isEmpty()) {
+            result.put("error", "Confluence named a page \"" + title + "\" in \"" + spaceKey +
+                "\" but gave no id for it, so it cannot be used as a parent.")
+            return result
+        }
+        result.put("ok", Boolean.TRUE)
+        result.put("id", existingId)
+        return result
+    }
+
+    Map<String, Object> spacePayload = new LinkedHashMap<String, Object>()
+    spacePayload.put("key", spaceKey)
+
+    Map<String, Object> storageBody = new LinkedHashMap<String, Object>()
+    storageBody.put("value", Cx.PARENT_BODY)
+    storageBody.put("representation", "storage")
+
+    Map<String, Object> bodyPayload = new LinkedHashMap<String, Object>()
+    bodyPayload.put("storage", storageBody)
+
+    Map<String, Object> payload = new LinkedHashMap<String, Object>()
+    payload.put("type", "page")
+    payload.put("title", title)
+    payload.put("space", spacePayload)
+    payload.put("body", bodyPayload)
+
+    Map<String, Object> call = confluenceCall(factory, Request.MethodType.POST, "/rest/api/content",
+        JsonOutput.toJson(payload))
+    if (call.get("ok") != Boolean.TRUE) {
+        result.put("error", "The parent page \"" + title + "\" could not be created in \"" + spaceKey + "\": " +
+            String.valueOf(call.get("error")))
+        return result
+    }
+
+    String createdId = Cx.str((Map<String, Object>) call.get("json"), "id", "")
+    if (createdId.isEmpty()) {
+        result.put("error", "Confluence accepted the parent page \"" + title + "\" but returned no page id, so the " +
+            "report has no confirmed place to go.")
+        return result
+    }
+
+    result.put("ok", Boolean.TRUE)
+    result.put("id", createdId)
+    result.put("created", Boolean.TRUE)
+    return result
+}
+
+/* The existence check. found=false only when Confluence answered and the result
+ * set was empty; every other outcome is ok=false with a reason. storageRead
+ * stays false when the body did not arrive, which the caller treats as a failed
+ * read - not as a page without remarks. */
+Map<String, Object> confluenceFindPage(ApplicationLinkRequestFactory factory, String spaceKey, String title) {
+    Map<String, Object> result = new LinkedHashMap<String, Object>()
+    result.put("ok", Boolean.FALSE)
+    result.put("error", null)
+    result.put("found", Boolean.FALSE)
+    result.put("id", null)
+    result.put("version", Integer.valueOf(0))
+    result.put("storage", null)
+    result.put("storageRead", Boolean.FALSE)
+    /* Where the page sits today, so the write below can tell a move it has to make
+     * from one it does not. It rides along with the existence check and costs no
+     * extra call. parentMeasured stays false when no ancestor array came back,
+     * which is not a measurement and never means "the page has no parent". */
+    result.put("parentId", null)
+    result.put("parentMeasured", Boolean.FALSE)
+
+    String url = "/rest/api/content?type=page&spaceKey=" + URLEncoder.encode(spaceKey, "UTF-8") +
+        "&title=" + URLEncoder.encode(title, "UTF-8") + "&expand=body.storage,version,ancestors&limit=2"
+    Map<String, Object> call = confluenceCall(factory, Request.MethodType.GET, url, null)
+    if (call.get("ok") != Boolean.TRUE) {
+        result.put("error", call.get("error"))
+        return result
+    }
+
+    List<Map<String, Object>> rows = Cx.rowsOf((Map<String, Object>) call.get("json"), "results")
+    result.put("ok", Boolean.TRUE)
+    if (rows.isEmpty()) {
+        return result
+    }
+
+    Map<String, Object> page = rows.get(0)
+    result.put("found", Boolean.TRUE)
+    result.put("id", Cx.str(page, "id", null))
+    result.put("version", Integer.valueOf((int) Cx.lng(Cx.sub(page, "version"), "number")))
+
+    Map<String, Object> chain = Cx.innermostAncestor(page)
+    result.put("parentMeasured", chain.get("measured"))
+    result.put("parentId", chain.get("parentId"))
+
+    Map<String, Object> storage = Cx.sub(Cx.sub(page, "body"), "storage")
+    Object value = storage.get("value")
+    if (value != null) {
+        result.put("storage", value.toString())
+        result.put("storageRead", Boolean.TRUE)
+    }
+    return result
+}
+
+/* Create or update. The update path sends version number + 1 with a message, the
+ * documented way to write a new version.
+ *
+ * Ancestors now travel with the write when this run named a parent, on update as
+ * well as on create. Whether a PUT that carries ancestors actually moves a page in
+ * Confluence Data Center 10 is NOT VERIFIED: the Atlassian REST reference renders
+ * its content with JavaScript and hands back only navigation, and no REST resource
+ * jar was available to read the annotations from. Community summaries claim it
+ * works. That is hearsay and nothing here asserts it. It is sent, the position is
+ * then measured by the read-back below, and the caller reports the measurement.
+ *
+ * Being unverified, it is also not allowed to cost the report. A PUT that carries
+ * ancestors and is rejected is retried once without them, so the report is written
+ * where it already was and the verdict says the parent was not applied.
+ *
+ * A run that names no parent sends no ancestors on update at all, so a page an
+ * administrator moved by hand keeps its place. */
+Map<String, Object> confluenceWritePage(ApplicationLinkRequestFactory factory, String spaceKey, String title,
+                                        String storage, String parentId, String existingId, int existingVersion,
+                                        String moveDecision) {
+    Map<String, Object> result = new LinkedHashMap<String, Object>()
+    result.put("ok", Boolean.FALSE)
+    result.put("error", null)
+    result.put("id", existingId)
+    result.put("version", null)
+    result.put("parentMeasured", Boolean.FALSE)
+    result.put("actualParentId", null)
+    result.put("parentSendError", null)
+
+    Map<String, Object> storageBody = new LinkedHashMap<String, Object>()
+    storageBody.put("value", storage)
+    storageBody.put("representation", "storage")
+
+    Map<String, Object> bodyPayload = new LinkedHashMap<String, Object>()
+    bodyPayload.put("storage", storageBody)
+
+    Map<String, Object> spacePayload = new LinkedHashMap<String, Object>()
+    spacePayload.put("key", spaceKey)
+
+    Map<String, Object> payload = new LinkedHashMap<String, Object>()
+    payload.put("type", "page")
+    payload.put("title", title)
+    payload.put("space", spacePayload)
+    payload.put("body", bodyPayload)
+
+    List<Map<String, Object>> ancestors = null
+    if (parentId != null && !parentId.trim().isEmpty()) {
+        Map<String, Object> ancestor = new LinkedHashMap<String, Object>()
+        ancestor.put("id", parentId.trim())
+        ancestors = new ArrayList<Map<String, Object>>()
+        ancestors.add(ancestor)
+    }
+
+    String writeUrl = "/rest/api/content/" + existingId
+    Map<String, Object> call = null
+    if (existingId == null || existingId.trim().isEmpty()) {
+        if (ancestors != null) {
+            payload.put("ancestors", ancestors)
+        }
+        call = confluenceCall(factory, Request.MethodType.POST, "/rest/api/content", JsonOutput.toJson(payload))
+    } else {
+        Map<String, Object> version = new LinkedHashMap<String, Object>()
+        version.put("number", Integer.valueOf(existingVersion + 1))
+        version.put("message", "Jira App Footprint Analysis export")
+
+        payload.put("id", existingId)
+        payload.put("version", version)
+
+        /* Only a move this run actually has to make. A page that already sits
+         * directly under the named parent is written without ancestors, so an
+         * unchanged repeat run does not send a reparent it does not need. */
+        boolean sentAncestors = ancestors != null && Cx.MOVE_REQUESTED.equals(moveDecision)
+        if (sentAncestors) {
+            payload.put("ancestors", ancestors)
+        }
+        call = confluenceCall(factory, Request.MethodType.PUT, writeUrl, JsonOutput.toJson(payload))
+
+        if (call.get("ok") != Boolean.TRUE && sentAncestors) {
+            /* The report matters more than its position, and the ancestors on this
+             * PUT are unverified. A rejected write is retried once without them
+             * rather than losing the report to an experiment. The retry reuses the
+             * same version number on purpose: if the first PUT did change the page
+             * after all, the retry fails on the version conflict and the caller
+             * reports a failed write instead of writing a second version. */
+            result.put("parentSendError", String.valueOf(call.get("error")))
+            payload.remove("ancestors")
+            call = confluenceCall(factory, Request.MethodType.PUT, writeUrl, JsonOutput.toJson(payload))
+        }
+    }
+
+    if (call.get("ok") != Boolean.TRUE) {
+        result.put("error", call.get("error"))
+        return result
+    }
+
+    Map<String, Object> json = (Map<String, Object>) call.get("json")
+    String writtenId = Cx.str(json, "id", existingId)
+    if (writtenId == null || writtenId.trim().isEmpty()) {
+        result.put("error", "Confluence accepted the write but returned no page ID, so the result cannot be confirmed.")
+        return result
+    }
+
+    result.put("ok", Boolean.TRUE)
+    result.put("id", writtenId)
+
+    /* The version and the position are both read back rather than assumed. An
+     * accepted write is the server reporting on itself; it is not a measurement of
+     * the page, and for the position it is not even a documented one. If the
+     * read-back does not answer, the version stays null and parentMeasured stays
+     * false, and the caller says so for each - the page is written either way, but
+     * an unconfirmed number is never invented and an unmeasured position is
+     * reported as unknown rather than as a move that worked. */
+    Map<String, Object> verify = confluenceCall(factory, Request.MethodType.GET,
+        "/rest/api/content/" + writtenId + "?expand=version,ancestors", null)
+    if (verify.get("ok") == Boolean.TRUE) {
+        Map<String, Object> verified = (Map<String, Object>) verify.get("json")
+        Map<String, Object> chain = Cx.innermostAncestor(verified)
+        result.put("parentMeasured", chain.get("measured"))
+        result.put("actualParentId", chain.get("parentId"))
+        long confirmed = Cx.lng(Cx.sub(verified, "version"), "number")
+        if (confirmed > 0L) {
+            result.put("version", Integer.valueOf((int) confirmed))
+            return result
+        }
+    }
+
+    long fromWrite = Cx.lng(Cx.sub(json, "version"), "number")
+    if (fromWrite > 0L) {
+        result.put("version", Integer.valueOf((int) fromWrite))
+    }
+    return result
+}
+
+/* =============================================================================
+ * REST Endpoint - Confluence page export (POST)
+ * ========================================================================== */
+
+/* Same endpoint name as the report with a different httpMethod. The Adaptavist
+ * documentation states that several closures with the same name and different
+ * verbs may live in one file, so the report page can POST to its own URL without
+ * knowing the REST base path.
+ *
+ * CSRF - UNVERIFIED. The Custom REST Endpoint documentation does not say whether
+ * these endpoints sit behind the Jira XSRF filter, so the report page sends
+ * X-Atlassian-Token: no-check, which is required if the filter applies and
+ * harmless if it does not. Reading that header back would need the three-argument
+ * HttpServletRequest closure form, and the servlet package this ScriptRunner
+ * version passes (javax or jakarta) is exactly what this file avoids depending
+ * on, so no header check is attempted here. What IS enforced on the server: the
+ * jira-administrators gate, the Confluence permissions of the impersonated user
+ * on the far side of the application link, and the rule that only a page carrying
+ * the export marker is ever updated - a forged request can neither replace a
+ * foreign page nor drop a remark. TO CONFIRM before relying on more than that:
+ * whether the XSRF filter covers ScriptRunner endpoints, and which
+ * HttpServletRequest type is passed, so an explicit header check can be added. */
+projectConfig(
+    httpMethod: "POST",
+    groups: ["jira-administrators"]
+) { queryParams, body ->
+
+    long started = System.currentTimeMillis()
+
+    /* ---- JAX-RS Response, resolved at runtime (javax / jakarta neutral) --- */
+
+    Class responseClass = Http.resolveResponseClass()
+
+    def refuse = { int status, String stage, String message ->
+        Map<String, Object> payload = new LinkedHashMap<String, Object>()
+        payload.put("ok", Boolean.FALSE)
+        payload.put("written", Boolean.FALSE)
+        payload.put("stage", stage)
+        payload.put("error", message)
+        payload.put("executionMs", Long.valueOf(System.currentTimeMillis() - started))
+        return Http.build(responseClass, status,
+            JsonOutput.prettyPrint(JsonOutput.toJson(payload)), Http.JSON, null)
+    }
+
+    /* ---- Request ----------------------------------------------------------- */
+
+    String requestBody = body == null ? null : body.toString()
+
+    if (requestBody == null || requestBody.trim().isEmpty()) {
+        return refuse(400, "request", "The request body is empty. The export payload is expected as JSON.")
+    }
+    if (requestBody.length() > Cx.MAX_PAYLOAD_CHARS) {
+        return refuse(413, "request", "The export payload exceeds " + String.valueOf(Cx.MAX_PAYLOAD_CHARS) + " characters.")
+    }
+
+    Object parsed = null
+    try {
+        parsed = new JsonSlurper().parseText(requestBody)
+    } catch (Exception error) {
+        return refuse(400, "request", "The request body is not valid JSON: " + error.getClass().getSimpleName())
+    }
+    if (!(parsed instanceof Map)) {
+        return refuse(400, "request", "The request body must be a JSON object.")
+    }
+
+    /* The payload is the report model the GET branch serialised for this run, so
+     * the page shows exactly the figures the administrator saw. It travels through
+     * the browser, which means an administrator could tamper with it - the same
+     * administrator who may edit any page they can reach anyway. Everything is
+     * escaped on the way into storage format, and the remark carry-over below is
+     * unaffected by it: remarks come from the existing page and are read here. */
+    Map<String, Object> request = Cx.copyMap((Map<?, ?>) parsed)
+
+    /* ---- Staged lookups ---------------------------------------------------- */
+
+    /* Rendering the report reads nothing. Everything the export form needs arrives
+     * here on demand, one stage per request, discriminated by "action":
+     * links -> spaces -> pages -> write. A body without an action is the write, so
+     * the write path below keeps the shape and the order it always had. */
+    String action = Cx.str(request, "action", "write").toLowerCase(Locale.ROOT)
+
+    def answer = { Map<String, Object> data ->
+        data.put("executionMs", Long.valueOf(System.currentTimeMillis() - started))
+        return Http.ok(responseClass, JsonOutput.prettyPrint(JsonOutput.toJson(data)), Http.JSON)
+    }
+
+    if (action == "links" || action == "spaces" || action == "pages") {
+        Map<String, Object> lookup = confluenceApplicationLinks()
+        if (lookup.get("ok") != Boolean.TRUE) {
+            return refuse(500, "link", String.valueOf(lookup.get("error")))
+        }
+        List<ApplicationLink> confluenceLinks = (List<ApplicationLink>) lookup.get("links")
+        if (confluenceLinks.isEmpty()) {
+            return refuse(500, "link", "No Confluence application link was found in this Jira instance, so there " +
+                "is nowhere to write. Seen: " + String.valueOf(lookup.get("seen")) + " application link(s), type(s): " +
+                String.valueOf(lookup.get("seenTypes")) + ". If a Confluence link does exist, report those two values. " +
+                "Otherwise create the link under Administration > Applications > Application links, then press " +
+                "Export to Confluence again.")
+        }
+
+        if (action == "links") {
+            String primaryId = lookup.get("primaryId") == null ? null : lookup.get("primaryId").toString()
+            List<Map<String, Object>> rows = new ArrayList<Map<String, Object>>()
+            for (ApplicationLink link : confluenceLinks) {
+                String id = confluenceLinkId(link)
+                if (id == null) {
+                    continue
+                }
+                Map<String, Object> row = new LinkedHashMap<String, Object>()
+                row.put("id", id)
+                row.put("name", confluenceLinkName(link))
+                row.put("displayUrl", confluenceLinkUrl(link))
+                row.put("primary", Boolean.valueOf(primaryId != null && primaryId == id))
+                rows.add(row)
+            }
+            if (rows.isEmpty()) {
+                return refuse(500, "link", "The Confluence application links of this instance carry no readable id, " +
+                    "so no target can be picked.")
+            }
+            /* Exactly one link is still offered as a list of one, preselected by the
+             * browser, so the administrator always sees where the page will land. */
+            Map<String, Object> linkPayload = new LinkedHashMap<String, Object>()
+            linkPayload.put("ok", Boolean.TRUE)
+            linkPayload.put("action", "links")
+            linkPayload.put("typedLookup", lookup.get("typed"))
+            linkPayload.put("links", rows)
+            return answer(linkPayload)
+        }
+
+        Map<String, Object> target = confluenceTarget(confluenceLinks, Cx.str(request, "applicationLinkId", ""))
+        if (target.get("ok") != Boolean.TRUE) {
+            return refuse(500, "link", String.valueOf(target.get("error")))
+        }
+        ApplicationLink targetLink = (ApplicationLink) target.get("link")
+        ApplicationLinkRequestFactory targetFactory = (ApplicationLinkRequestFactory) target.get("factory")
+
+        if (action == "spaces") {
+            Map<String, Object> spaceResult = confluenceSpaces(targetFactory)
+            if (spaceResult.get("ok") != Boolean.TRUE) {
+                return refuse(500, "spaces", "The space list could not be read over the application link \"" +
+                    confluenceLinkName(targetLink) + "\": " + String.valueOf(spaceResult.get("error")))
+            }
+            List<Map<String, Object>> spaceRows = (List<Map<String, Object>>) spaceResult.get("spaces")
+            if (spaceRows.isEmpty()) {
+                return refuse(500, "spaces", "Confluence answered over the application link \"" +
+                    confluenceLinkName(targetLink) + "\" but returned no space this user may see, so no space can be picked.")
+            }
+            spaceRows.sort { Map<String, Object> a, Map<String, Object> b ->
+                int byName = Cx.str(a, "name", "").compareToIgnoreCase(Cx.str(b, "name", ""))
+                if (byName != 0) {
+                    return byName
+                }
+                return Cx.str(a, "key", "").compareToIgnoreCase(Cx.str(b, "key", ""))
+            }
+            /* GET /rest/api/space documents no substring parameter, so the whole
+             * current-space list is read once per target and the search runs over
+             * it. What reaches the page is the matches, never the full list. */
+            Map<String, Object> spacePayload = new LinkedHashMap<String, Object>()
+            spacePayload.put("ok", Boolean.TRUE)
+            spacePayload.put("action", "spaces")
+            spacePayload.put("target", confluenceLinkName(targetLink))
+            spacePayload.put("spaces", spaceRows)
+            spacePayload.put("truncated", spaceResult.get("truncated"))
+            return answer(spacePayload)
+        }
+
+        String searchSpace = Cx.str(request, "spaceKey", "")
+        String searchQuery = Cx.str(request, "query", "")
+        if (searchSpace.isEmpty()) {
+            return refuse(400, "pages", "No space was selected, so there is nothing to search in.")
+        }
+        if (searchQuery.trim().length() < Cx.MIN_SEARCH_CHARS) {
+            return refuse(400, "pages", "Type at least " + String.valueOf(Cx.MIN_SEARCH_CHARS) +
+                " characters of the page title.")
+        }
+        Map<String, Object> found = confluenceSearchPages(targetFactory, searchSpace, searchQuery)
+        if (found.get("ok") != Boolean.TRUE) {
+            return refuse(500, "pages", String.valueOf(found.get("error")))
+        }
+        Map<String, Object> pagePayload = new LinkedHashMap<String, Object>()
+        pagePayload.put("ok", Boolean.TRUE)
+        pagePayload.put("action", "pages")
+        pagePayload.put("spaceKey", searchSpace)
+        pagePayload.put("pages", found.get("pages"))
+        pagePayload.put("truncated", found.get("truncated"))
+        return answer(pagePayload)
+    }
+
+    /* ---- Page export: validate --------------------------------------------- */
+
+    Map<String, Object> options = Cx.sub(request, "options")
+
+    String spaceKey = Cx.str(request, "spaceKey", "")
+    String title = Cx.str(request, "title", "")
+    String parentRaw = Cx.str(request, "parentPageId", "").trim()
+    String parentTitleRaw = Cx.str(request, "parentTitle", "").trim()
+
+    if (spaceKey.isEmpty()) {
+        return refuse(400, "validate", "No space was selected.")
+    }
+    String spaceProblem = Cx.spaceKeyProblem(spaceKey)
+    if (!spaceProblem.isEmpty()) {
+        return refuse(400, "validate", "The space key \"" + spaceKey + "\" cannot be used: " + spaceProblem +
+            ". Nothing is written.")
+    }
+    if (title.isEmpty()) {
+        return refuse(400, "validate", "No page title was given.")
+    }
+    /* Exactly one parent instruction, never two. A picked page and a typed title
+     * can disagree, and guessing which one the administrator meant is how a
+     * report lands somewhere nobody looks. The request is refused instead. */
+    String parentProblem = Cx.parentProblem(parentRaw, parentTitleRaw, title)
+    if (!parentProblem.isEmpty()) {
+        return refuse(400, "validate", parentProblem)
+    }
+    if (title.length() > Cx.MAX_TITLE_CHARS) {
+        return refuse(400, "validate", "The page title exceeds " + String.valueOf(Cx.MAX_TITLE_CHARS) + " characters.")
+    }
+    if (Cx.rowsOf(request, "apps").isEmpty()) {
+        return refuse(400, "validate", "The export payload carries no apps. Nothing is written.")
+    }
+
+    /* ---- Application link -------------------------------------------------- */
+
+    /* The target is the one the administrator picked in the form, resolved by its
+     * ApplicationId inside the Confluence links of this instance. The link is no
+     * longer guessed as "the first Confluence link that matched", which on an
+     * instance with two Confluence links could write to the wrong site silently. */
+    Map<String, Object> writeLookup = confluenceApplicationLinks()
+    if (writeLookup.get("ok") != Boolean.TRUE) {
+        return refuse(500, "link", String.valueOf(writeLookup.get("error")) + " Nothing is written.")
+    }
+    List<ApplicationLink> writeLinks = (List<ApplicationLink>) writeLookup.get("links")
+    if (writeLinks.isEmpty()) {
+        return refuse(500, "link", "No Confluence application link was found in this Jira instance, so there is " +
+            "nowhere to write. Seen: " + String.valueOf(writeLookup.get("seen")) + " application link(s), type(s): " +
+            String.valueOf(writeLookup.get("seenTypes")) + ". Nothing is written.")
+    }
+
+    Map<String, Object> writeTarget = confluenceTarget(writeLinks, Cx.str(request, "applicationLinkId", ""))
+    if (writeTarget.get("ok") != Boolean.TRUE) {
+        return refuse(500, "link", String.valueOf(writeTarget.get("error")))
+    }
+    ApplicationLink link = (ApplicationLink) writeTarget.get("link")
+    ApplicationLinkRequestFactory factory = (ApplicationLinkRequestFactory) writeTarget.get("factory")
+
+    /* ---- Parent page ------------------------------------------------------- */
+
+    /* Three outcomes, kept apart in the response: no parent, a parent that was
+     * found, and a parent this run created. Creating is never reported as
+     * finding - an administrator who reads "found" believes the page was already
+     * there and stops looking for the one that was just made. */
+    String parentId = null
+    String parentTitle = null
+    String parentAction = "none"
+
+    if (!parentRaw.isEmpty()) {
+        try {
+            Long.parseLong(parentRaw)
+        } catch (NumberFormatException ignored) {
+            return refuse(400, "validate", "The parent page ID \"" + parentRaw + "\" is not a number.")
+        }
+        Map<String, Object> parent = confluenceParentPage(factory, parentRaw)
+        if (parent.get("ok") != Boolean.TRUE) {
+            return refuse(400, "validate", String.valueOf(parent.get("error")))
+        }
+        String parentSpace = String.valueOf(parent.get("spaceKey"))
+        if (!spaceKey.equalsIgnoreCase(parentSpace)) {
+            return refuse(400, "validate", "The parent page " + parentRaw + " sits in space \"" + parentSpace +
+                "\", not in \"" + spaceKey + "\". Nothing is written.")
+        }
+        parentId = parentRaw
+        parentTitle = parent.get("title") == null ? null : parent.get("title").toString()
+        parentAction = "found"
+    }
+
+    /* ---- Decision read ----------------------------------------------------- */
+
+    Map<String, Object> existing = confluenceFindPage(factory, spaceKey, title)
+    if (existing.get("ok") != Boolean.TRUE) {
+        return refuse(409, "read", "The existing page could not be looked up in Confluence (" +
+            String.valueOf(existing.get("error")) + "). Nothing is written, so no remark can be lost.")
+    }
+
+    RemarkRead read = new RemarkRead()
+    boolean pageExists = existing.get("found") == Boolean.TRUE
+
+    if (pageExists) {
+        if (existing.get("storageRead") != Boolean.TRUE) {
+            return refuse(409, "read", "A page with this title already exists in \"" + spaceKey + "\" but its body did " +
+                "not arrive over the application link. Nothing is written, so no remark can be lost.")
+        }
+        read = Cx.parseRemarks(String.valueOf(existing.get("storage")))
+        read.pageId = existing.get("id") == null ? null : existing.get("id").toString()
+        read.pageVersion = ((Number) existing.get("version")).intValue()
+    }
+
+    /* Fail closed. This is the only path to a write and a FAILED read never passes
+     * it: no create, no update, reported to the caller as a failure. A page that
+     * would lose administrator notes is never produced. */
+    if (!read.isWriteAllowed()) {
+        Map<String, Object> refusal = new LinkedHashMap<String, Object>()
+        refusal.put("ok", Boolean.FALSE)
+        refusal.put("written", Boolean.FALSE)
+        refusal.put("stage", "read")
+        refusal.put("error", read.reason)
+        refusal.put("remarkRead", read.outcome)
+        refusal.put("remarkReadDetail", read.asMap())
+        refusal.put("spaceKey", spaceKey)
+        refusal.put("title", title)
+        refusal.put("executionMs", Long.valueOf(System.currentTimeMillis() - started))
+        return Http.build(responseClass, 409,
+            JsonOutput.prettyPrint(JsonOutput.toJson(refusal)), Http.JSON, null)
+    }
+
+    /* ---- Parent page from a typed title ------------------------------------ */
+
+    /* There is no Create button: a title that was typed and never picked is
+     * resolved by the generating run. It sits AFTER the fail-closed remark read
+     * on purpose - a run that is about to be refused with a 409 must not leave a
+     * container page behind that nothing was ever filed under. */
+    if (parentId == null && !parentTitleRaw.isEmpty()) {
+        Map<String, Object> parent = confluenceParentByTitle(factory, spaceKey, parentTitleRaw)
+        if (parent.get("ok") != Boolean.TRUE) {
+            /* No fallback to the top level of the space. A report filed where
+             * nobody expects it is worse than a run that stops and says why. */
+            return refuse(500, "parent", String.valueOf(parent.get("error")) + " Nothing is written.")
+        }
+        parentId = String.valueOf(parent.get("id"))
+        parentTitle = parentTitleRaw
+        parentAction = parent.get("created") == Boolean.TRUE ? "created" : "found"
+    }
+
+    /* ---- Write ------------------------------------------------------------- */
+
+    ExportOutcome outcome = Cx.render(request, read)
+
+    /* What this run does about the position. A parent named in this run is carried
+     * out even when the report page already exists - that is the defect this fixes,
+     * a typed parent title that produced the parent page and then filed nothing
+     * under it. A run that names no parent leaves the position alone.
+     *
+     * The current parent came back with the existence check above at no extra call.
+     * When it was not readable the decision resolves to "move": carrying out the
+     * instruction is the safe direction, and only a positive match skips. */
+    String currentParentId = existing.get("parentMeasured") == Boolean.TRUE && existing.get("parentId") != null
+        ? existing.get("parentId").toString()
+        : null
+    String moveDecision = Cx.moveDecision(parentId, currentParentId)
+
+    Map<String, Object> written = confluenceWritePage(factory, spaceKey, title, outcome.storage,
+        parentId, read.pageId, read.pageVersion, moveDecision)
+    if (written.get("ok") != Boolean.TRUE) {
+        return refuse(500, "write", "The Confluence page could not be written: " + String.valueOf(written.get("error")))
+    }
+
+    String pageId = written.get("id") == null ? null : written.get("id").toString()
+    Object pageVersion = written.get("version")
+    if (pageVersion == null) {
+        outcome.warnings.add("The page was written, but its new version number could not be read back from Confluence.")
+    }
+
+    /* The verdict on the position, and it is the read-back that decides it, not the
+     * accepted write. This matters more here than on the Confluence endpoint: the
+     * move rides on an ancestors array in a PUT whose reparenting behaviour on
+     * Confluence Data Center 10 no primary source could confirm. Measuring it is
+     * the whole reason the field exists, and an unmeasured position is reported as
+     * unknown rather than as a success. */
+    Map<String, Object> parentVerdict = Cx.parentOutcome(parentId,
+        written.get("parentMeasured") == Boolean.TRUE,
+        written.get("actualParentId") == null ? null : written.get("actualParentId").toString(),
+        written.get("parentSendError") == null ? null : written.get("parentSendError").toString())
+    if (parentVerdict.get("reason") != null) {
+        outcome.warnings.add(parentVerdict.get("reason").toString())
+    }
+
+    Map<String, Object> response = new LinkedHashMap<String, Object>()
+    response.put("ok", Boolean.TRUE)
+    response.put("written", Boolean.TRUE)
+    response.put("action", pageExists ? "updated" : "created")
+    response.put("target", confluenceLinkName(link))
+    response.put("spaceKey", spaceKey)
+    response.put("title", title)
+    response.put("pageId", pageId)
+    response.put("pageVersion", pageVersion)
+    response.put("pageUrl", confluencePageUrl(link, pageId))
+    response.put("parentPageId", parentId)
+    response.put("parentAction", parentAction)
+    response.put("parentTitle", parentTitle)
+    response.put("parentPageUrl", parentId == null ? null : confluencePageUrl(link, parentId))
+    response.put("parentMove", moveDecision)
+    response.put("parentApplied", parentVerdict.get("applied"))
+    response.put("parentAppliedReason", parentVerdict.get("reason"))
+    response.put("remarkRead", read.outcome)
+    response.put("remarkReadDetail", read.asMap())
+    response.put("remarksRead", Integer.valueOf(outcome.remarksRead))
+    response.put("remarksCarried", Integer.valueOf(outcome.remarksCarried))
+    response.put("orphanedRemarks", Integer.valueOf(outcome.orphanKeys.size()))
+    response.put("orphanedKeys", outcome.orphanKeys)
+    response.put("warnings", outcome.warnings)
+    response.put("executionMs", Long.valueOf(System.currentTimeMillis() - started))
+
+    return Http.ok(responseClass, JsonOutput.prettyPrint(JsonOutput.toJson(response)), Http.JSON)
 }
