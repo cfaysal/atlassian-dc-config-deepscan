@@ -55,19 +55,75 @@
  *   The provenance of every link shape used here is recorded in Dl below.
  * ========================================================================== */
 
+import com.atlassian.jira.bc.project.component.ProjectComponent
+import com.atlassian.jira.bc.project.component.ProjectComponentManager
 import com.atlassian.jira.component.ComponentAccessor
 import com.atlassian.jira.config.properties.ApplicationProperties
+import com.atlassian.jira.event.type.EventType
+import com.atlassian.jira.event.type.EventTypeManager
+import com.atlassian.jira.issue.CustomFieldManager
+import com.atlassian.jira.issue.customfields.manager.OptionsManager
+import com.atlassian.jira.issue.customfields.option.Option
+import com.atlassian.jira.issue.fields.CustomField
+import com.atlassian.jira.issue.fields.config.FieldConfig
+import com.atlassian.jira.issue.fields.config.FieldConfigScheme
+import com.atlassian.jira.issue.fields.config.manager.IssueTypeSchemeManager
+import com.atlassian.jira.issue.fields.layout.field.FieldConfigurationScheme
+import com.atlassian.jira.issue.fields.layout.field.FieldLayout
+import com.atlassian.jira.issue.fields.layout.field.FieldLayoutItem
+import com.atlassian.jira.issue.fields.layout.field.FieldLayoutManager
+import com.atlassian.jira.issue.fields.screen.FieldScreen
+import com.atlassian.jira.issue.fields.screen.FieldScreenScheme
+import com.atlassian.jira.issue.fields.screen.FieldScreenSchemeItem
+import com.atlassian.jira.issue.fields.screen.FieldScreenLayoutItem
+import com.atlassian.jira.issue.fields.screen.FieldScreenTab
+import com.atlassian.jira.issue.fields.screen.issuetype.IssueTypeScreenScheme
+import com.atlassian.jira.issue.fields.screen.issuetype.IssueTypeScreenSchemeEntity
+import com.atlassian.jira.issue.fields.screen.issuetype.IssueTypeScreenSchemeManager
+import com.atlassian.jira.issue.issuetype.IssueType
+import com.atlassian.jira.issue.operation.IssueOperations
+import com.atlassian.jira.issue.operation.ScreenableIssueOperation
+import com.atlassian.jira.issue.security.IssueSecurityLevel
+import com.atlassian.jira.issue.security.IssueSecurityLevelManager
+import com.atlassian.jira.issue.security.IssueSecuritySchemeManager
+import com.atlassian.jira.issue.security.IssueSecurityTypeManager
+import com.atlassian.jira.issue.status.Status
+import com.atlassian.jira.notification.NotificationSchemeManager
+import com.atlassian.jira.notification.NotificationTypeManager
+import com.atlassian.jira.permission.PermissionSchemeManager
+import com.atlassian.jira.permission.PermissionTypeManager
 import com.atlassian.jira.project.Project
 import com.atlassian.jira.project.ProjectCategory
 import com.atlassian.jira.project.ProjectManager
 import com.atlassian.jira.project.type.ProjectType
 import com.atlassian.jira.project.type.ProjectTypeKey
 import com.atlassian.jira.project.type.ProjectTypeManager
+import com.atlassian.jira.project.version.Version
+import com.atlassian.jira.project.version.VersionManager
+import com.atlassian.jira.scheme.Scheme
+import com.atlassian.jira.scheme.SchemeEntity
 import com.atlassian.jira.security.JiraAuthenticationContext
+import com.atlassian.jira.security.roles.ProjectRole
+import com.atlassian.jira.security.roles.ProjectRoleActors
+import com.atlassian.jira.security.roles.ProjectRoleManager
+import com.atlassian.jira.security.roles.RoleActor
 import com.atlassian.jira.user.ApplicationUser
 import com.atlassian.jira.util.BuildUtilsInfo
+import com.atlassian.jira.util.I18nHelper
+import com.atlassian.jira.workflow.AssignableWorkflowScheme
+import com.atlassian.jira.workflow.JiraWorkflow
+import com.atlassian.jira.workflow.WorkflowManager
+import com.atlassian.jira.workflow.WorkflowSchemeManager
+
+import com.opensymphony.workflow.loader.ActionDescriptor
+import com.opensymphony.workflow.loader.FunctionDescriptor
+import com.opensymphony.workflow.loader.ResultDescriptor
+import com.opensymphony.workflow.loader.StepDescriptor
+import com.opensymphony.workflow.loader.ValidatorDescriptor
 
 import com.onresolve.scriptrunner.runner.rest.common.CustomEndpointDelegate
+
+import org.codehaus.groovy.runtime.InvokerHelper
 
 import groovy.json.JsonOutput
 import groovy.transform.BaseScript
@@ -178,8 +234,13 @@ class Pc {
 
     /* ---- query parameters ---------------------------------------------- */
 
+    /* queryParams is the JAX-RS MultivaluedMap, and naming that type would drag
+     * either javax.ws.rs or jakarta.ws.rs into this file - the one dependency this
+     * endpoint exists without, so that a single file runs on ScriptRunner 8 and
+     * on ScriptRunner 10. The call is therefore made through the invoker, which is
+     * both namespace-neutral and resolvable by the static type checker. */
     static String stringParam(Object queryParams, String name, String defaultValue) {
-        Object raw = queryParams == null ? null : queryParams.getFirst(name)
+        Object raw = queryParams == null ? null : duck(queryParams, "getFirst", name)
         if (raw == null) {
             return defaultValue
         }
@@ -242,8 +303,100 @@ class Pc {
         }
     }
 
+    static String flag(boolean value) {
+        return value ? "yes" : "no"
+    }
+
+    static String dateText(Date value) {
+        return value == null ? NA : new java.text.SimpleDateFormat("yyyy-MM-dd").format(value)
+    }
+
+    /* Reading a bean property that may not exist on this Jira line. Everything
+     * the report shows about scheme grants comes out of Jira's own type registry
+     * rather than out of a hard-coded table of type strings, and the shape of
+     * that registry differs between versions: what is an interface on one line is
+     * an enum on another. Asking the object whether it answers a method, instead
+     * of declaring which interface it must implement, is what lets one file serve
+     * both. A miss returns null and the caller falls back to the raw value. */
+    static Object duck(Object target, String method, Object argument) {
+        return duckAll(target, method, argument == null ? new Object[0] : ([argument] as Object[]))
+    }
+
+    /* Written against InvokerHelper rather than as target."$name"() on purpose.
+     * A dynamic method name is invisible to the static type checker and shows up
+     * as an error in the ScriptRunner editor, which is the one place an
+     * administrator reads this file before running it. This form does the same
+     * thing and stays checkable. */
+    static Object duckAll(Object target, String method, Object[] arguments) {
+        if (target == null) {
+            return null
+        }
+        try {
+            return InvokerHelper.invokeMethod(target, method, arguments)
+        } catch (MissingMethodException ignored) {
+            return null
+        } catch (Exception ignored) {
+            return null
+        }
+    }
+
     static String timestamp() {
         return ZonedDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z"))
+    }
+}
+
+/* =============================================================================
+ * The HTTP response, built without naming a JAX-RS namespace
+ *
+ * The namespace a ScriptRunner script needs follows the ScriptRunner version, not
+ * the Jira version: 10.x and above use jakarta.ws.rs.*, 8.x to 9.x use
+ * javax.ws.rs.*. Importing either one would tie this file to one of the two lines.
+ * The class is therefore resolved at runtime and the builder chain is driven
+ * through the invoker.
+ *
+ * Keeping that in one class rather than at each of the four call sites has a
+ * second effect that matters more than the tidiness: the whole thing becomes
+ * testable off-instance, because a fake response class is enough to prove the
+ * chain is built in the right order with the right arguments.
+ * ========================================================================== */
+
+class Http {
+
+    static final String HTML = "text/html; charset=UTF-8"
+    static final String JSON = "application/json; charset=UTF-8"
+    static final String CSV = "text/csv; charset=UTF-8"
+
+    static Class resolveResponseClass() {
+        try {
+            return Class.forName("jakarta.ws.rs.core.Response")
+        } catch (ClassNotFoundException ignored) {
+            return Class.forName("javax.ws.rs.core.Response")
+        }
+    }
+
+    /* status 200 goes through ok(entity), anything else through
+     * status(code).entity(entity), because that is the shape JAX-RS offers. */
+    static Object build(Class responseClass, int status, String entity,
+                        String contentType, Map<String, String> headers) {
+        Object builder
+        if (status == 200) {
+            builder = Pc.duckAll(responseClass, "ok", [entity] as Object[])
+        } else {
+            builder = Pc.duckAll(responseClass, "status", [Integer.valueOf(status)] as Object[])
+            builder = Pc.duckAll(builder, "entity", [entity] as Object[])
+        }
+        builder = Pc.duckAll(builder, "type", [contentType] as Object[])
+        if (headers != null) {
+            for (Map.Entry<String, String> header : headers.entrySet()) {
+                builder = Pc.duckAll(builder, "header",
+                    [header.getKey(), header.getValue()] as Object[])
+            }
+        }
+        return Pc.duckAll(builder, "build", new Object[0])
+    }
+
+    static Object ok(Class responseClass, String entity, String contentType) {
+        return build(responseClass, 200, entity, contentType, null)
     }
 }
 
@@ -1107,6 +1260,1411 @@ document.addEventListener('click', function (event) {
 }
 
 /* =============================================================================
+ * END OF THE JIRA-FREE BLOCK
+ *
+ * Everything above this line is free of Jira types on purpose: CI cuts exactly
+ * that block out of this file and compiles it together with the test suite, so
+ * the suite always exercises the shipped source instead of a copy that can drift.
+ * Everything below touches Jira and can only be verified on an instance.
+ * ========================================================================== */
+
+/* =============================================================================
+ * The scan
+ *
+ * One method per section of the report. Every method returns a node, never
+ * throws, and never turns a failed read into an empty result: the reason is
+ * attached to the node it belongs to, which is what lets the reader tell
+ * "nothing is configured here" from "this could not be read".
+ * ========================================================================== */
+
+class Scan {
+
+    Project project
+    Dl links
+    I18nHelper i18n
+
+    Scan(Project project, Dl links, I18nHelper i18n) {
+        this.project = project
+        this.links = links
+        this.i18n = i18n
+    }
+
+    /* The single place a read is allowed to fail. A caller that writes its own
+     * try/catch will eventually write one that swallows, and a swallowed read is
+     * how a report starts claiming an absence it never measured. */
+    private static Nd guard(Nd node, Closure body) {
+        try {
+            body.call(node)
+        } catch (Exception error) {
+            node.failed(describe(error))
+        }
+        return node
+    }
+
+    private static String describe(Throwable error) {
+        String message = Pc.text(error.getMessage())
+        return "Read failed: " + error.getClass().getSimpleName() +
+            (message == null ? "" : " - " + message)
+    }
+
+    private static String constantName(Object constant) {
+        if (constant == null) {
+            return Pc.NA
+        }
+        Object name = Pc.duck(constant, "getName", null)
+        return name == null ? constant.toString() : name.toString()
+    }
+
+    private static String userLabel(ApplicationUser user) {
+        if (user == null) {
+            return null
+        }
+        String display = Pc.text(user.getDisplayName())
+        String name = Pc.text(user.getName())
+        if (display == null) {
+            return name
+        }
+        return name == null ? display : display + " (" + name + ")"
+    }
+
+    /* ---- 1. issue type scheme -------------------------------------------- */
+
+    Nd issueTypeScheme() {
+        Nd node = Nd.of("issueTypeScheme", "Issue type scheme")
+        /* The one link shape in this report that could not be evidenced. Rather
+         * than inventing a parameter for ManageIssueTypeSchemes, the node stays
+         * unlinked and says so, and its issue types link to the project page that
+         * does have an evidenced address. */
+        node.link(null, links.issueTypeSchemeUnavailableNote())
+        return guard(node) { Nd self ->
+            IssueTypeSchemeManager manager = ComponentAccessor.getComponent(IssueTypeSchemeManager)
+            if (manager == null) {
+                self.failed("IssueTypeSchemeManager is not available in this instance.")
+                return
+            }
+            FieldConfigScheme scheme = manager.getConfigScheme(project)
+            if (scheme == null) {
+                self.absent("No issue type scheme is associated with this project.")
+                return
+            }
+            self.label = "Issue type scheme: " + Pc.orNa(scheme.getName())
+            self.ident(scheme.getId())
+            if (Pc.text(scheme.getDescription()) != null) {
+                self.val(scheme.getDescription())
+            }
+
+            IssueType defaultType = null
+            try {
+                defaultType = manager.getDefaultValue(project.getGenericValue())
+            } catch (Exception ignored) {
+                /* The default issue type is a convenience, not the scheme. If the
+                 * accessor is not available on this line the scheme still reports
+                 * in full, and the reader is told which single fact is missing. */
+            }
+            Nd defaultNode = Nd.of("issueTypeDefault", "Default issue type")
+            if (defaultType == null) {
+                defaultNode.absent("No default issue type, or it could not be read")
+            } else {
+                defaultNode.val(defaultType.getName()).ident(defaultType.getId())
+                defaultNode.link(links.projectIssueType(project.getKey(), defaultType.getId()), null)
+            }
+            self.add(defaultNode)
+
+            Collection<IssueType> types = manager.getIssueTypesForProject(project)
+            if (types == null || types.isEmpty()) {
+                self.add(Nd.of("issueType", "Issue types").absent("The scheme contains no issue type."))
+                return
+            }
+            for (IssueType type : types) {
+                Nd typeNode = Nd.of("issueType", type.getName())
+                typeNode.ident(type.getId())
+                typeNode.val(type.isSubTask() ? "sub-task" : "standard")
+                typeNode.link(links.projectIssueType(project.getKey(), type.getId()), null)
+                if (Pc.text(type.getDescription()) != null) {
+                    typeNode.add(Nd.of("issueTypeDescription", "Description").val(type.getDescription()))
+                }
+                self.add(typeNode)
+            }
+        }
+    }
+
+    /* ---- 2. issue type screen scheme, down to the field ------------------- */
+
+    Nd issueTypeScreenScheme() {
+        Nd node = Nd.of("issueTypeScreenScheme", "Issue type screen scheme")
+        node.link(links.projectScreens(project.getKey()), null)
+        return guard(node) { Nd self ->
+            IssueTypeScreenSchemeManager manager =
+                ComponentAccessor.getComponent(IssueTypeScreenSchemeManager)
+            if (manager == null) {
+                self.failed("IssueTypeScreenSchemeManager is not available in this instance.")
+                return
+            }
+            IssueTypeScreenScheme scheme = manager.getIssueTypeScreenScheme(project)
+            if (scheme == null) {
+                self.absent("No issue type screen scheme is associated with this project.")
+                return
+            }
+            self.label = "Issue type screen scheme: " + Pc.orNa(scheme.getName())
+            self.ident(scheme.getId())
+            self.link(links.issueTypeScreenScheme(scheme.getId()), null)
+            if (Pc.text(scheme.getDescription()) != null) {
+                self.val(scheme.getDescription())
+            }
+
+            Collection<IssueTypeScreenSchemeEntity> entities = scheme.getEntities()
+            if (entities == null || entities.isEmpty()) {
+                self.add(Nd.of("issueTypeScreenSchemeEntry", "Entries")
+                    .absent("The scheme has no entry, not even a default."))
+                return
+            }
+
+            /* The entry whose issue type id is null is the default entry, the one
+             * that catches every issue type without an explicit row. Sorting it to
+             * the front is how the report reads the way the administration screen
+             * reads. */
+            List<IssueTypeScreenSchemeEntity> ordered = new ArrayList<IssueTypeScreenSchemeEntity>(entities)
+            ordered.sort { IssueTypeScreenSchemeEntity left, IssueTypeScreenSchemeEntity right ->
+                String a = left.getIssueTypeId()
+                String b = right.getIssueTypeId()
+                if (a == null && b == null) { return 0 }
+                if (a == null) { return -1 }
+                if (b == null) { return 1 }
+                return a.compareTo(b)
+            }
+
+            for (IssueTypeScreenSchemeEntity entry : ordered) {
+                String label = "Default (every other issue type)"
+                Object entryId = null
+                try {
+                    IssueType type = entry.getIssueTypeObject()
+                    if (type != null) {
+                        label = "Issue type: " + type.getName()
+                        entryId = type.getId()
+                    }
+                } catch (Exception error) {
+                    label = "Issue type " + Pc.orNa(entry.getIssueTypeId())
+                }
+                Nd entryNode = Nd.of("issueTypeScreenSchemeEntry", label)
+                if (entryId != null) {
+                    entryNode.link(links.projectIssueType(project.getKey(), entryId), null)
+                }
+                guard(entryNode) { Nd inner ->
+                    FieldScreenScheme screenScheme = entry.getFieldScreenScheme()
+                    if (screenScheme == null) {
+                        inner.absent("The entry references no screen scheme.")
+                        return
+                    }
+                    inner.add(screenSchemeNode(screenScheme))
+                }
+                self.add(entryNode)
+            }
+        }
+    }
+
+    Nd screenSchemeNode(FieldScreenScheme screenScheme) {
+        Nd node = Nd.of("screenScheme", "Screen scheme: " + Pc.orNa(screenScheme.getName()))
+        node.ident(screenScheme.getId())
+        node.link(links.screenScheme(screenScheme.getId()), null)
+        return guard(node) { Nd self ->
+            if (Pc.text(screenScheme.getDescription()) != null) {
+                self.val(screenScheme.getDescription())
+            }
+            Collection<FieldScreenSchemeItem> items = screenScheme.getFieldScreenSchemeItems()
+            if (items == null || items.isEmpty()) {
+                self.add(Nd.of("screenSchemeItem", "Operations")
+                    .absent("The screen scheme maps no operation."))
+                return
+            }
+            List<FieldScreenSchemeItem> ordered = new ArrayList<FieldScreenSchemeItem>(items)
+            ordered.sort { FieldScreenSchemeItem left, FieldScreenSchemeItem right ->
+                return operationRank(left) <=> operationRank(right)
+            }
+            for (FieldScreenSchemeItem item : ordered) {
+                Nd operationNode = Nd.of("screenSchemeItem", "Operation: " + operationLabel(item))
+                guard(operationNode) { Nd inner ->
+                    FieldScreen screen = item.getFieldScreen()
+                    if (screen == null) {
+                        inner.absent("The operation maps to no screen.")
+                        return
+                    }
+                    inner.add(screenNode(screen))
+                }
+                self.add(operationNode)
+            }
+        }
+    }
+
+    /* The three screenable operations have stable ids on IssueOperations, which is
+     * what this compares against. The default entry, whose operation is null, sorts
+     * first because that is where the administration screen puts it. */
+    private static int operationRank(FieldScreenSchemeItem item) {
+        ScreenableIssueOperation operation = null
+        try {
+            operation = item.getIssueOperation()
+        } catch (Exception ignored) {
+            return 9
+        }
+        if (operation == null) {
+            return 0
+        }
+        Long id = operation.getId()
+        if (id == null) {
+            return 8
+        }
+        if (id == IssueOperations.CREATE_ISSUE_OPERATION.getId()) { return 1 }
+        if (id == IssueOperations.EDIT_ISSUE_OPERATION.getId()) { return 2 }
+        if (id == IssueOperations.VIEW_ISSUE_OPERATION.getId()) { return 3 }
+        return 7
+    }
+
+    private static String operationLabel(FieldScreenSchemeItem item) {
+        ScreenableIssueOperation operation = null
+        try {
+            operation = item.getIssueOperation()
+        } catch (Exception ignored) {
+            return "unknown"
+        }
+        if (operation == null) {
+            return "Default (every other operation)"
+        }
+        Long id = operation.getId()
+        if (id != null) {
+            if (id == IssueOperations.CREATE_ISSUE_OPERATION.getId()) { return "Create" }
+            if (id == IssueOperations.EDIT_ISSUE_OPERATION.getId()) { return "Edit" }
+            if (id == IssueOperations.VIEW_ISSUE_OPERATION.getId()) { return "View" }
+        }
+        /* An operation this file does not know is named by whatever Jira calls it
+         * rather than folded into one of the three above. */
+        String name = null
+        try {
+            name = Pc.text(item.getIssueOperationName())
+        } catch (Exception ignored) {
+            name = null
+        }
+        return name == null ? ("operation " + String.valueOf(id)) : name
+    }
+
+    Nd screenNode(FieldScreen screen) {
+        Nd node = Nd.of("screen", "Screen: " + Pc.orNa(screen.getName()))
+        node.ident(screen.getId())
+        node.link(links.screen(screen.getId()), null)
+        return guard(node) { Nd self ->
+            if (Pc.text(screen.getDescription()) != null) {
+                self.val(screen.getDescription())
+            }
+            List<FieldScreenTab> tabs = screen.getTabs()
+            if (tabs == null || tabs.isEmpty()) {
+                self.add(Nd.of("screenTab", "Tabs").absent("The screen has no tab."))
+                return
+            }
+            for (FieldScreenTab tab : tabs) {
+                Nd tabNode = Nd.of("screenTab", "Tab: " + Pc.orNa(tab.getName()))
+                tabNode.ident(tab.getId())
+                guard(tabNode) { Nd inner ->
+                    List<FieldScreenLayoutItem> layoutItems = tab.getFieldScreenLayoutItems()
+                    if (layoutItems == null || layoutItems.isEmpty()) {
+                        inner.absent("The tab carries no field.")
+                        return
+                    }
+                    for (FieldScreenLayoutItem layoutItem : layoutItems) {
+                        Nd fieldNode = Nd.of("screenField", fieldLabel(layoutItem))
+                        fieldNode.val(layoutItem.getFieldId())
+                        inner.add(fieldNode)
+                    }
+                }
+                self.add(tabNode)
+            }
+        }
+    }
+
+    private static String fieldLabel(FieldScreenLayoutItem layoutItem) {
+        try {
+            Object field = layoutItem.getOrderableField()
+            Object name = Pc.duck(field, "getName", null)
+            if (name != null) {
+                return name.toString()
+            }
+        } catch (Exception ignored) {
+            /* A field whose module is gone still has an id, and the id is the thing
+             * an administrator needs in order to find what left it behind. */
+        }
+        return Pc.orNa(layoutItem.getFieldId())
+    }
+
+    /* ---- 3. field configuration scheme ------------------------------------ */
+
+    Nd fieldConfigurationScheme() {
+        Nd node = Nd.of("fieldConfigurationScheme", "Field configuration scheme")
+        node.link(links.projectFields(project.getKey()), null)
+        return guard(node) { Nd self ->
+            FieldLayoutManager manager = ComponentAccessor.getComponent(FieldLayoutManager)
+            if (manager == null) {
+                self.failed("FieldLayoutManager is not available in this instance.")
+                return
+            }
+            FieldConfigurationScheme scheme = manager.getFieldConfigurationScheme(project)
+            if (scheme == null) {
+                self.label = "Field configuration scheme: System Default Field Configuration"
+                self.val("No scheme is associated, so every issue type uses the system default.")
+            } else {
+                self.label = "Field configuration scheme: " + Pc.orNa(scheme.getName())
+                self.ident(scheme.getId())
+                self.link(links.fieldConfigurationScheme(scheme.getId()), null)
+                if (Pc.text(scheme.getDescription()) != null) {
+                    self.val(scheme.getDescription())
+                }
+            }
+
+            Collection<IssueType> types = projectIssueTypes()
+            if (types.isEmpty()) {
+                self.add(Nd.of("fieldConfiguration", "Field configurations")
+                    .failed("The issue types of this project could not be read, " +
+                        "so no field configuration could be resolved."))
+                return
+            }
+
+            /* Several issue types usually share one field configuration. Printing
+             * the configuration once per issue type would repeat hundreds of field
+             * rows and hide the actual grouping, so the issue types are collected
+             * under the configuration they resolve to. */
+            Map<String, List<IssueType>> byLayout = new LinkedHashMap<String, List<IssueType>>()
+            Map<String, FieldLayout> layouts = new LinkedHashMap<String, FieldLayout>()
+            for (IssueType type : types) {
+                try {
+                    FieldLayout layout = manager.getFieldLayout(project, type.getId())
+                    String key = layout == null ? "none" : String.valueOf(layout.getId())
+                    if (!byLayout.containsKey(key)) {
+                        byLayout.put(key, new ArrayList<IssueType>())
+                        layouts.put(key, layout)
+                    }
+                    byLayout.get(key).add(type)
+                } catch (Exception error) {
+                    self.diagnostics.add("The field configuration for issue type " +
+                        Pc.orNa(type.getName()) + " could not be resolved: " + describe(error))
+                }
+            }
+
+            for (Map.Entry<String, List<IssueType>> entry : byLayout.entrySet()) {
+                FieldLayout layout = layouts.get(entry.getKey())
+                List<String> names = new ArrayList<String>()
+                for (IssueType type : entry.getValue()) {
+                    names.add(type.getName())
+                }
+                Nd layoutNode = fieldConfigurationNode(layout)
+                layoutNode.add(Nd.of("appliesTo", "Applies to issue types").val(names.join(", ")))
+                self.add(layoutNode)
+            }
+        }
+    }
+
+    Nd fieldConfigurationNode(FieldLayout layout) {
+        if (layout == null) {
+            return Nd.of("fieldConfiguration", "Field configuration")
+                .absent("No field configuration resolved for these issue types.")
+        }
+        String name = Pc.text(layout.getName())
+        Nd node = Nd.of("fieldConfiguration",
+            "Field configuration: " + (name == null ? "System Default Field Configuration" : name))
+        node.ident(layout.getId())
+        node.link(links.fieldConfiguration(layout.getId()),
+            layout.getId() == null
+                ? "Administration > Issues > Field configurations. The system default has no id to link to."
+                : null)
+        return guard(node) { Nd self ->
+            if (Pc.text(layout.getDescription()) != null) {
+                self.val(layout.getDescription())
+            }
+            List<FieldLayoutItem> items = layout.getFieldLayoutItems()
+            if (items == null || items.isEmpty()) {
+                self.add(Nd.of("fieldBehaviour", "Fields").absent("The configuration lists no field."))
+                return
+            }
+            List<FieldLayoutItem> ordered = new ArrayList<FieldLayoutItem>(items)
+            ordered.sort { FieldLayoutItem left, FieldLayoutItem right ->
+                String a = fieldLayoutItemName(left)
+                String b = fieldLayoutItemName(right)
+                return a.compareToIgnoreCase(b)
+            }
+            for (FieldLayoutItem item : ordered) {
+                Nd fieldNode = Nd.of("fieldBehaviour", fieldLayoutItemName(item))
+                guard(fieldNode) { Nd inner ->
+                    List<String> parts = new ArrayList<String>()
+                    parts.add(item.isRequired() ? "required" : "optional")
+                    parts.add(item.isHidden() ? "hidden" : "visible")
+                    String renderer = Pc.text(item.getRendererType())
+                    if (renderer != null) {
+                        parts.add("renderer " + renderer)
+                    }
+                    inner.val(parts.join(", "))
+                    String description = Pc.text(item.getRawFieldDescription())
+                    if (description != null) {
+                        inner.add(Nd.of("fieldDescription", "Description").val(description))
+                    }
+                }
+                self.add(fieldNode)
+            }
+        }
+    }
+
+    private static String fieldLayoutItemName(FieldLayoutItem item) {
+        Object field = null
+        try {
+            field = item.getOrderableField()
+        } catch (Exception ignored) {
+            return "unknown field"
+        }
+        Object name = Pc.duck(field, "getName", null)
+        if (name != null) {
+            return name.toString()
+        }
+        Object id = Pc.duck(field, "getId", null)
+        return id == null ? "unknown field" : id.toString()
+    }
+
+    /* ---- 4. custom field contexts that apply to this project -------------- */
+
+    Nd customFields() {
+        Nd node = Nd.of("customFields", "Custom fields in this project")
+        node.link(links.projectFields(project.getKey()), null)
+        return guard(node) { Nd self ->
+            CustomFieldManager manager = ComponentAccessor.getCustomFieldManager()
+            OptionsManager optionsManager = ComponentAccessor.getComponent(OptionsManager)
+            if (manager == null) {
+                self.failed("CustomFieldManager is not available in this instance.")
+                return
+            }
+            List<String> issueTypeIds = new ArrayList<String>()
+            for (IssueType type : projectIssueTypes()) {
+                issueTypeIds.add(type.getId())
+            }
+            List<CustomField> fields = manager.getCustomFieldObjects(project.getId(), issueTypeIds)
+            if (fields == null || fields.isEmpty()) {
+                self.absent("No custom field is in scope for this project.")
+                return
+            }
+            self.val(String.valueOf(fields.size()) + " custom fields are in scope for this project")
+            List<CustomField> ordered = new ArrayList<CustomField>(fields)
+            ordered.sort { CustomField left, CustomField right ->
+                String a = left.getName() == null ? "" : left.getName()
+                String b = right.getName() == null ? "" : right.getName()
+                return a.compareToIgnoreCase(b)
+            }
+            for (CustomField field : ordered) {
+                self.add(customFieldNode(field, optionsManager))
+            }
+        }
+    }
+
+    Nd customFieldNode(CustomField field, OptionsManager optionsManager) {
+        Nd node = Nd.of("customField", Pc.orNa(field.getName()))
+        node.ident(field.getId())
+        node.link(links.customField(field.getIdAsLong()), null)
+        return guard(node) { Nd self ->
+            Object type = field.getCustomFieldType()
+            String typeName = Pc.text(Pc.duck(type, "getName", null))
+            self.val(typeName == null ? field.getId() : typeName)
+
+            Object searcher = field.getCustomFieldSearcher()
+            String searcherName = Pc.text(Pc.duck(searcher, "getDescriptor", null) == null
+                ? null : Pc.duck(Pc.duck(searcher, "getDescriptor", null), "getName", null))
+            self.add(Nd.of("customFieldSearcher", "Searcher")
+                .val(searcherName == null ? "not set or not readable" : searcherName))
+
+            if (Pc.text(field.getDescription()) != null) {
+                self.add(Nd.of("customFieldDescription", "Description").val(field.getDescription()))
+            }
+
+            List<FieldConfigScheme> schemes = field.getConfigurationSchemes()
+            if (schemes == null || schemes.isEmpty()) {
+                self.add(Nd.of("customFieldContext", "Contexts")
+                    .absent("The field has no context, so it applies nowhere."))
+                return
+            }
+            int shown = 0
+            for (FieldConfigScheme scheme : schemes) {
+                if (!appliesToProject(scheme)) {
+                    continue
+                }
+                shown++
+                self.add(customFieldContextNode(field, scheme, optionsManager))
+            }
+            if (shown == 0) {
+                /* The field is in scope for the project but none of its contexts
+                 * claims the project by id. That is a real state worth naming
+                 * rather than an empty list. */
+                self.add(Nd.of("customFieldContext", "Contexts")
+                    .absent("No context of this field names this project, although the field " +
+                        "is reported as in scope. Check the context configuration."))
+            }
+        }
+    }
+
+    private boolean appliesToProject(FieldConfigScheme scheme) {
+        try {
+            if (scheme.isGlobal() || scheme.isAllProjects()) {
+                return true
+            }
+            List<Long> ids = scheme.getAssociatedProjectIds()
+            return ids != null && ids.contains(project.getId())
+        } catch (Exception ignored) {
+            /* When the association cannot be read, the context is shown rather than
+             * hidden: an unreadable association must not silently remove a context
+             * from the report. */
+            return true
+        }
+    }
+
+    Nd customFieldContextNode(CustomField field, FieldConfigScheme scheme, OptionsManager optionsManager) {
+        Nd node = Nd.of("customFieldContext", "Context: " + Pc.orNa(scheme.getName()))
+        node.ident(scheme.getId())
+        node.link(links.customFieldContext(field.getIdAsLong(), scheme.getId()), null)
+        return guard(node) { Nd self ->
+            if (Pc.text(scheme.getDescription()) != null) {
+                self.val(scheme.getDescription())
+            }
+
+            Nd scopeNode = Nd.of("contextScope", "Applies to projects")
+            if (scheme.isGlobal() || scheme.isAllProjects()) {
+                scopeNode.val("every project")
+            } else {
+                List<Project> projects = scheme.getAssociatedProjectObjects()
+                List<String> keys = new ArrayList<String>()
+                if (projects != null) {
+                    for (Project associated : projects) {
+                        keys.add(associated.getKey())
+                    }
+                }
+                scopeNode.val(keys.isEmpty() ? "no project" : keys.join(", "))
+            }
+            self.add(scopeNode)
+
+            Nd typeNode = Nd.of("contextIssueTypes", "Applies to issue types")
+            if (scheme.isAllIssueTypes()) {
+                typeNode.val("every issue type")
+            } else {
+                Collection<IssueType> types = scheme.getAssociatedIssueTypes()
+                List<String> names = new ArrayList<String>()
+                if (types != null) {
+                    for (IssueType type : types) {
+                        if (type != null) {
+                            names.add(type.getName())
+                        }
+                    }
+                }
+                typeNode.val(names.isEmpty() ? "no issue type" : names.join(", "))
+            }
+            self.add(typeNode)
+
+            Map<String, FieldConfig> configs = scheme.getConfigs()
+            if (configs == null || configs.isEmpty()) {
+                self.add(Nd.of("contextConfig", "Configuration")
+                    .absent("The context carries no configuration."))
+                return
+            }
+            Set<Long> seen = new LinkedHashSet<Long>()
+            for (Map.Entry<String, FieldConfig> entry : configs.entrySet()) {
+                FieldConfig config = entry.getValue()
+                if (config == null || !seen.add(config.getId())) {
+                    continue
+                }
+                self.add(fieldConfigNode(config, optionsManager))
+            }
+        }
+    }
+
+    Nd fieldConfigNode(FieldConfig config, OptionsManager optionsManager) {
+        Nd node = Nd.of("contextConfig", "Configuration: " + Pc.orNa(config.getName()))
+        node.ident(config.getId())
+        return guard(node) { Nd self ->
+            if (Pc.text(config.getDescription()) != null) {
+                self.val(config.getDescription())
+            }
+            if (optionsManager == null) {
+                self.add(Nd.of("contextOptions", "Options")
+                    .failed("OptionsManager is not available, so options could not be read."))
+                return
+            }
+            Object options = null
+            try {
+                options = optionsManager.getOptions(config)
+            } catch (Exception error) {
+                self.add(Nd.of("contextOptions", "Options").failed(describe(error)))
+                return
+            }
+            if (options == null || ((Collection) options).isEmpty()) {
+                /* A field type without options is the normal case, not a defect.
+                 * Saying so beats an empty node the reader has to interpret. */
+                self.add(Nd.of("contextOptions", "Options")
+                    .absent("This field type carries no option list."))
+                return
+            }
+            Nd optionsNode = Nd.of("contextOptions", "Options")
+            optionsNode.val(String.valueOf(((Collection) options).size()) + " options")
+            for (Object raw : (Collection) options) {
+                optionsNode.add(optionNode((Option) raw))
+            }
+            self.add(optionsNode)
+        }
+    }
+
+    private Nd optionNode(Option option) {
+        Nd node = Nd.of("contextOption", Pc.orNa(option.getValue()))
+        node.ident(option.getOptionId())
+        Boolean disabled = option.getDisabled()
+        if (Boolean.TRUE.equals(disabled)) {
+            node.val("disabled")
+        }
+        List<Option> children = option.getChildOptions()
+        if (children != null) {
+            for (Option child : children) {
+                node.add(optionNode(child))
+            }
+        }
+        return node
+    }
+
+    /* ---- 5. workflow scheme, every layer ---------------------------------- */
+
+    Nd workflowScheme() {
+        Nd node = Nd.of("workflowScheme", "Workflow scheme")
+        node.link(links.projectWorkflows(project.getKey()), null)
+        return guard(node) { Nd self ->
+            WorkflowSchemeManager schemeManager = ComponentAccessor.getComponent(WorkflowSchemeManager)
+            WorkflowManager workflowManager = ComponentAccessor.getComponent(WorkflowManager)
+            if (schemeManager == null || workflowManager == null) {
+                self.failed("The workflow managers are not available in this instance.")
+                return
+            }
+            AssignableWorkflowScheme scheme = schemeManager.getWorkflowSchemeObj(project)
+            if (scheme == null) {
+                self.absent("No workflow scheme is associated with this project.")
+                return
+            }
+            self.label = "Workflow scheme: " + Pc.orNa(scheme.getName())
+            self.ident(scheme.getId())
+            self.link(links.workflowScheme(scheme.getId()), null)
+            if (Pc.text(scheme.getDescription()) != null) {
+                self.val(scheme.getDescription())
+            }
+
+            /* getMappings holds the explicit rows; the default row is separate and
+             * is what every issue type without a row resolves to. Both are layers,
+             * so both are reported, and the default is named as such rather than
+             * being silently applied to a list of issue types. */
+            Map<String, String> mappings = new LinkedHashMap<String, String>()
+            try {
+                Map<String, String> raw = scheme.getMappings()
+                if (raw != null) {
+                    mappings.putAll(raw)
+                }
+            } catch (Exception error) {
+                self.diagnostics.add("The explicit workflow layers could not be read: " + describe(error))
+            }
+
+            String defaultWorkflow = null
+            try {
+                defaultWorkflow = scheme.getActualDefaultWorkflow()
+            } catch (Exception error) {
+                self.diagnostics.add("The default workflow could not be read: " + describe(error))
+            }
+
+            Map<String, String> issueTypeNames = new LinkedHashMap<String, String>()
+            for (IssueType type : projectIssueTypes()) {
+                issueTypeNames.put(type.getId(), type.getName())
+            }
+
+            Nd defaultLayer = Nd.of("workflowLayer", "Layer: default (every other issue type)")
+            if (defaultWorkflow == null) {
+                defaultLayer.absent("No default workflow, or it could not be read")
+            } else {
+                defaultLayer.add(workflowNode(workflowManager, defaultWorkflow))
+            }
+            self.add(defaultLayer)
+
+            for (Map.Entry<String, String> entry : mappings.entrySet()) {
+                String issueTypeId = entry.getKey()
+                String name = issueTypeNames.get(issueTypeId)
+                Nd layer = Nd.of("workflowLayer",
+                    "Layer: issue type " + (name == null ? String.valueOf(issueTypeId) : name))
+                layer.ident(issueTypeId)
+                if (name == null) {
+                    /* A layer for an issue type the project does not carry is not a
+                     * read failure and not nothing: it is a configuration leftover,
+                     * and naming it is the point of the report. */
+                    layer.diagnostics.add("This layer maps an issue type that is not in the " +
+                        "issue type scheme of this project.")
+                } else {
+                    layer.link(links.projectIssueType(project.getKey(), issueTypeId), null)
+                }
+                layer.add(workflowNode(workflowManager, entry.getValue()))
+                self.add(layer)
+            }
+        }
+    }
+
+    Nd workflowNode(WorkflowManager workflowManager, String workflowName) {
+        Nd node = Nd.of("workflow", "Workflow: " + Pc.orNa(workflowName))
+        node.link(links.workflow(workflowName, false), null)
+        return guard(node) { Nd self ->
+            JiraWorkflow workflow = workflowManager.getWorkflow(workflowName)
+            if (workflow == null) {
+                self.failed("The workflow scheme names a workflow that could not be loaded.")
+                return
+            }
+            List<String> facts = new ArrayList<String>()
+            try {
+                facts.add(workflow.isActive() ? "active" : "inactive")
+            } catch (Exception ignored) {
+                facts.add("active state not readable")
+            }
+            try {
+                facts.add(workflow.isSystemWorkflow() ? "system" : "custom")
+            } catch (Exception ignored) {
+                facts.add("system state not readable")
+            }
+            try {
+                if (workflow.hasDraftWorkflow()) {
+                    facts.add("has an unpublished draft")
+                }
+            } catch (Exception ignored) {
+                /* Draft state is an extra, and its absence must not cost the
+                 * whole workflow node. */
+            }
+            self.val(facts.join(", "))
+            if (Pc.text(workflow.getDescription()) != null) {
+                self.add(Nd.of("workflowDescription", "Description").val(workflow.getDescription()))
+            }
+
+            List<Status> statuses = workflow.getLinkedStatusObjects()
+            if (statuses == null || statuses.isEmpty()) {
+                self.add(Nd.of("workflowStatus", "Statuses").absent("The workflow has no linked status."))
+                return
+            }
+            for (Status status : statuses) {
+                self.add(statusNode(workflow, status))
+            }
+
+            /* Global and initial transitions belong to no single status, so they
+             * would vanish if only the per-status lists were printed. */
+            self.add(looseTransitions(workflow))
+        }
+    }
+
+    private Nd statusNode(JiraWorkflow workflow, Status status) {
+        Nd node = Nd.of("workflowStatus", "Status: " + Pc.orNa(status.getName()))
+        node.ident(status.getId())
+        return guard(node) { Nd self ->
+            Object category = status.getStatusCategory()
+            String categoryName = Pc.text(Pc.duck(category, "getName", null))
+            self.val(categoryName == null ? "category not readable" : "category " + categoryName)
+
+            StepDescriptor step = workflow.getLinkedStep(status)
+            if (step == null) {
+                self.failed("The status is linked to no workflow step.")
+                return
+            }
+            List actions = step.getActions()
+            if (actions == null || actions.isEmpty()) {
+                self.add(Nd.of("workflowTransition", "Transitions")
+                    .absent("No transition leaves this status."))
+                return
+            }
+            for (Object raw : actions) {
+                self.add(transitionNode(workflow, (ActionDescriptor) raw))
+            }
+        }
+    }
+
+    private Nd looseTransitions(JiraWorkflow workflow) {
+        Nd node = Nd.of("workflowTransitionGroup", "Global and initial transitions")
+        return guard(node) { Nd self ->
+            List<ActionDescriptor> loose = new ArrayList<ActionDescriptor>()
+            Object descriptor = workflow.getDescriptor()
+            List globals = (List) Pc.duck(descriptor, "getGlobalActions", null)
+            List initials = (List) Pc.duck(descriptor, "getInitialActions", null)
+            if (globals != null) {
+                for (Object raw : globals) {
+                    loose.add((ActionDescriptor) raw)
+                }
+            }
+            if (initials != null) {
+                for (Object raw : initials) {
+                    loose.add((ActionDescriptor) raw)
+                }
+            }
+            if (loose.isEmpty()) {
+                self.absent("The workflow has no global and no initial transition.")
+                return
+            }
+            for (ActionDescriptor action : loose) {
+                self.add(transitionNode(workflow, action))
+            }
+        }
+    }
+
+    private Nd transitionNode(JiraWorkflow workflow, ActionDescriptor action) {
+        Nd node = Nd.of("workflowTransition", "Transition: " + Pc.orNa(action.getName()))
+        node.ident(action.getId())
+        return guard(node) { Nd self ->
+            String target = targetStatusName(workflow, action)
+            self.val(target == null ? "target not readable" : "to " + target)
+
+            /* Counting is the honest summary here. Printing every argument of every
+             * post function would bury the transition, and claiming there are none
+             * when the list could not be read would be worse than either. */
+            self.add(countNode("workflowCondition", "Conditions", conditionCount(action)))
+            self.add(countNode("workflowValidator", "Validators", listSize(action.getValidators())))
+            self.add(countNode("workflowFunction", "Post functions", postFunctionCount(action)))
+
+            Map meta = action.getMetaAttributes()
+            Object screenId = meta == null ? null : meta.get(JiraWorkflow.ACTION_SCREEN_ATTRIBUTE)
+            Nd screenNode = Nd.of("workflowScreen", "Transition screen")
+            if (screenId == null) {
+                screenNode.absent("No screen, the transition happens without a form")
+            } else {
+                screenNode.val("screen " + screenId.toString()).ident(screenId)
+                screenNode.link(links.screen(screenId), null)
+            }
+            self.add(screenNode)
+        }
+    }
+
+    private static Nd countNode(String kind, String label, Integer count) {
+        Nd node = Nd.of(kind, label)
+        if (count == null) {
+            return node.failed("The list could not be read, so this is not a count of zero.")
+        }
+        return node.val(String.valueOf(count))
+    }
+
+    private static Integer listSize(Object list) {
+        if (list == null) {
+            return Integer.valueOf(0)
+        }
+        try {
+            return Integer.valueOf(((Collection) list).size())
+        } catch (Exception ignored) {
+            return null
+        }
+    }
+
+    /* Conditions hang under a restriction, and the accessor for that nesting is
+     * not identical across osworkflow builds. Asking the object rather than
+     * declaring the shape keeps one file working on both. */
+    private static Integer conditionCount(ActionDescriptor action) {
+        try {
+            Object restriction = action.getRestriction()
+            if (restriction == null) {
+                return Integer.valueOf(0)
+            }
+            Object conditions = Pc.duck(restriction, "getConditionsDescriptor", null)
+            if (conditions == null) {
+                return null
+            }
+            Object list = Pc.duck(conditions, "getConditions", null)
+            return listSize(list)
+        } catch (Exception ignored) {
+            return null
+        }
+    }
+
+    private static Integer postFunctionCount(ActionDescriptor action) {
+        try {
+            int total = 0
+            Integer pre = listSize(action.getPreFunctions())
+            Integer post = listSize(action.getPostFunctions())
+            if (pre == null || post == null) {
+                return null
+            }
+            total += pre.intValue() + post.intValue()
+            ResultDescriptor result = action.getUnconditionalResult()
+            if (result != null) {
+                Integer resultPre = listSize(result.getPreFunctions())
+                Integer resultPost = listSize(result.getPostFunctions())
+                if (resultPre == null || resultPost == null) {
+                    return null
+                }
+                total += resultPre.intValue() + resultPost.intValue()
+            }
+            return Integer.valueOf(total)
+        } catch (Exception ignored) {
+            return null
+        }
+    }
+
+    private static String targetStatusName(JiraWorkflow workflow, ActionDescriptor action) {
+        try {
+            ResultDescriptor result = action.getUnconditionalResult()
+            if (result == null) {
+                return null
+            }
+            int stepId = result.getStep()
+            Object descriptor = workflow.getDescriptor()
+            Object step = Pc.duck(descriptor, "getStep", Integer.valueOf(stepId))
+            if (step == null) {
+                return null
+            }
+            Status status = workflow.getLinkedStatusObject((StepDescriptor) step)
+            return status == null ? null : status.getName()
+        } catch (Exception ignored) {
+            return null
+        }
+    }
+
+    /* ---- 6. permission scheme --------------------------------------------- */
+
+    Nd permissionScheme() {
+        Nd node = Nd.of("permissionScheme", "Permission scheme")
+        node.link(links.projectPermissions(project.getKey()), null)
+        return guard(node) { Nd self ->
+            PermissionSchemeManager manager = ComponentAccessor.getComponent(PermissionSchemeManager)
+            if (manager == null) {
+                self.failed("PermissionSchemeManager is not available in this instance.")
+                return
+            }
+            Scheme scheme = manager.getSchemeFor(project)
+            if (scheme == null) {
+                self.absent("No permission scheme is associated with this project.")
+                return
+            }
+            self.label = "Permission scheme: " + Pc.orNa(scheme.getName())
+            self.ident(scheme.getId())
+            self.link(links.permissionScheme(scheme.getId()), null)
+            if (Pc.text(scheme.getDescription()) != null) {
+                self.val(scheme.getDescription())
+            }
+
+            Object typeManager = ComponentAccessor.getComponent(PermissionTypeManager)
+            Collection<SchemeEntity> entities = scheme.getEntities()
+            if (entities == null || entities.isEmpty()) {
+                self.add(Nd.of("permission", "Permissions")
+                    .absent("The scheme grants nothing to anybody."))
+                return
+            }
+
+            /* Grouped by permission, because that is the question an administrator
+             * arrives with: who can do X here. */
+            Map<String, List<SchemeEntity>> byPermission = new TreeMap<String, List<SchemeEntity>>()
+            for (SchemeEntity entity : entities) {
+                String permission = String.valueOf(entity.getEntityTypeId())
+                if (!byPermission.containsKey(permission)) {
+                    byPermission.put(permission, new ArrayList<SchemeEntity>())
+                }
+                byPermission.get(permission).add(entity)
+            }
+            for (Map.Entry<String, List<SchemeEntity>> entry : byPermission.entrySet()) {
+                Nd permissionNode = Nd.of("permission", entry.getKey())
+                permissionNode.val(String.valueOf(entry.getValue().size()) + " grants")
+                for (SchemeEntity entity : entry.getValue()) {
+                    permissionNode.add(grantNode(entity, typeManager))
+                }
+                self.add(permissionNode)
+            }
+        }
+    }
+
+    /* ---- 7. notification scheme ------------------------------------------- */
+
+    Nd notificationScheme() {
+        Nd node = Nd.of("notificationScheme", "Notification scheme")
+        node.link(links.projectNotifications(project.getKey()), null)
+        return guard(node) { Nd self ->
+            NotificationSchemeManager manager = ComponentAccessor.getComponent(NotificationSchemeManager)
+            if (manager == null) {
+                self.failed("NotificationSchemeManager is not available in this instance.")
+                return
+            }
+            Scheme scheme = manager.getSchemeFor(project)
+            if (scheme == null) {
+                self.absent("No notification scheme is associated with this project, " +
+                    "so this project sends no notification.")
+                return
+            }
+            self.label = "Notification scheme: " + Pc.orNa(scheme.getName())
+            self.ident(scheme.getId())
+            self.link(links.notificationScheme(scheme.getId()), null)
+            if (Pc.text(scheme.getDescription()) != null) {
+                self.val(scheme.getDescription())
+            }
+
+            Object typeManager = ComponentAccessor.getComponent(NotificationTypeManager)
+            EventTypeManager eventTypeManager = ComponentAccessor.getComponent(EventTypeManager)
+            Collection<SchemeEntity> entities = scheme.getEntities()
+            if (entities == null || entities.isEmpty()) {
+                self.add(Nd.of("event", "Events").absent("The scheme notifies nobody about anything."))
+                return
+            }
+            Map<String, List<SchemeEntity>> byEvent = new LinkedHashMap<String, List<SchemeEntity>>()
+            for (SchemeEntity entity : entities) {
+                String event = eventLabel(eventTypeManager, entity.getEntityTypeId())
+                if (!byEvent.containsKey(event)) {
+                    byEvent.put(event, new ArrayList<SchemeEntity>())
+                }
+                byEvent.get(event).add(entity)
+            }
+            for (Map.Entry<String, List<SchemeEntity>> entry : byEvent.entrySet()) {
+                Nd eventNode = Nd.of("event", entry.getKey())
+                eventNode.val(String.valueOf(entry.getValue().size()) + " recipients")
+                for (SchemeEntity entity : entry.getValue()) {
+                    eventNode.add(grantNode(entity, typeManager))
+                }
+                self.add(eventNode)
+            }
+        }
+    }
+
+    private static String eventLabel(EventTypeManager manager, Object entityTypeId) {
+        if (entityTypeId == null) {
+            return "unknown event"
+        }
+        if (manager == null) {
+            return "event " + entityTypeId.toString()
+        }
+        try {
+            EventType type = manager.getEventType(Long.valueOf(entityTypeId.toString()))
+            return type == null ? ("event " + entityTypeId.toString()) : type.getName()
+        } catch (Exception ignored) {
+            return "event " + entityTypeId.toString()
+        }
+    }
+
+    /* ---- 8. issue security scheme ----------------------------------------- */
+
+    Nd issueSecurityScheme() {
+        Nd node = Nd.of("issueSecurityScheme", "Issue security scheme")
+        node.link(links.projectIssueSecurity(project.getKey()), null)
+        return guard(node) { Nd self ->
+            IssueSecuritySchemeManager manager = ComponentAccessor.getComponent(IssueSecuritySchemeManager)
+            if (manager == null) {
+                self.failed("IssueSecuritySchemeManager is not available in this instance.")
+                return
+            }
+            Scheme scheme = manager.getSchemeFor(project)
+            if (scheme == null) {
+                self.absent("No issue security scheme is associated, " +
+                    "so no issue in this project carries a security level.")
+                return
+            }
+            self.label = "Issue security scheme: " + Pc.orNa(scheme.getName())
+            self.ident(scheme.getId())
+            self.link(links.issueSecurityScheme(scheme.getId()), null)
+            if (Pc.text(scheme.getDescription()) != null) {
+                self.val(scheme.getDescription())
+            }
+
+            Object typeManager = ComponentAccessor.getComponent(IssueSecurityTypeManager)
+            IssueSecurityLevelManager levelManager =
+                ComponentAccessor.getComponent(IssueSecurityLevelManager)
+
+            Map<String, List<SchemeEntity>> byLevel = new LinkedHashMap<String, List<SchemeEntity>>()
+            Collection<SchemeEntity> entities = scheme.getEntities()
+            if (entities != null) {
+                for (SchemeEntity entity : entities) {
+                    String level = String.valueOf(entity.getEntityTypeId())
+                    if (!byLevel.containsKey(level)) {
+                        byLevel.put(level, new ArrayList<SchemeEntity>())
+                    }
+                    byLevel.get(level).add(entity)
+                }
+            }
+
+            List<IssueSecurityLevel> levels = null
+            if (levelManager != null) {
+                try {
+                    levels = levelManager.getIssueSecurityLevels(scheme.getId().longValue())
+                } catch (Exception error) {
+                    self.diagnostics.add("The security levels could not be read: " + describe(error))
+                }
+            }
+            if (levels == null || levels.isEmpty()) {
+                self.add(Nd.of("issueSecurityLevel", "Levels")
+                    .absent("The scheme defines no level, or the levels could not be read."))
+                return
+            }
+            for (IssueSecurityLevel level : levels) {
+                Nd levelNode = Nd.of("issueSecurityLevel", "Level: " + Pc.orNa(level.getName()))
+                levelNode.ident(level.getId())
+                levelNode.link(links.issueSecurityLevel(scheme.getId(), level.getId()), null)
+                if (Pc.text(level.getDescription()) != null) {
+                    levelNode.val(level.getDescription())
+                }
+                List<SchemeEntity> members = byLevel.get(String.valueOf(level.getId()))
+                if (members == null || members.isEmpty()) {
+                    levelNode.add(Nd.of("issueSecurityMember", "Members")
+                        .absent("Nobody is granted this level."))
+                } else {
+                    for (SchemeEntity entity : members) {
+                        levelNode.add(grantNode(entity, typeManager))
+                    }
+                }
+                self.add(levelNode)
+            }
+        }
+    }
+
+    /* ---- the grant, resolved through Jira's own type registry -------------- */
+
+    /* No table of type strings lives in this file. The scheme type registry is
+     * asked for the display name of the type and for the display form of the
+     * parameter, which is exactly what the administration screen shows. When the
+     * registry cannot answer, the raw type and parameter are printed rather than
+     * being dropped or guessed at. */
+    private Nd grantNode(SchemeEntity entity, Object typeManager) {
+        String rawType = Pc.orNa(entity.getType())
+        String parameter = Pc.text(entity.getParameter())
+
+        Object schemeType = null
+        if (typeManager != null) {
+            schemeType = Pc.duck(typeManager, "getSchemeType", entity.getType())
+            if (schemeType == null) {
+                schemeType = Pc.duck(typeManager, "getNotificationType", entity.getType())
+            }
+        }
+
+        String typeLabel = Pc.text(Pc.duck(schemeType, "getDisplayName", null))
+        Nd node = Nd.of("grant", typeLabel == null ? rawType : typeLabel)
+        node.ident(entity.getId())
+
+        if (parameter == null) {
+            return node
+        }
+        String rendered = Pc.text(Pc.duck(schemeType, "getArgumentDisplay", parameter))
+        if (rendered == null) {
+            rendered = resolveParameter(entity.getType(), parameter)
+        }
+        node.val(rendered == null ? parameter : rendered)
+        if (typeLabel == null) {
+            node.diagnostics.add("The scheme type registry did not know the type '" + rawType +
+                "', so the raw type and parameter are shown.")
+        }
+        return node
+    }
+
+    /* The three parameter kinds this report can resolve on its own when the
+     * registry declines. Anything else keeps its raw value: an unresolved id is
+     * still true, an invented name would not be. */
+    private String resolveParameter(String type, String parameter) {
+        if (type == null) {
+            return null
+        }
+        try {
+            if (type.toLowerCase(Locale.ROOT).contains("role")) {
+                ProjectRoleManager roleManager = ComponentAccessor.getComponent(ProjectRoleManager)
+                if (roleManager != null) {
+                    ProjectRole role = roleManager.getProjectRole(Long.valueOf(parameter))
+                    if (role != null) {
+                        return "project role " + role.getName()
+                    }
+                }
+            }
+            if (type.toLowerCase(Locale.ROOT).contains("user")) {
+                ApplicationUser user = ComponentAccessor.getUserManager().getUserByKey(parameter)
+                if (user == null) {
+                    user = ComponentAccessor.getUserManager().getUserByName(parameter)
+                }
+                if (user != null) {
+                    return userLabel(user)
+                }
+            }
+        } catch (Exception ignored) {
+            /* Falling through to the raw parameter is the correct outcome here. */
+        }
+        return null
+    }
+
+    /* ---- 9. project roles -------------------------------------------------- */
+
+    Nd projectRoles() {
+        Nd node = Nd.of("projectRoles", "Project roles")
+        node.link(links.projectRoles(project.getKey()), null)
+        return guard(node) { Nd self ->
+            ProjectRoleManager manager = ComponentAccessor.getComponent(ProjectRoleManager)
+            if (manager == null) {
+                self.failed("ProjectRoleManager is not available in this instance.")
+                return
+            }
+            Collection<ProjectRole> roles = manager.getProjectRoles()
+            if (roles == null || roles.isEmpty()) {
+                self.absent("This instance defines no project role.")
+                return
+            }
+            for (ProjectRole role : roles) {
+                Nd roleNode = Nd.of("projectRole", Pc.orNa(role.getName()))
+                roleNode.ident(role.getId())
+                if (Pc.text(role.getDescription()) != null) {
+                    roleNode.val(role.getDescription())
+                }
+                guard(roleNode) { Nd inner ->
+                    ProjectRoleActors actors = manager.getProjectRoleActors(role, project)
+                    Set<RoleActor> roleActors = actors == null ? null : actors.getRoleActors()
+                    if (roleActors == null || roleActors.isEmpty()) {
+                        inner.absent("Nobody holds this role in this project.")
+                        return
+                    }
+                    for (RoleActor actor : roleActors) {
+                        Nd actorNode = Nd.of("roleActor", Pc.orNa(actor.getDescriptor()))
+                        actorNode.val(Pc.orNa(actor.getType()))
+                        actorNode.ident(actor.getId())
+                        if (!actor.isActive()) {
+                            actorNode.diagnostics.add("This actor is marked inactive.")
+                        }
+                        inner.add(actorNode)
+                    }
+                }
+                self.add(roleNode)
+            }
+        }
+    }
+
+    /* ---- 10. versions and components --------------------------------------- */
+
+    Nd versions(boolean includeInactive) {
+        Nd node = Nd.of("versions", "Versions")
+        node.link(links.projectVersions(project.getKey()), null)
+        return guard(node) { Nd self ->
+            VersionManager manager = ComponentAccessor.getComponent(VersionManager)
+            if (manager == null) {
+                self.failed("VersionManager is not available in this instance.")
+                return
+            }
+            Collection<Version> versions = manager.getVersions(project.getId())
+            if (versions == null || versions.isEmpty()) {
+                self.absent("This project has no version.")
+                return
+            }
+            int hidden = 0
+            for (Version version : versions) {
+                if (!includeInactive && (version.isArchived() || version.isReleased())) {
+                    hidden++
+                    continue
+                }
+                Nd versionNode = Nd.of("version", Pc.orNa(version.getName()))
+                versionNode.ident(version.getId())
+                List<String> facts = new ArrayList<String>()
+                facts.add(version.isReleased() ? "released" : "unreleased")
+                if (version.isArchived()) {
+                    facts.add("archived")
+                }
+                if (version.getStartDate() != null) {
+                    facts.add("starts " + Pc.dateText(version.getStartDate()))
+                }
+                if (version.getReleaseDate() != null) {
+                    facts.add("due " + Pc.dateText(version.getReleaseDate()))
+                }
+                versionNode.val(facts.join(", "))
+                if (Pc.text(version.getDescription()) != null) {
+                    versionNode.add(Nd.of("versionDescription", "Description").val(version.getDescription()))
+                }
+                self.add(versionNode)
+            }
+            if (hidden > 0) {
+                /* What a filter removed is stated, so a shortened list can never be
+                 * mistaken for the whole list. */
+                self.add(Nd.of("filtered", "Hidden by includeInactive=false")
+                    .val(String.valueOf(hidden) + " released or archived versions")
+                    .absent(String.valueOf(hidden) + " released or archived versions are not shown"))
+            }
+        }
+    }
+
+    Nd components() {
+        Nd node = Nd.of("components", "Components")
+        node.link(links.projectComponents(project.getKey()), null)
+        return guard(node) { Nd self ->
+            ProjectComponentManager manager = ComponentAccessor.getComponent(ProjectComponentManager)
+            if (manager == null) {
+                self.failed("ProjectComponentManager is not available in this instance.")
+                return
+            }
+            Collection<ProjectComponent> components = manager.findAllForProject(project.getId())
+            if (components == null || components.isEmpty()) {
+                self.absent("This project has no component.")
+                return
+            }
+            for (ProjectComponent component : components) {
+                Nd componentNode = Nd.of("component", Pc.orNa(component.getName()))
+                componentNode.ident(component.getId())
+                guard(componentNode) { Nd inner ->
+                    List<String> facts = new ArrayList<String>()
+                    facts.add("default assignee " + Pc.assigneeType(Long.valueOf(component.getAssigneeType())))
+                    ApplicationUser lead = component.getComponentLead()
+                    facts.add(lead == null ? "no lead" : "lead " + userLabel(lead))
+                    if (component.isArchived()) {
+                        facts.add("archived")
+                    }
+                    inner.val(facts.join(", "))
+                    if (Pc.text(component.getDescription()) != null) {
+                        inner.add(Nd.of("componentDescription", "Description")
+                            .val(component.getDescription()))
+                    }
+                }
+                self.add(componentNode)
+            }
+        }
+    }
+
+    /* ---- 11. Jira Service Management, only when it is installed ------------ */
+
+    /* Resolved at runtime rather than imported. On an instance without Service
+     * Management the classes are simply absent, and that is a fact about the
+     * instance, not a failure of this report - so it is stated as such and the
+     * section stays. A missing optional app must never look like an empty
+     * configuration. Throwable rather than Exception on purpose: a partially
+     * present plugin raises linkage errors, not exceptions. */
+    Nd serviceDesk() {
+        Nd node = Nd.of("serviceDesk", "Jira Service Management")
+        try {
+            Class.forName("com.atlassian.servicedesk.api.ServiceDeskService")
+        } catch (Throwable ignored) {
+            node.absent("Jira Service Management is not installed on this instance.")
+            return node
+        }
+        try {
+            Object serviceDeskService = ComponentAccessor.getOSGiComponentInstanceOfType(
+                Class.forName("com.atlassian.servicedesk.api.ServiceDeskService"))
+            if (serviceDeskService == null) {
+                node.failed("Jira Service Management is installed but its service could not be obtained.")
+                return node
+            }
+            /* The Service Management API is reached only through duck typing. Its
+             * method shapes have changed across versions, and this report will not
+             * declare a signature it has not verified on the instance it runs on.
+             * What cannot be read is named; nothing here is invented. */
+            node.val("Jira Service Management is installed.")
+            node.add(Nd.of("serviceDeskNote", "Request types, SLAs, queues and portal settings")
+                .failed("Not read yet. The Service Management API surface is not verified for " +
+                    "this instance, and this report does not print configuration it has not read. " +
+                    "Open the project's Service Management settings for these items."))
+        } catch (Throwable error) {
+            node.failed("Jira Service Management is installed but could not be queried: " +
+                error.getClass().getSimpleName())
+        }
+        return node
+    }
+
+    /* ---- shared ------------------------------------------------------------ */
+
+    /* The issue types of this project, read once and reused. A failure here is
+     * reported by every caller that needed it rather than being hidden in one. */
+    private Collection<IssueType> cachedIssueTypes = null
+
+    Collection<IssueType> projectIssueTypes() {
+        if (cachedIssueTypes != null) {
+            return cachedIssueTypes
+        }
+        try {
+            IssueTypeSchemeManager manager = ComponentAccessor.getComponent(IssueTypeSchemeManager)
+            Collection<IssueType> types = manager == null ? null : manager.getIssueTypesForProject(project)
+            cachedIssueTypes = types == null ? new ArrayList<IssueType>() : types
+        } catch (Exception ignored) {
+            cachedIssueTypes = new ArrayList<IssueType>()
+        }
+        return cachedIssueTypes
+    }
+}
+
+/* =============================================================================
  * REST Endpoint
  * ========================================================================== */
 
@@ -1119,12 +2677,7 @@ projectConfig(
 
     /* ---- JAX-RS Response, resolved at runtime (javax / jakarta neutral) --- */
 
-    Class responseClass = null
-    try {
-        responseClass = Class.forName("jakarta.ws.rs.core.Response")
-    } catch (ClassNotFoundException ignored) {
-        responseClass = Class.forName("javax.ws.rs.core.Response")
-    }
+    Class responseClass = Http.resolveResponseClass()
 
     /* ---- Parameters ------------------------------------------------------ */
 
@@ -1192,7 +2745,7 @@ projectConfig(
         }
         report.executionMs = System.currentTimeMillis() - started
         String page = Render.picker(report, rows, "")
-        return responseClass.ok(page).type("text/html; charset=UTF-8").build()
+        return Http.ok(responseClass, page, Http.HTML)
     }
 
     /* ---- Resolve the project --------------------------------------------- */
@@ -1210,10 +2763,8 @@ projectConfig(
         payload.put("error", "No project with key " + projectKey + " was found, or it could not be read.")
         payload.put("diagnostics", report.globalDiagnostics)
         payload.put("executionMs", Long.valueOf(System.currentTimeMillis() - started))
-        return responseClass.status(404)
-            .entity(JsonOutput.prettyPrint(JsonOutput.toJson(payload)))
-            .type("application/json; charset=UTF-8")
-            .build()
+        return Http.build(responseClass, 404,
+            JsonOutput.prettyPrint(JsonOutput.toJson(payload)), Http.JSON, null)
     }
 
     report.projectKey = project.getKey()
@@ -1319,27 +2870,47 @@ projectConfig(
         details.add(Nd.of("projectField", "Archived").failed("Read failed: " + error.getClass().getSimpleName()))
     }
 
-    /* Sections 4.2 to 4.11 of the design are added in the following phases. Until
-     * a section is implemented it is absent from the report rather than present
-     * and empty: an empty section would read as "nothing configured", which is a
-     * measured claim this build cannot make. */
+    /* ---- The configuration itself ----------------------------------------- */
+
+    /* Every section is independent and none of them throws, so one unreadable
+     * subsystem costs exactly its own section and never the report. */
+
+    I18nHelper i18n = null
+    try {
+        JiraAuthenticationContext authenticationContext = ComponentAccessor.getJiraAuthenticationContext()
+        i18n = authenticationContext == null ? null : authenticationContext.getI18nHelper()
+    } catch (Exception error) {
+        report.globalDiagnostics.add("The i18n helper could not be obtained: " +
+            error.getClass().getSimpleName() + ". Names are shown untranslated.")
+    }
+
+    Scan scan = new Scan(project, links, i18n)
+
+    report.sections.add(scan.issueTypeScheme())
+    report.sections.add(scan.issueTypeScreenScheme())
+    report.sections.add(scan.fieldConfigurationScheme())
+    report.sections.add(scan.customFields())
+    report.sections.add(scan.workflowScheme())
+    report.sections.add(scan.permissionScheme())
+    report.sections.add(scan.notificationScheme())
+    report.sections.add(scan.issueSecurityScheme())
+    report.sections.add(scan.projectRoles())
+    report.sections.add(scan.versions(includeInactive))
+    report.sections.add(scan.components())
+    report.sections.add(scan.serviceDesk())
 
     report.executionMs = System.currentTimeMillis() - started
 
     /* ---- Emit -------------------------------------------------------------- */
 
     if (format == "json") {
-        return responseClass.ok(Render.json(report))
-            .type("application/json; charset=UTF-8")
-            .build()
+        return Http.ok(responseClass, Render.json(report), Http.JSON)
     }
     if (format == "csv") {
-        return responseClass.ok(Render.csv(report))
-            .type("text/csv; charset=UTF-8")
-            .header("Content-Disposition", "attachment; filename=\"project-config-" + report.projectKey + ".csv\"")
-            .build()
+        Map<String, String> headers = new LinkedHashMap<String, String>()
+        headers.put("Content-Disposition",
+            "attachment; filename=\"project-config-" + report.projectKey + ".csv\"")
+        return Http.build(responseClass, 200, Render.csv(report), Http.CSV, headers)
     }
-    return responseClass.ok(Render.html(report, activeParams, topOnly))
-        .type("text/html; charset=UTF-8")
-        .build()
+    return Http.ok(responseClass, Render.html(report, activeParams, topOnly), Http.HTML)
 }

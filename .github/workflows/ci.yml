@@ -84,12 +84,13 @@ jobs:
             exit 0
           fi
           START=$(grep -n '^class Pc {' "$F" | cut -d: -f1)
-          END=$(( $(grep -n '^ \* REST Endpoint$' "$F" | cut -d: -f1) - 2 ))
+          END=$(( $(grep -n '^ \* END OF THE JIRA-FREE BLOCK$' "$F" | cut -d: -f1) - 2 ))
           if [ -z "$START" ] || [ "$END" -le "$START" ]; then
             echo "::error title=Cut markers moved::Could not locate the helper class block in $F."
             exit 1
           fi
           { echo 'import groovy.json.JsonOutput'
+            echo 'import org.codehaus.groovy.runtime.InvokerHelper'
             echo 'import java.time.ZonedDateTime'
             echo 'import java.time.format.DateTimeFormatter'
             sed -n "${START},${END}p" "$F"

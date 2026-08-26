@@ -78,6 +78,28 @@ check("assignee null", Pc.assigneeType(null), Pc.NA)
  * known values is how a report starts stating something the instance never said. */
 check("assignee unknown is not folded into a known value", Pc.assigneeType(9L), "Unknown (9)")
 
+/* ---- 6b. flags, dates and duck typing ------------------------------------ */
+
+check("flag true", Pc.flag(true), "yes")
+check("flag false", Pc.flag(false), "no")
+check("dateText null", Pc.dateText(null), Pc.NA)
+check("dateText formats", Pc.dateText(new Date(0L)).length(), 10)
+
+class Duckling {
+    String greet() { return "quack" }
+    String echo(String value) { return "echo:" + value }
+    String boom() { throw new IllegalStateException("no") }
+}
+
+Duckling duckling = new Duckling()
+check("duck calls a present method", Pc.duck(duckling, "greet", null), "quack")
+check("duck calls with an argument", Pc.duck(duckling, "echo", "x"), "echo:x")
+check("duck on a missing method is null", Pc.duck(duckling, "nope", null), null)
+check("duck on a null target is null", Pc.duck(null, "greet", null), null)
+/* A method that exists and throws must not take the caller down with it: the
+ * whole point of the duck helper is that an optional read cannot cost a report. */
+check("duck swallows a throwing method", Pc.duck(duckling, "boom", null), null)
+
 /* ---- 7. query parameters ------------------------------------------------- */
 
 class FakeParams {
@@ -100,6 +122,64 @@ check("booleanParam yes", Pc.booleanParam(params, "flagOn", false), true)
 check("booleanParam zero", Pc.booleanParam(params, "flagOff", true), false)
 check("booleanParam junk keeps default", Pc.booleanParam(params, "flagJunk", true), true)
 check("booleanParam missing keeps default", Pc.booleanParam(params, "nope", false), false)
+
+/* ---- 7b. the response builder -------------------------------------------- */
+
+/* A fake JAX-RS Response class. The real one cannot be named in this file for the
+ * same reason it cannot be named in the endpoint: the namespace differs between
+ * ScriptRunner lines. A fake is enough to prove what actually matters here, which
+ * is that the builder chain is assembled in the right order with the right
+ * arguments. */
+
+class FakeBuilder {
+    List<String> calls = []
+    String entityValue
+    FakeBuilder entity(String value) { calls << "entity"; entityValue = value; return this }
+    FakeBuilder type(String value) { calls << ("type:" + value); return this }
+    FakeBuilder header(String key, String value) { calls << ("header:" + key + "=" + value); return this }
+    String build() { calls << "build"; return calls.join("|") }
+}
+
+class FakeResponse {
+    static FakeBuilder last
+    static FakeBuilder ok(String entity) {
+        last = new FakeBuilder()
+        last.calls << "ok"
+        last.entityValue = entity
+        return last
+    }
+    static FakeBuilder status(Integer code) {
+        last = new FakeBuilder()
+        last.calls << ("status:" + code)
+        return last
+    }
+}
+
+class EmptyResponse { }
+
+check("ok builds ok then type then build",
+    Http.ok(FakeResponse, "body", Http.HTML),
+    "ok|type:text/html; charset=UTF-8|build")
+check("ok passes the entity through", FakeResponse.last.entityValue, "body")
+
+check("a non-200 goes through status then entity",
+    Http.build(FakeResponse, 404, "not found", Http.JSON, null),
+    "status:404|entity|type:application/json; charset=UTF-8|build")
+check("the error entity is passed through", FakeResponse.last.entityValue, "not found")
+
+Map<String, String> csvHeaders = [("Content-Disposition"): "attachment; filename=\"x.csv\""] as LinkedHashMap
+check("headers are applied after the content type",
+    Http.build(FakeResponse, 200, "a;b", Http.CSV, csvHeaders),
+    "ok|type:text/csv; charset=UTF-8|header:Content-Disposition=attachment; filename=\"x.csv\"|build")
+
+check("content types", [Http.HTML, Http.JSON, Http.CSV],
+    ["text/html; charset=UTF-8", "application/json; charset=UTF-8", "text/csv; charset=UTF-8"])
+
+/* A response class that answers none of the builder methods must not take the
+ * endpoint down. It yields nothing, which the caller sees, rather than an
+ * exception thrown out of a report that had already been produced. */
+check("an unusable response class yields null, not an exception",
+    Http.ok(EmptyResponse, "body", Http.HTML), null)
 
 /* ---- 8. self link -------------------------------------------------------- */
 
