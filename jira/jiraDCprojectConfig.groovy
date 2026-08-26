@@ -1029,7 +1029,7 @@ class Render {
         }
         out.append("</div>")
         if (node.value != null) {
-            out.append("<div class=\"section-value\">").append(Pc.html(node.value)).append("</div>")
+            out.append("<div class=\"section-value\">").append(valueHtml(node.value)).append("</div>")
         }
         if (node.linkNote != null) {
             out.append("<div class=\"linknote\">").append(Pc.html(node.linkNote)).append("</div>")
@@ -1074,7 +1074,7 @@ class Render {
             out.append("<tr>")
             out.append("<td class=\"mono\">").append(Pc.html(paths.get(i))).append("</td>")
             out.append("<td>").append(Pc.html(Pc.orNa(row.label))).append("</td>")
-            out.append("<td>").append(Pc.html(row.value == null ? "" : row.value)).append("</td>")
+            out.append("<td>").append(valueHtml(row.value)).append("</td>")
             out.append("<td>")
             if (!row.isReadable()) {
                 out.append("<span class=\"state state-").append(Pc.html(row.state)).append("\">")
@@ -1128,7 +1128,7 @@ class Render {
             out.append(String.valueOf(node.countDescendants())).append("</span>")
         }
         if (node.value != null) {
-            out.append("<span class=\"node-value\">").append(Pc.html(node.value)).append("</span>")
+            out.append("<span class=\"node-value\">").append(valueHtml(node.value)).append("</span>")
         }
         if (node.id != null) {
             out.append("<span class=\"node-id mono\">id ").append(Pc.html(node.id)).append("</span>")
@@ -1156,6 +1156,37 @@ class Render {
             out.append("</ul>")
         }
         out.append("</li>")
+        return out.toString()
+    }
+
+    /* A configuration value is whatever an administrator or another app put there.
+     * The Scalpel scheme merger, for example, writes its whole provenance record
+     * into a scheme description, participant id list included: several thousand
+     * characters with no space in them. Rendered raw that has no break opportunity
+     * and runs straight out of the card, taking the layout with it.
+     *
+     * Long values are therefore clamped into a details element. Nothing is dropped
+     * - the full text is one click away and is in the JSON and the CSV either way -
+     * but the page stays readable. Truncating without saying so would be the other,
+     * worse answer. */
+    static final int VALUE_CLAMP = 200
+
+    static String valueHtml(Object value) {
+        String text = Pc.text(value)
+        if (text == null) {
+            return ""
+        }
+        if (text.length() <= VALUE_CLAMP) {
+            return Pc.html(text)
+        }
+        StringBuilder out = new StringBuilder()
+        out.append("<details class=\"long\"><summary>")
+        out.append("<span class=\"clamped\">").append(Pc.html(text.substring(0, VALUE_CLAMP)))
+        out.append("&#8230;</span>")
+        out.append("<span class=\"more\">show all (").append(String.valueOf(text.length()))
+        out.append(" characters)</span></summary>")
+        out.append("<div class=\"long-body\">").append(Pc.html(text)).append("</div>")
+        out.append("</details>")
         return out.toString()
     }
 
@@ -1390,6 +1421,18 @@ table.flat th, table.flat td { border: 1px solid var(--border-subtle); padding: 
 table.flat th { background: var(--surface-subtle); font-weight: 600; position: sticky; top: 0; }
 table.flat tr:nth-child(even) td { background: var(--surface-subtle); }
 .view-table { overflow-x: auto; }
+.section-value, .node-value, .linknote, table.flat td, .node-diag {
+    overflow-wrap: anywhere; word-break: break-word;
+}
+.node-line { min-width: 0; }
+details.long { display: inline; }
+details.long > summary { cursor: pointer; list-style: none; display: inline; }
+details.long > summary::-webkit-details-marker { display: none; }
+details.long .more { color: var(--blue); font-size: 12px; margin-left: 6px; white-space: nowrap; }
+details.long[open] .clamped { display: none; }
+details.long .long-body { margin-top: 6px; padding: 8px 10px; background: var(--surface-subtle);
+    border: 1px solid var(--border-subtle); border-radius: 4px; font-size: 12px;
+    max-height: 320px; overflow: auto; }
 .export-card {
     background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
     padding: 14px 18px; margin-bottom: 18px; box-shadow: var(--shadow);

@@ -399,6 +399,35 @@ noChildren.section("s", "Components")
 ok("a childless section renders no table",
     !Render.html(noChildren, [:] as LinkedHashMap, false).contains("class=\"view-table hidden\""))
 
+/* ---- 14b. long values are clamped, never cut ----------------------------- */
+
+check("a null value renders as nothing", Render.valueHtml(null), "")
+check("a short value is rendered plainly", Render.valueHtml("Story"), "Story")
+check("a short value is still escaped", Render.valueHtml("<b>"), "&lt;b&gt;")
+ok("a value at the limit is not clamped",
+    !Render.valueHtml("x" * Render.VALUE_CLAMP).contains("<details"))
+
+/* The real case this exists for: a scheme description carrying a provenance record
+ * with an id list and no space in it. It has no break opportunity, so rendered raw
+ * it walks out of the card. */
+String provenance = "Managed by Scalpel SchemeMerger type=issue-type-scheme avgSimilarity=1.00 " +
+    "participantsBefore=" + (11000..11400).collect { String.valueOf(it) }.join(",")
+String clamped = Render.valueHtml(provenance)
+ok("a long value is clamped into a details element", clamped.contains("<details class=\"long\""))
+ok("the clamp names the full length", clamped.contains(String.valueOf(provenance.length()) + " characters"))
+ok("the full text is still in the page", clamped.contains(Pc.html(provenance)))
+ok("the clamped preview is only the head",
+    clamped.contains(Pc.html(provenance.substring(0, Render.VALUE_CLAMP))))
+ok("nothing is silently dropped",
+    clamped.contains("show all"))
+
+/* Escaping still applies to the clamped half and to the full body, otherwise a
+ * scheme description could close the details element it sits in. */
+String hostileLong = "<img src=x onerror=alert(1)>" + ("y" * (Render.VALUE_CLAMP + 50))
+String hostileClamped = Render.valueHtml(hostileLong)
+ok("a long value cannot inject markup", !hostileClamped.contains("<img src=x"))
+ok("the escaped form survives", hostileClamped.contains("&lt;img src=x"))
+
 /* ---- 15. the discrimination this report exists for ----------------------- */
 
 /* An empty section and an unreadable section must not render alike. A renderer
