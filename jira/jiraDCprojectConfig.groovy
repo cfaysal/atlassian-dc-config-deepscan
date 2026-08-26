@@ -22,6 +22,11 @@
  *   notification and issue security schemes down to the resolved grant. Roles
  *   with their actors, versions, components.
  *
+ *   On a service project, and only on one, the Service Management section adds the
+ *   customer portal, every request type with the issue type it raises, its portal
+ *   groups and the fields of its customer form, the queues with the filter that
+ *   defines each one, and the SLA time metrics.
+ *
  * What this endpoint deliberately does NOT do
  *   No issue counting, no issue search, no JQL. This report answers "how is this
  *   project configured", never "how much data is in it". That keeps the run cheap
@@ -39,8 +44,9 @@
  *   project=<KEY>             none      the project to report on. Without it the
  *                                       endpoint renders the project picker.
  *   format=html|json|csv      default html
- *   depth=full|top            default full   top shows only the first level of
- *                                            every section
+ *   depth=full|collapsed      default collapsed   collapsed opens the sections
+ *                                                  and leaves every card inside
+ *                                                  them closed; full opens all
  *   includeInactive=true|false default true   archived versions, inactive
  *                                             workflows, hidden fields
  *
@@ -52,6 +58,11 @@
  *   A deep link that is not backed by primary evidence is never guessed. Such a
  *   node carries no link and states the navigation path in plain words instead.
  *   The provenance of every link shape used here is recorded in Dl below.
+ *
+ *   The exported Confluence page puts each section table inside the bundled Expand
+ *   macro, so the page opens closed. That is presentation only: the read that
+ *   carries administrators' remarks over scans every table on the page and keys on
+ *   the path, whatever is wrapped around it.
  * ========================================================================== */
 
 import com.atlassian.applinks.api.ApplicationLink
@@ -471,6 +482,43 @@ class Dl {
     String projectPriorities(String key) { return projectConfig(key, "priorities") }
     String projectVersions(String key) { return projectConfig(key, "administer-versions") }
     String projectComponents(String key) { return projectConfig(key, "administer-components") }
+
+    /* ---- Jira Service Management ---------------------------------------- */
+
+    /* Evidence: servicedesk-project-ui-plugin-21.3.8-REL-0001.jar,
+     * servicedesk/settings-app.xml, web-item link
+     * <link>/servicedesk/admin/$projectKeyEncoded/request-types</link>, and the same
+     * shape for /sla. That the tail hangs off the context path and not off
+     * /plugins/servlet is confirmed by soy/confluence-knowledge-base.soy in the same
+     * jar, which writes the sibling address as
+     * {contextPath()}/servicedesk/admin/{$projectKey}/portal-settings. */
+    private String serviceDeskAdmin(String projectKey, String tail) {
+        String key = Pc.urlPath(projectKey)
+        if (key.isEmpty()) {
+            return null
+        }
+        return base + "/servicedesk/admin/" + key + "/" + tail
+    }
+
+    String serviceDeskRequestTypes(String key) { return serviceDeskAdmin(key, "request-types") }
+    String serviceDeskSla(String key) { return serviceDeskAdmin(key, "sla") }
+    String serviceDeskPortalSettings(String key) { return serviceDeskAdmin(key, "portal-settings") }
+
+    /* Evidence: jira-servicedesk-21.3.8-REL-0001.jar,
+     * META-INF/plugin-descriptors/sd-routes.xml, which routes
+     * /agent/{projectKey}/queues/{queueId} to
+     * /secure/ServiceDeskQueues.jspa?projectKey={projectKey}&queueId={queueId}.
+     * The target of the route is the address that survives, so it is the one used. */
+    String serviceDeskQueues(String key) {
+        String value = Pc.text(key)
+        return value == null ? null : base + "/secure/ServiceDeskQueues.jspa?projectKey=" + Pc.urlQuery(value)
+    }
+
+    String serviceDeskQueue(String key, Object queueId) {
+        String parent = serviceDeskQueues(key)
+        String id = Pc.text(queueId)
+        return (parent == null || id == null) ? null : parent + "&queueId=" + Pc.urlQuery(id)
+    }
 
     /* Evidence: literal /plugins/servlet/project-config/${project.key}/issuetypes/${issueType.id}
      * found in a shipped template of the running instance. */
@@ -2690,11 +2738,24 @@ class Cx {
         out.append("It is read back and carried over on every later run of this export. ")
         out.append("Everything else on this page is overwritten each time.</p>")
 
-        /* Rows first, so the truncation notice can be placed above the table it
-         * applies to rather than below it, where it would be read too late. */
+        /* Rows first, so the truncation notice can be placed above the tables it
+         * applies to rather than below them, where it would be read too late. Rows
+         * are grouped by section so that each section gets its own table, but the
+         * paths are made unique across the whole page rather than per table: a
+         * remark is carried over by its path, and the read refuses a path that
+         * carries text more than once anywhere on the page. */
         List<Map<String, Object>> rows = new ArrayList<Map<String, Object>>()
+        List<List<Map<String, Object>>> grouped = new ArrayList<List<Map<String, Object>>>()
         for (Map<String, Object> section : rowsOf(request, "sections")) {
-            flatten(section, "", rows)
+            List<Map<String, Object>> sectionRows = new ArrayList<Map<String, Object>>()
+            flatten(section, "", sectionRows)
+            if (sectionRows.isEmpty()) {
+                continue
+            }
+            grouped.add(sectionRows)
+            /* The same row objects, not copies: making the paths unique below has to
+             * be visible in both views. */
+            rows.addAll(sectionRows)
         }
         makePathsUnique(rows)
 
@@ -2706,29 +2767,32 @@ class Cx {
             out.append(String.valueOf(MAX_ROWS)).append(" of ").append(String.valueOf(rows.size()))
             out.append(" configuration items. The rest is in the report itself and in its ")
             out.append("CSV and JSON output; it is missing here, not missing from the project.</p>")
-            rows = rows.subList(0, MAX_ROWS)
         }
 
         Set<String> used = new LinkedHashSet<String>()
-        out.append("<table><tbody>")
-        out.append(headerRow([COL_PATH, COL_ITEM, COL_VALUE, COL_STATE, COL_LINK, COL_REMARK]))
-        for (Map<String, Object> row : rows) {
-            String path = str(row, "path", "")
-            String remark = read == null ? null : read.remarks.get(path)
-            if (remark != null) {
-                used.add(path)
-                outcome.remarksCarried++
+        int budget = MAX_ROWS
+        for (List<Map<String, Object>> sectionRows : grouped) {
+            if (budget <= 0) {
+                break
             }
-            out.append("<tr>")
-            out.append(cell(esc(path)))
-            out.append(cell(esc(str(row, "label", ""))))
-            out.append(cell(esc(str(row, "value", ""))))
-            out.append(cell(esc(stateText(str(row, "state", "read")))))
-            out.append(cell(linkCell(str(row, "deepLink", null), str(row, "linkNote", null))))
-            out.append(cell(remark == null ? REMARK_SEED : remark))
-            out.append("</tr>")
+            List<Map<String, Object>> visible = sectionRows.size() > budget
+                ? sectionRows.subList(0, budget) : sectionRows
+            budget -= visible.size()
+
+            /* The first row of a section is the section node itself, so its label is
+             * the heading an administrator recognises from the report. */
+            out.append(expandOpen(str(visible.get(0), "label", "Section") +
+                " (" + Pc.plural(visible.size(), "item") + ")"))
+            out.append(rowTable(visible, read, used, outcome))
+            out.append(expandClose())
         }
-        out.append("</tbody></table>")
+
+        /* A page with no table at all cannot be read back, and an unreadable page is
+         * never overwritten - so an empty report would brick its own export on the
+         * next run. The header alone is enough for the read to succeed. */
+        if (grouped.isEmpty()) {
+            out.append(rowTable(new ArrayList<Map<String, Object>>(), read, used, outcome))
+        }
 
         /* A remark whose row is gone is not deleted. The configuration it commented
          * on may come back, and even if it does not, an administrator's own words
@@ -2747,6 +2811,8 @@ class Cx {
             out.append("<p>These remarks were carried over from the previous version of this page, ")
             out.append("but the configuration item they belong to is no longer in the project. ")
             out.append("They are kept here rather than dropped. Delete a row to be rid of it.</p>")
+            out.append(expandOpen("Remarks without a matching item (" +
+                Pc.plural(orphans.size(), "remark") + ")"))
             out.append("<table><tbody>")
             out.append(headerRow([COL_PATH, COL_REMARK]))
             for (String key : orphans) {
@@ -2754,27 +2820,36 @@ class Cx {
                 out.append(cell(read.remarks.get(key))).append("</tr>")
             }
             out.append("</tbody></table>")
+            out.append(expandClose())
         }
 
         Object rawNotes = request == null ? null : request.get("notes")
         if (rawNotes instanceof List && !((List) rawNotes).isEmpty()) {
+            List<?> notes = (List) rawNotes
             out.append("<h2>Observations</h2>")
             out.append("<p>Nothing failed to read here. These are things worth knowing about ")
-            out.append("the configuration itself.</p><ul>")
-            for (Object entry : (List) rawNotes) {
+            out.append("the configuration itself.</p>")
+            out.append(expandOpen("Observations (" + Pc.plural(notes.size(), "note") + ")"))
+            out.append("<ul>")
+            for (Object entry : notes) {
                 out.append("<li>").append(esc(String.valueOf(entry))).append("</li>")
             }
             out.append("</ul>")
+            out.append(expandClose())
         }
 
         Object rawDiagnostics = request == null ? null : request.get("diagnostics")
         if (rawDiagnostics instanceof List && !((List) rawDiagnostics).isEmpty()) {
+            List<?> diagnostics = (List) rawDiagnostics
             out.append("<h2>Suppressed reads</h2>")
-            out.append("<p>Each entry is a read that failed. It is not an absence of configuration.</p><ul>")
-            for (Object entry : (List) rawDiagnostics) {
+            out.append("<p>Each entry is a read that failed. It is not an absence of configuration.</p>")
+            out.append(expandOpen("Suppressed reads (" + Pc.plural(diagnostics.size(), "failed read") + ")"))
+            out.append("<ul>")
+            for (Object entry : diagnostics) {
                 out.append("<li>").append(esc(String.valueOf(entry))).append("</li>")
             }
             out.append("</ul>")
+            out.append(expandClose())
         }
 
         out.append("<p><em>").append(esc(MARKER)).append("</em></p>")
@@ -2850,6 +2925,47 @@ class Cx {
             return esc(linkNote)
         }
         return ""
+    }
+
+    /* One table per section, so each of them can sit inside its own collapsed
+     * macro. The remark carry-over is unaffected by the split: the read scans every
+     * table on the page and keys on the path, which is unique page-wide. */
+    static String rowTable(List<Map<String, Object>> rows, RemarkRead read,
+                           Set<String> used, ExportOutcome outcome) {
+        StringBuilder out = new StringBuilder("<table><tbody>")
+        out.append(headerRow([COL_PATH, COL_ITEM, COL_VALUE, COL_STATE, COL_LINK, COL_REMARK]))
+        for (Map<String, Object> row : rows) {
+            String path = str(row, "path", "")
+            String remark = read == null ? null : read.remarks.get(path)
+            if (remark != null) {
+                used.add(path)
+                outcome.remarksCarried++
+            }
+            out.append("<tr>")
+            out.append(cell(esc(path)))
+            out.append(cell(esc(str(row, "label", ""))))
+            out.append(cell(esc(str(row, "value", ""))))
+            out.append(cell(esc(stateText(str(row, "state", "read")))))
+            out.append(cell(linkCell(str(row, "deepLink", null), str(row, "linkNote", null))))
+            out.append(cell(remark == null ? REMARK_SEED : remark))
+            out.append("</tr>")
+        }
+        return out.append("</tbody></table>").toString()
+    }
+
+    /* This page is long by design, and a long page is read by nobody. Every table
+     * therefore sits inside Confluence's own Expand macro, which renders collapsed.
+     * It is storage-format markup of a bundled macro, so nothing has to be installed
+     * for the page to work, and the body of an expand is indexed like any other
+     * content - the page stays searchable while it is closed. The body stays a plain
+     * table, which is what the remark read looks for. */
+    static String expandOpen(String title) {
+        return "<ac:structured-macro ac:name=\"expand\"><ac:parameter ac:name=\"title\">" +
+            esc(title) + "</ac:parameter><ac:rich-text-body>"
+    }
+
+    static String expandClose() {
+        return "</ac:rich-text-body></ac:structured-macro>"
     }
 
     static String headerRow(List<String> names) {
@@ -4448,47 +4564,470 @@ class Scan {
         }
     }
 
-    /* ---- 11. Jira Service Management, only when it is installed ------------ */
+    /* ---- 11. Jira Service Management, only on a service project ------------ */
 
-    /* Resolved at runtime rather than imported. On an instance without Service
-     * Management the classes are simply absent, and that is a fact about the
-     * instance, not a failure of this report - so it is stated as such and the
-     * section stays. A missing optional app must never look like an empty
-     * configuration. Throwable rather than Exception on purpose: a partially
-     * present plugin raises linkage errors, not exceptions. */
+    static final String SERVICE_DESK_TYPE = "service_desk"
+
+    /* Service Management clamps a page request at
+     * DefaultPagingLimits.MAX_GENERAL_THINGS_RETURNED, which is 100 in
+     * jira-servicedesk-api 11.3.8. Asking for more returns the cap without saying
+     * so, so the cap is what gets asked for and hasNextPage() decides whether the
+     * answer was complete. */
+    static final int JSM_PAGE_LIMIT = 100
+
+    /* Every Service Management type is reached by name rather than by import: the
+     * app is optional, and a class that is not there must not stop this file from
+     * loading on an instance that never had it. Unlike Pc.duckAll this call does not
+     * swallow. A failure has to reach the enclosing guard and be printed as a failed
+     * read, because swallowed it would render as a service desk with no request
+     * types - a failure dressed up as a measured absence. */
+    private static Object call(Object target, String method, Object[] arguments) {
+        return InvokerHelper.invokeMethod(target, method, arguments)
+    }
+
+    private static Object jsmService(String className) {
+        return ComponentAccessor.getOSGiComponentInstanceOfType(Class.forName(className))
+    }
+
+    /* Evidence for the argument order: javap -c of SimplePagedRequest shows the
+     * (int, int) constructor writing the first argument to start and the second to
+     * limit. */
+    private static Object jsmPage(int limit) {
+        Class<?> type = Class.forName("com.atlassian.servicedesk.api.util.paging.SimplePagedRequest")
+        return type.getConstructor(Integer.TYPE, Integer.TYPE)
+            .newInstance(Integer.valueOf(0), Integer.valueOf(limit))
+    }
+
+    /* The same contract as guard, widened to Throwable. A half-present optional app
+     * raises linkage errors rather than exceptions, and one of those would otherwise
+     * take the whole report down instead of failing a single node. */
+    private static Nd guardOptional(Nd node, Closure body) {
+        try {
+            body.call(node)
+        } catch (Throwable error) {
+            String message = Pc.text(error.getMessage())
+            node.failed("Read failed: " + error.getClass().getSimpleName() +
+                (message == null ? "" : " - " + message))
+        }
+        return node
+    }
+
+    /* Reads the results out of a PagedResponse and says so when there were more.
+     * A page that was cut is marked as shortened, never as complete. */
+    private static List<Object> jsmResults(Object pagedResponse, Nd node, String what) {
+        List<Object> items = new ArrayList<Object>()
+        if (pagedResponse == null) {
+            return items
+        }
+        Object raw = call(pagedResponse, "getResults", new Object[0])
+        if (raw instanceof Collection) {
+            for (Object element : (Collection<?>) raw) {
+                items.add(element)
+            }
+        }
+        Object more = Pc.duckAll(pagedResponse, "hasNextPage", new Object[0])
+        if (more instanceof Boolean && ((Boolean) more).booleanValue()) {
+            node.state = Pc.TRUNCATED
+            node.note("More than " + String.valueOf(JSM_PAGE_LIMIT) + " " + what +
+                " exist. This report shows the first " + String.valueOf(JSM_PAGE_LIMIT) +
+                "; the rest is in the project, not missing from it.")
+        }
+        return items
+    }
+
+    /* Returns null on a project that is not a service project, and the caller leaves
+     * the section out entirely: a software project has no service desk, and an empty
+     * section would suggest it has one that is unconfigured. If the project type
+     * cannot be read the section is shown, because leaving it out would assert
+     * something that was never measured. */
     Nd serviceDesk() {
+        String projectType = null
+        try {
+            ProjectTypeKey typeKey = project.getProjectTypeKey()
+            projectType = typeKey == null ? null : Pc.text(typeKey.getKey())
+        } catch (Exception ignored) {
+            projectType = null
+        }
+        if (projectType != null && !SERVICE_DESK_TYPE.equals(projectType)) {
+            return null
+        }
+
         Nd node = Nd.of("serviceDesk", "Jira Service Management")
-        /* No address for the Service Management project settings could be evidenced
-         * out of the shipped plugins, so this node names the path rather than
-         * pointing at a URL that may not exist on a given version. */
-        node.link(null, "Project settings > Service Management, inside the project itself.")
+        node.link(links.serviceDeskRequestTypes(project.getKey()),
+            "Project settings > Request types, inside the project itself.")
+        if (projectType == null) {
+            node.note("The project type could not be read, so this section is shown rather than " +
+                "left out. Leaving it out would claim this is not a service project, and that " +
+                "was never measured.")
+        }
+
         try {
             Class.forName("com.atlassian.servicedesk.api.ServiceDeskService")
         } catch (Throwable ignored) {
             node.absent("Jira Service Management is not installed on this instance.")
             return node
         }
-        try {
-            Object serviceDeskService = ComponentAccessor.getOSGiComponentInstanceOfType(
-                Class.forName("com.atlassian.servicedesk.api.ServiceDeskService"))
-            if (serviceDeskService == null) {
-                node.failed("Jira Service Management is installed but its service could not be obtained.")
-                return node
+
+        return guardOptional(node) { Nd self ->
+            Object service = jsmService("com.atlassian.servicedesk.api.ServiceDeskService")
+            if (service == null) {
+                self.failed("Jira Service Management is installed but its ServiceDeskService " +
+                    "could not be obtained from the plugin system.")
+                return
             }
-            /* The Service Management API is reached only through duck typing. Its
-             * method shapes have changed across versions, and this report will not
-             * declare a signature it has not verified on the instance it runs on.
-             * What cannot be read is named; nothing here is invented. */
-            node.val("Jira Service Management is installed.")
-            node.add(Nd.of("serviceDeskNote", "Request types, SLAs, queues and portal settings")
-                .failed("Not read yet. The Service Management API surface is not verified for " +
-                    "this instance, and this report does not print configuration it has not read. " +
-                    "Open the project's Service Management settings for these items."))
-        } catch (Throwable error) {
-            node.failed("Jira Service Management is installed but could not be queried: " +
-                error.getClass().getSimpleName())
+            ApplicationUser user = ComponentAccessor.getJiraAuthenticationContext().getLoggedInUser()
+
+            Object desk
+            try {
+                desk = call(service, "getServiceDeskForProject", [user, project] as Object[])
+            } catch (Throwable error) {
+                /* The API throws rather than returning null when a project carries no
+                 * service desk. That is an absence, not a failed read, and it is the
+                 * only exception here that may be read as one. */
+                if (error.getClass().getSimpleName().startsWith("NoSuchEntity")) {
+                    self.absent("This project carries no service desk.")
+                    return
+                }
+                throw error
+            }
+            if (desk == null) {
+                self.absent("This project carries no service desk.")
+                return
+            }
+            Object deskId = call(desk, "getId", new Object[0])
+            self.val("Service desk " + Pc.orNa(deskId)).ident(deskId)
+
+            self.add(portalNode(user))
+            self.add(requestTypesNode(user, deskId))
+            self.add(queuesNode(user, deskId))
+            self.add(timeMetricsNode(user, desk))
         }
-        return node
+    }
+
+    /* The portal an unlicensed customer sees. Name and description are what the API
+     * exposes; the rest of the portal settings page is not in it. */
+    private Nd portalNode(ApplicationUser user) {
+        Nd node = Nd.of("serviceDeskPortal", "Customer portal")
+        node.link(links.serviceDeskPortalSettings(project.getKey()),
+            "Project settings > Portal settings.")
+        return guardOptional(node) { Nd self ->
+            Object service = jsmService("com.atlassian.servicedesk.api.portal.PortalService")
+            if (service == null) {
+                self.failed("PortalService could not be obtained from the plugin system.")
+                return
+            }
+            Object portal = call(service, "getPortalForProject", [user, project] as Object[])
+            if (portal == null) {
+                self.absent("This project carries no customer portal.")
+                return
+            }
+            self.val(Pc.orNa(call(portal, "getName", new Object[0])))
+            self.ident(call(portal, "getId", new Object[0]))
+            String description = Pc.text(call(portal, "getDescription", new Object[0]))
+            self.add(description == null
+                ? Nd.of("serviceDeskPortalField", "Description").absent("No description")
+                : Nd.of("serviceDeskPortalField", "Description").val(description))
+        }
+    }
+
+    /* Request types, each with the issue type it raises, the portal groups it sits
+     * in, and the fields its customer form asks for. */
+    private Nd requestTypesNode(ApplicationUser user, Object deskId) {
+        Nd node = Nd.of("serviceDeskRequestTypes", "Request types")
+        node.link(links.serviceDeskRequestTypes(project.getKey()),
+            "Project settings > Request types.")
+        return guardOptional(node) { Nd self ->
+            Object service = jsmService("com.atlassian.servicedesk.api.requesttype.RequestTypeService")
+            if (service == null) {
+                self.failed("RequestTypeService could not be obtained from the plugin system.")
+                return
+            }
+            Object builder = call(service, "newQueryBuilder", new Object[0])
+            call(builder, "serviceDesk", [toInteger(deskId)] as Object[])
+            call(builder, "pagedRequest", [jsmPage(JSM_PAGE_LIMIT)] as Object[])
+            Object query = call(builder, "build", new Object[0])
+            List<Object> types = jsmResults(
+                call(service, "getRequestTypes", [user, query] as Object[]), self, "request types")
+            if (types.isEmpty()) {
+                self.absent("This service desk offers no request type.")
+                return
+            }
+            self.val(Pc.plural(types.size(), "request type"))
+
+            Map<String, String> issueTypeNames = issueTypeNamesById()
+            Object fieldService = null
+            try {
+                fieldService = jsmService("com.atlassian.servicedesk.api.field.RequestTypeFieldService")
+            } catch (Throwable error) {
+                self.diagnostics.add("The request type fields could not be read: " +
+                    error.getClass().getSimpleName() + ". The request types themselves are complete.")
+            }
+            for (Object type : types) {
+                self.add(requestTypeNode(user, type, deskId, issueTypeNames, fieldService))
+            }
+        }
+    }
+
+    private Nd requestTypeNode(ApplicationUser user, Object type, Object deskId,
+                               Map<String, String> issueTypeNames, Object fieldService) {
+        Nd node = Nd.of("serviceDeskRequestType", Pc.orNa(Pc.duckAll(type, "getName", new Object[0])))
+        node.link(links.serviceDeskRequestTypes(project.getKey()),
+            "Project settings > Request types.")
+        return guardOptional(node) { Nd self ->
+            Object typeId = call(type, "getId", new Object[0])
+            self.ident(typeId)
+
+            String description = Pc.text(call(type, "getDescription", new Object[0]))
+            self.add(description == null
+                ? Nd.of("serviceDeskRequestTypeField", "Description").absent("No description")
+                : Nd.of("serviceDeskRequestTypeField", "Description").val(description))
+
+            String help = Pc.text(call(type, "getHelpText", new Object[0]))
+            self.add(help == null
+                ? Nd.of("serviceDeskRequestTypeField", "Help text").absent("No help text")
+                : Nd.of("serviceDeskRequestTypeField", "Help text").val(help))
+
+            Object issueTypeId = call(type, "getIssueTypeId", new Object[0])
+            String issueTypeKey = Pc.text(issueTypeId)
+            Nd issueTypeNode = Nd.of("serviceDeskRequestTypeField", "Raises issue type")
+            issueTypeNode.ident(issueTypeId)
+            if (issueTypeKey == null) {
+                issueTypeNode.failed("The request type names no issue type.")
+            } else if (issueTypeNames.containsKey(issueTypeKey)) {
+                issueTypeNode.val(issueTypeNames.get(issueTypeKey))
+                issueTypeNode.link(links.projectIssueType(project.getKey(), issueTypeKey), null)
+            } else if (issueTypesFailure != null) {
+                issueTypeNode.failed("The issue type could not be named: " + issueTypesFailure)
+            } else {
+                issueTypeNode.val("Issue type " + issueTypeKey)
+                issueTypeNode.note("This issue type is not in the issue type scheme of this project, " +
+                    "so the request type cannot currently be raised.")
+            }
+            self.add(issueTypeNode)
+
+            Object groups = Pc.duckAll(type, "getGroups", new Object[0])
+            Nd groupNode = Nd.of("serviceDeskRequestTypeField", "Portal groups")
+            if (groups instanceof Collection && !((Collection) groups).isEmpty()) {
+                List<String> names = new ArrayList<String>()
+                for (Object group : (Collection<?>) groups) {
+                    names.add(Pc.orNa(Pc.duckAll(group, "getName", new Object[0])))
+                }
+                groupNode.val(names.join(", "))
+            } else {
+                groupNode.absent("In no portal group")
+            }
+            self.add(groupNode)
+
+            /* getRestrictionStatus is a default method that older versions do not
+             * carry, so it is read through the swallowing accessor and the node is
+             * left out entirely when it is not there. An absent method is not a
+             * visibility of "none". */
+            Object restriction = Pc.duckAll(type, "getRestrictionStatus", new Object[0])
+            if (restriction != null) {
+                self.add(Nd.of("serviceDeskRequestTypeField", "Visibility")
+                    .val(String.valueOf(restriction)))
+            }
+
+            self.add(requestTypeFieldsNode(user, deskId, typeId, fieldService))
+        }
+    }
+
+    /* The customer form of one request type. It is reached through its own service,
+     * so a field read that fails leaves the request type itself intact. */
+    private Nd requestTypeFieldsNode(ApplicationUser user, Object deskId, Object typeId, Object fieldService) {
+        Nd node = Nd.of("serviceDeskRequestTypeFields", "Fields on the customer form")
+        node.link(links.serviceDeskRequestTypes(project.getKey()),
+            "Project settings > Request types, then the fields of this request type.")
+        if (fieldService == null) {
+            node.failed("RequestTypeFieldService could not be obtained from the plugin system, " +
+                "so the fields of this request type were not read.")
+            return node
+        }
+        return guardOptional(node) { Nd self ->
+            Object builder = call(fieldService, "newQueryBuilder", new Object[0])
+            call(builder, "serviceDesk", [toInteger(deskId)] as Object[])
+            call(builder, "requestType", [toInteger(typeId)] as Object[])
+            Object meta = call(fieldService, "getCustomerRequestCreateMeta",
+                [user, call(builder, "build", new Object[0])] as Object[])
+            if (meta == null) {
+                self.failed("The customer form of this request type could not be read.")
+                return
+            }
+
+            List<String> facts = new ArrayList<String>()
+            Object onBehalf = Pc.duckAll(meta, "canRaiseOnBehalfOf", new Object[0])
+            if (onBehalf instanceof Boolean) {
+                facts.add("raise on behalf of: " + Pc.flag(((Boolean) onBehalf).booleanValue()))
+            }
+            Object participants = Pc.duckAll(meta, "canAddRequestParticipants", new Object[0])
+            if (participants instanceof Boolean) {
+                facts.add("add participants: " + Pc.flag(((Boolean) participants).booleanValue()))
+            }
+
+            Object rawFields = call(meta, "requestTypeFields", new Object[0])
+            List<Object> fields = new ArrayList<Object>()
+            if (rawFields instanceof Collection) {
+                for (Object element : (Collection<?>) rawFields) {
+                    fields.add(element)
+                }
+            }
+            if (fields.isEmpty()) {
+                self.absent("The customer form asks for no field" +
+                    (facts.isEmpty() ? "" : " (" + facts.join(", ") + ")"))
+                return
+            }
+            facts.add(0, Pc.plural(fields.size(), "field"))
+            self.val(facts.join(", "))
+
+            for (Object field : fields) {
+                Object fieldId = Pc.duckAll(field, "fieldId", new Object[0])
+                Nd fieldNode = Nd.of("serviceDeskRequestTypeFieldEntry",
+                    Pc.orNa(Pc.duckAll(field, "name", new Object[0])))
+                fieldNode.ident(fieldId == null ? null : String.valueOf(fieldId))
+                List<String> detail = new ArrayList<String>()
+                Object required = Pc.duckAll(field, "required", new Object[0])
+                if (required instanceof Boolean) {
+                    detail.add(((Boolean) required).booleanValue() ? "required" : "optional")
+                }
+                String fieldDescription = Pc.text(Pc.duckAll(field, "description", new Object[0]))
+                if (fieldDescription != null) {
+                    detail.add(fieldDescription)
+                }
+                Object values = Pc.duckAll(field, "validValues", new Object[0])
+                if (values instanceof Collection && !((Collection) values).isEmpty()) {
+                    List<String> labels = new ArrayList<String>()
+                    for (Object value : (Collection<?>) values) {
+                        labels.add(Pc.orNa(Pc.duckAll(value, "label", new Object[0])))
+                    }
+                    detail.add("values: " + labels.join(", "))
+                }
+                fieldNode.val(detail.isEmpty() ? Pc.NA : detail.join(" - "))
+                self.add(fieldNode)
+            }
+        }
+    }
+
+    /* Queues, with the filter that defines each one and the columns it shows.
+     * Reading the definition of a queue is configuration; running it is not, so the
+     * issue count is switched off explicitly rather than left to a default. */
+    private Nd queuesNode(ApplicationUser user, Object deskId) {
+        Nd node = Nd.of("serviceDeskQueues", "Queues")
+        node.link(links.serviceDeskQueues(project.getKey()), null)
+        return guardOptional(node) { Nd self ->
+            Object service = jsmService("com.atlassian.servicedesk.api.queue.QueueService")
+            if (service == null) {
+                self.failed("QueueService could not be obtained from the plugin system.")
+                return
+            }
+            Object builder = call(service, "newQueueQueryBuilder", new Object[0])
+            call(builder, "serviceDeskId", [toInteger(deskId)] as Object[])
+            call(builder, "includeIssueCount", [Boolean.FALSE] as Object[])
+            call(builder, "pagedRequest", [jsmPage(JSM_PAGE_LIMIT)] as Object[])
+            Object query = call(builder, "build", new Object[0])
+            List<Object> queues = jsmResults(
+                call(service, "getQueues", [user, query] as Object[]), self, "queues")
+            if (queues.isEmpty()) {
+                self.absent("This service desk defines no queue.")
+                return
+            }
+            self.val(Pc.plural(queues.size(), "queue"))
+            for (Object queue : queues) {
+                Object queueId = Pc.duckAll(queue, "getId", new Object[0])
+                Nd queueNode = Nd.of("serviceDeskQueue",
+                    Pc.orNa(Pc.duckAll(queue, "getName", new Object[0])))
+                queueNode.ident(queueId)
+                queueNode.link(links.serviceDeskQueue(project.getKey(), queueId), null)
+                String jql = Pc.text(Pc.duckAll(queue, "getJql", new Object[0]))
+                queueNode.add(jql == null
+                    ? Nd.of("serviceDeskQueueField", "Definition").failed("The queue names no filter.")
+                    : Nd.of("serviceDeskQueueField", "Definition").val(jql))
+                Object columns = Pc.duckAll(queue, "getFields", new Object[0])
+                Nd columnNode = Nd.of("serviceDeskQueueField", "Columns")
+                if (columns instanceof Collection && !((Collection) columns).isEmpty()) {
+                    List<String> names = new ArrayList<String>()
+                    for (Object column : (Collection<?>) columns) {
+                        names.add(String.valueOf(column))
+                    }
+                    columnNode.val(names.join(", "))
+                } else {
+                    columnNode.absent("No column is configured")
+                }
+                queueNode.add(columnNode)
+                self.add(queueNode)
+            }
+        }
+    }
+
+    /* The time metrics an SLA is measured in. Their goals, calendars and start,
+     * pause and stop conditions are not in the public API of this version, so they
+     * are named as unread rather than left unmentioned. */
+    private Nd timeMetricsNode(ApplicationUser user, Object desk) {
+        Nd node = Nd.of("serviceDeskSla", "SLA time metrics")
+        node.link(links.serviceDeskSla(project.getKey()), null)
+        return guardOptional(node) { Nd self ->
+            Object service = jsmService("com.atlassian.servicedesk.api.sla.metrics.TimeMetricService")
+            if (service == null) {
+                self.failed("TimeMetricService could not be obtained from the plugin system.")
+                return
+            }
+            Object raw = call(service, "getTimeMetrics", [user, desk] as Object[])
+            List<Object> metrics = new ArrayList<Object>()
+            if (raw instanceof Collection) {
+                for (Object element : (Collection<?>) raw) {
+                    metrics.add(element)
+                }
+            }
+            if (metrics.isEmpty()) {
+                self.absent("This service desk measures no SLA.")
+                return
+            }
+            self.val(Pc.plural(metrics.size(), "time metric"))
+            self.note("Goals, calendars and the start, pause and stop conditions of a metric are " +
+                "not exposed by the Service Management API of this version. They are on the SLA " +
+                "page, not missing from the project.")
+            for (Object metric : metrics) {
+                Nd metricNode = Nd.of("serviceDeskSlaMetric",
+                    Pc.orNa(Pc.duckAll(metric, "getName", new Object[0])))
+                metricNode.ident(Pc.duckAll(metric, "getId", new Object[0]))
+                metricNode.link(links.serviceDeskSla(project.getKey()), null)
+                List<String> facts = new ArrayList<String>()
+                Object visible = Pc.duckAll(metric, "isCustomerVisible", new Object[0])
+                if (visible instanceof Boolean) {
+                    facts.add("visible to customers: " + Pc.flag(((Boolean) visible).booleanValue()))
+                }
+                Object customFieldId = Pc.duckAll(metric, "getCustomFieldId", new Object[0])
+                if (customFieldId != null) {
+                    facts.add("custom field " + String.valueOf(customFieldId))
+                }
+                metricNode.val(facts.isEmpty() ? Pc.NA : facts.join(", "))
+                self.add(metricNode)
+            }
+        }
+    }
+
+    /* The Service Management API hands out numeric ids as Integer and takes them
+     * back the same way. Anything else that arrives here is converted rather than
+     * cast, so a Long from one call can be handed to a builder that wants an int. */
+    private static Integer toInteger(Object value) {
+        if (value instanceof Integer) {
+            return (Integer) value
+        }
+        if (value instanceof Number) {
+            return Integer.valueOf(((Number) value).intValue())
+        }
+        String text = Pc.text(value)
+        return text == null ? null : Integer.valueOf(Integer.parseInt(text))
+    }
+
+    private Map<String, String> issueTypeNamesById() {
+        Map<String, String> names = new LinkedHashMap<String, String>()
+        for (IssueType type : projectIssueTypes()) {
+            String id = Pc.text(type.getId())
+            if (id != null) {
+                names.put(id, type.getName())
+            }
+        }
+        return names
     }
 
     /* ---- shared ------------------------------------------------------------ */
@@ -4760,7 +5299,13 @@ projectConfig(
     report.sections.add(scan.projectRoles())
     report.sections.add(scan.versions(includeInactive))
     report.sections.add(scan.components())
-    report.sections.add(scan.serviceDesk())
+    /* The Service Management section exists only on a service project. On anything
+     * else scan.serviceDesk() returns null and the section is left out rather than
+     * rendered empty: an empty section reads as a service desk nobody configured. */
+    Nd serviceDeskSection = scan.serviceDesk()
+    if (serviceDeskSection != null) {
+        report.sections.add(serviceDeskSection)
+    }
 
     report.executionMs = System.currentTimeMillis() - started
 

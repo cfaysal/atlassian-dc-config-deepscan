@@ -892,6 +892,130 @@ ok("the cut is reported to the caller as well", !huge.warnings.isEmpty())
 ok("the last row beyond the cap is absent", !huge.storage.contains("Field " + (Cx.MAX_ROWS + 9)))
 ok("an uncut table makes no such claim", !fresh.storage.contains("This table is not complete"))
 
+/* ---- 23. Every table is collapsed, and collapsing changes nothing else ----- */
+
+/* The page is long by design, so each section table sits inside Confluence's own
+ * Expand macro and renders closed. What has to be proven is not that the markup is
+ * present - it is that wrapping the tables changed nothing about reading them back,
+ * because the remark carry-over is the one thing on this page that is not
+ * reproducible from the report. */
+
+int countOf(String haystack, String needle) {
+    int total = 0
+    int at = haystack.indexOf(needle)
+    while (at >= 0) {
+        total++
+        at = haystack.indexOf(needle, at + needle.length())
+    }
+    return total
+}
+
+String EXPAND_OPEN = "<ac:structured-macro ac:name=\"expand\">"
+String EXPAND_CLOSE = "</ac:rich-text-body></ac:structured-macro>"
+
+Map<String, Object> twoSections = Cx.copyMap(exportModel)
+twoSections.remove("diagnostics")
+twoSections.put("sections", [
+    [label: "Details", state: "read", children: [
+        [label: "Lead", state: "read", value: "amelia"]
+    ]] as LinkedHashMap,
+    [label: "Workflows", state: "read", children: [
+        [label: "Default workflow scheme", state: "read", value: "jira"]
+    ]] as LinkedHashMap
+])
+
+ExportOutcome closedPage = Cx.render(twoSections, new RemarkRead())
+check("one expand macro per section", countOf(closedPage.storage, EXPAND_OPEN), 2)
+check("every expand macro is closed", countOf(closedPage.storage, EXPAND_CLOSE), 2)
+check("one table per section", countOf(closedPage.storage, "<table>"), 2)
+ok("the first expand is titled with its section and its size",
+    closedPage.storage.contains("<ac:parameter ac:name=\"title\">Details (2 items)</ac:parameter>"))
+ok("so is the second",
+    closedPage.storage.contains("<ac:parameter ac:name=\"title\">Workflows (2 items)</ac:parameter>"))
+
+/* A table outside a macro body would render expanded, which is the thing this
+ * change exists to prevent. Cutting every body out of the page has to leave no
+ * table behind. */
+String withoutBodies = closedPage.storage.replaceAll("(?s)<ac:rich-text-body>.*?</ac:rich-text-body>", "")
+ok("no table is left outside a collapsed body", !withoutBodies.contains("<table>"))
+
+RemarkRead collapsedRead = Cx.parseRemarks(closedPage.storage)
+check("a collapsed page can still be read", collapsedRead.outcome, RemarkRead.PARSED)
+check("a collapsed page with no remarks yields none", collapsedRead.remarks.size(), 0)
+
+/* One remark in each of the two tables. Before the split there was a single table,
+ * so a remark that survives here proves the read crosses a section boundary and a
+ * macro wrapper rather than stopping at the first table it finds. */
+String collapsedSeedCell = "<td>" + Cx.REMARK_SEED + "</td>"
+int firstSeed = closedPage.storage.indexOf(collapsedSeedCell)
+ok("the collapsed page has a seeded cell in the first table", firstSeed >= 0)
+String editedTwice = closedPage.storage.substring(0, firstSeed) + "<td>from section one</td>" +
+    closedPage.storage.substring(firstSeed + collapsedSeedCell.length())
+int collapsedLastSeed = editedTwice.lastIndexOf(collapsedSeedCell)
+ok("and one in the second table", collapsedLastSeed > firstSeed)
+editedTwice = editedTwice.substring(0, collapsedLastSeed) + "<td>from section two</td>" +
+    editedTwice.substring(collapsedLastSeed + collapsedSeedCell.length())
+
+RemarkRead bothRead = Cx.parseRemarks(editedTwice)
+check("a remark in each collapsed table is read", bothRead.remarks.size(), 2)
+ExportOutcome carried = Cx.render(twoSections, bothRead)
+check("both remarks are carried over", carried.remarksCarried, 2)
+ok("the first section keeps its remark", carried.storage.contains("from section one"))
+ok("the second section keeps its remark", carried.storage.contains("from section two"))
+check("and nothing was orphaned on the way", carried.orphanKeys.size(), 0)
+
+/* A section name is a scheme name, and a scheme name can carry markup. Inside a
+ * macro parameter an unescaped angle bracket produces a page Confluence refuses to
+ * save, which is the same failure as in a table cell and needs the same escaping. */
+Map<String, Object> markupTitle = Cx.copyMap(exportModel)
+markupTitle.remove("diagnostics")
+markupTitle.put("sections", [[label: "Fields <b> & \"quoted\"", state: "read"] as LinkedHashMap])
+ExportOutcome escapedTitle = Cx.render(markupTitle, new RemarkRead())
+ok("a section name with markup cannot break out of the macro parameter",
+    escapedTitle.storage.contains("<ac:parameter ac:name=\"title\">" +
+        "Fields &lt;b&gt; &amp; &quot;quoted&quot; (1 item)</ac:parameter>"))
+
+/* An empty report used to be harmless because the header row was written anyway.
+ * With one table per section, no section means no table at all - and a page with no
+ * table cannot be read back, which fails closed and refuses every later write. The
+ * export would have bricked itself on a report that found nothing. */
+Map<String, Object> noSections = Cx.copyMap(exportModel)
+noSections.remove("diagnostics")
+noSections.put("sections", [])
+ExportOutcome emptySectionsPage = Cx.render(noSections, new RemarkRead())
+ok("a report with no section still writes a readable table",
+    emptySectionsPage.storage.contains("<th>" + Cx.COL_PATH + "</th>"))
+check("and the page it wrote can be read back",
+    Cx.parseRemarks(emptySectionsPage.storage).outcome, RemarkRead.PARSED)
+
+/* The row cap is a page-wide budget, not a per-table one. A section that starts
+ * past the cap gets no macro of its own, because an empty expand titled with a
+ * section name reads as a section that has nothing in it. */
+List<Map<String, Object>> capFilling = new ArrayList<Map<String, Object>>()
+for (int i = 0; i < Cx.MAX_ROWS; i++) {
+    capFilling.add([label: "Field " + i, state: "read"] as LinkedHashMap)
+}
+Map<String, Object> spillModel = Cx.copyMap(exportModel)
+spillModel.remove("diagnostics")
+spillModel.put("sections", [
+    [label: "Fields", state: "read", children: capFilling] as LinkedHashMap,
+    [label: "Workflows", state: "read", children: [
+        [label: "Only workflow", state: "read"] as LinkedHashMap
+    ]] as LinkedHashMap
+])
+ExportOutcome spill = Cx.render(spillModel, new RemarkRead())
+ok("the cut is announced above the tables", spill.storage.contains("This table is not complete"))
+ok("nothing past the cap is written", !spill.storage.contains("Only workflow"))
+check("the section past the cap gets no macro of its own",
+    countOf(spill.storage, EXPAND_OPEN), 1)
+
+/* The two prose blocks below the tables are long as well, and they collapse the
+ * same way. exportModel carries exactly one suppressed read. */
+ok("the suppressed reads are collapsed too",
+    fresh.storage.contains("<ac:parameter ac:name=\"title\">Suppressed reads (1 failed read)</ac:parameter>"))
+ok("the orphan table is collapsed too",
+    afterShrink.storage.contains("<ac:parameter ac:name=\"title\">Remarks without a matching item (1 remark)</ac:parameter>"))
+
 /* ---- result --------------------------------------------------------------- */
 
 println "PASSED: " + passed

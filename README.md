@@ -35,8 +35,11 @@ Every section is expanded, not summarised:
 - **Notification scheme**, grouped by event, down to the resolved recipient.
 - **Issue security scheme** with every level and who holds it.
 - **Project roles** with their actors, **versions** and **components**.
-- **Jira Service Management** is detected at runtime. On an instance without it, the section
-  says so instead of being empty.
+- **Jira Service Management**, on a service project and only on one: the customer portal,
+  every request type with the issue type it raises, its portal groups and the fields of its
+  customer form, the queues with the filter that defines each one, and the SLA time metrics.
+  A project that is not a service project gets no such section rather than an empty one, and
+  on an instance without the app the section says so instead of being empty.
 
 Output is HTML by default, and also JSON and CSV. The CSV is the flattened tree, one row per
 node, which is the shape that goes into a spreadsheet or an audit record.
@@ -125,6 +128,10 @@ link, which is the only outbound path in the file.
 - A page that does not carry this export's marker is never overwritten, whatever its title.
 - A remark whose configuration item has disappeared is kept in a second table rather than
   dropped.
+- Each section gets its own table inside Confluence's bundled Expand macro, so the page opens
+  closed rather than as one wall of rows. Confluence indexes the body of an expand, so the
+  page stays searchable while it is collapsed, and the remark read is unaffected: it scans
+  every table on the page, whatever is wrapped around it.
 
 ## Verification
 
