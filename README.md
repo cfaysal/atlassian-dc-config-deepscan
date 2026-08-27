@@ -215,12 +215,21 @@ deep link. The Confluence export wrote that project's page on the same instance.
 
 Still unproven, and named here rather than left to be assumed:
 
-- **The Service Management section has never run.** It is reached entirely by name, because
-  the app is optional, and no instance with a service project has been available to run it
-  against. The one failure mode that would have answered *wrongly* rather than failing - the
-  query builders being immutable, which would have silently returned the request types of the
-  whole instance - was ruled out against the shipped bytecode of JSM 21.3.8, where both
-  builders mutate and return `this`. What remains would fail visibly.
+- **The Service Management section is only partly proven.** Its first run on a service project
+  read the service desk, the customer portal and all request types. Three of its readers did
+  not resolve on that instance and reported `ClassNotFoundException` against
+  `RequestTypeFieldService`, `QueueService` and `TimeMetricService`, so request type fields,
+  queues and SLA time metrics are marked unreadable rather than empty. All three names are
+  correct and all three packages are exported in JSM 21.3.8, so the cause is not the names;
+  it has not been established yet and is not guessed at here.
+
+  That same first run also found a real defect, which is worth repeating because it is a trap
+  rather than a typo. The helper that dispatched every Service Management call was named
+  `call`, and every reader runs inside a closure. Inside a closure an unqualified
+  `call(a, b, c)` binds to `Closure.call`, the closure's own invocation operator, not to the
+  static method of the enclosing class, so the section died on its first line. It resolves
+  correctly from an ordinary method, which is why reading one call site proved nothing about
+  the others. The CI now refuses a bare `call(` outright.
 - **The remark carry-over has been exercised offline but not on an instance.** That needs two
   exports in a row with a remark typed between them. It is the one path that loses an
   administrator's own text if it misbehaves, so treat it as unproven until you have done it
