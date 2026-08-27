@@ -1,53 +1,68 @@
 /* =============================================================================
- * Confluence Data Center - ScriptRunner classloader reachability probe
+ * Confluence Data Center - ScriptRunner reachability and acquisition probe
  * ScriptRunner Custom REST Endpoint. Admin-gated. Strictly read-only.
  *
- * Why this exists
- *   A class proven present in a jar on disk is not necessarily resolvable from
- *   inside a ScriptRunner script. The script classloader hangs off the
- *   ScriptRunner bundle, and that bundle resolves only what its OSGi headers
- *   allow. Measured on this instance 2026-08-27: groovyrunner 10.16.0 declares
- *   NO DynamicImport-Package header at all, and its Import-Package names 476
- *   packages. Six packages the space configuration deep scan needs are absent
- *   from that list, and a seventh is a sibling package of two that are present.
+ * Version 0.2. The endpoint name is unchanged from 0.1 on purpose, so replacing
+ * the file in the script root is the whole deployment and the registered
+ * endpoint does not have to be touched.
  *
- *   The manifest proves how the bundle is wired. It does not prove a script
- *   cannot reach a type, because ScriptRunner compiles through a chaining
- *   classloader whose reach the manifest does not describe. So the question is
- *   settled by asking the running instance, not by reading the header.
+ * What 0.1 established, measured on confluence-test, groovyrunner 10.16.0
+ *   The Import-Package header does NOT predict what a script can reach. Five of
+ *   the seven packages absent from it resolved directly anyway. The boundary
+ *   that actually exists is a different one:
  *
- *   The Jira sibling lost a live-discovery round to exactly this on Service
- *   Management (OP-1002): four packages resolved, three raised
- *   ClassNotFoundException, and the split looked like three broken class names
- *   rather than one import boundary.
+ *     Confluence PRODUCT classes resolve directly, internal and dmz included.
+ *     Bundled PLUGIN classes do not, and need the exporting plugin classloader.
+ *
+ *   That is the same boundary the Jira sibling hit on Service Management, where
+ *   the types also lived in a plugin bundle (OP-1002).
+ *
+ *   It also moved the open question rather than closing it. Five rows resolved
+ *   and still handed back no component. Resolution and acquisition are two
+ *   questions, and 0.1 could only answer the first.
+ *
+ * What 0.2 asks
+ *   A - ACQUISITION, per route rather than assuming ComponentLocator is the only
+ *       one. For a plugin-owned type the route is the exporting plugin container,
+ *       asked for beans of each interface the implementation declares. That way
+ *       the interface is discovered from the class rather than guessed.
+ *   B - THE PROPERTY SECTION, functionally, because it is the highest-value
+ *       section and the one no administration screen shows. Keys only. Values are
+ *       never read, never rendered and never logged: they are XStream-serialised
+ *       objects and apps put secrets in them.
+ *       The space context is built from the KEY, not from a Space object:
+ *       ConfluenceBandanaContext(String) exists, javap-verified on 10.2.14, so
+ *       the deprecated space getter is not needed.
+ *   C - INHERITANCE, empirically. Bytecode shows getKeys delegating straight to
+ *       the persister with no parent walk. This compares a space key count with
+ *       the global one, so the reading is confirmed against the running instance
+ *       instead of only against the decompiler.
  *
  * Reporting discipline
- *   PER PACKAGE, never one pass or fail for the run. A partial failure and a
- *   total failure must not look alike.
+ *   Per item, never one verdict for the run. A failed read carries its reason in
+ *   the row. The control group stays: if a control fails, the harness is suspect
+ *   and no verdict may be read out of the run.
  *
- *   The candidate list carries a CONTROL group of packages that ARE in
- *   Import-Package. If a control fails, the harness is broken and no verdict
- *   about an at-risk package may be read out of this run. A probe whose
- *   controls have never been green proves nothing.
+ *   Note carried over from 0.1: on a row that already resolved directly, the
+ *   viaPlugin column is noise, because every plugin classloader delegates to the
+ *   product one. It is informative only where the direct read failed.
  *
- *   Three questions are asked separately, because they have different answers:
- *     direct    - does Class.forName resolve it from the script own loader
- *     viaPlugin - can any installed plugin classloader load it, and which
- *     component - does ComponentLocator hand back an instance of it
- *   A type can resolve and still not be obtainable as a component.
- *
- *   A failed read carries its reason in the row, never only into the log.
- *
- * Deliberate non-goals
- *   No space is read, no content is touched, nothing is written. No type under
- *   probe is ever named statically: every one is a string, so this file compiles
- *   whether or not any of them resolves.
+ * Parameters
+ *   space=<KEY>   optional. Without it the first spaces in key order are used.
+ *   limit=<n>     optional, default 5, capped at 25. How many spaces to smoke.
  *
  * Platform
  *   javax / jakarta neutral. The JAX-RS Response class is resolved at runtime and
  *   the closure parameters are untyped, so no jakarta.* or javax.* import appears.
  * ========================================================================== */
 
+import com.atlassian.bandana.BandanaManager
+
+import com.atlassian.confluence.setup.bandana.ConfluenceBandanaContext
+import com.atlassian.confluence.spaces.SpaceManager
+import com.atlassian.confluence.spaces.SpaceStatus
+
+import com.atlassian.plugin.ContainerManagedPlugin
 import com.atlassian.plugin.Plugin
 import com.atlassian.plugin.PluginAccessor
 import com.atlassian.sal.api.component.ComponentLocator
@@ -62,77 +77,34 @@ import org.codehaus.groovy.runtime.InvokerHelper
 
 class Probe {
 
-    static final String VERSION = "0.1"
+    static final String VERSION = "0.2"
+    static final int KEY_SAMPLE = 12
+    static final int SPACE_LIMIT_MAX = 25
 
-    /* [package, fully qualified class, role, group]
-     * AT-RISK: absent from the measured Import-Package of groovyrunner 10.16.0.
-     * CONTROL: present in it. A failing control invalidates the whole run. */
-    static final List<List<String>> CANDIDATES = [
-        ["com.atlassian.confluence.setup.bandana",
-         "com.atlassian.confluence.setup.bandana.ConfluenceBandanaContext",
-         "space property context - without it BandanaManager.getKeys cannot be called",
-         "AT-RISK"],
-        ["com.atlassian.confluence.content",
-         "com.atlassian.confluence.content.CustomContentManager",
-         "custom content types present in a space",
-         "AT-RISK"],
-        ["com.atlassian.confluence.plugins.createcontent",
+    /* [label, class, owning plugin key or null for a product class, group] */
+    static final List<List<String>> ACQUIRE = [
+        ["JSON space property store",
+         "com.atlassian.confluence.api.service.content.SpacePropertyService", null, "OPEN"],
+        ["effective space permissions",
+         "com.atlassian.confluence.security.denormalisedpermissions.impl.space.EffectiveSpacePermissionsCalculator",
+         null, "OPEN"],
+        ["space blueprint state",
          "com.atlassian.confluence.plugins.createcontent.PluginSettingsSpaceBlueprintStateController",
-         "blueprints disabled on a space",
-         "AT-RISK"],
-        ["com.atlassian.confluence.dmz.pages",
-         "com.atlassian.confluence.dmz.pages.PageManagerInternal",
-         "restricted page and undefined link counts",
-         "AT-RISK"],
-        ["com.atlassian.confluence.internal.security",
-         "com.atlassian.confluence.internal.security.SpacePermissionManagerInternal",
-         "effective, denormalised space permissions",
-         "AT-RISK"],
-        ["com.atlassian.confluence.api.service.settings",
-         "com.atlassian.confluence.api.service.settings.ExtendedPluginSettingsFactory",
-         "per-space plugin settings with key enumeration",
-         "AT-RISK"],
-        ["com.atlassian.confluence.plugins.ia.impl",
+         "com.atlassian.confluence.plugins.confluence-create-content-plugin", "OPEN"],
+        ["sidebar links",
          "com.atlassian.confluence.plugins.ia.impl.DefaultSidebarLinkManager",
-         "sidebar links - ia and ia.service ARE imported, ia.impl is not",
-         "AT-RISK"],
+         "com.atlassian.confluence.plugins.confluence-space-ia", "OPEN"],
+        ["per-space plugin settings",
+         "com.atlassian.confluence.api.service.settings.ExtendedPluginSettingsFactory", null, "OPEN"],
 
-        ["com.atlassian.confluence.spaces",
-         "com.atlassian.confluence.spaces.SpaceManager",
-         "control - the space reader itself",
-         "CONTROL"],
-        ["com.atlassian.bandana",
-         "com.atlassian.bandana.BandanaManager",
-         "control - the manager whose context class is at risk",
-         "CONTROL"],
-        ["com.atlassian.confluence.security",
-         "com.atlassian.confluence.security.SpacePermissionManager",
-         "control - the permission grid",
-         "CONTROL"],
-        ["com.atlassian.confluence.pages.templates",
-         "com.atlassian.confluence.pages.templates.PageTemplateManager",
-         "control - space and global templates",
-         "CONTROL"],
-        ["com.atlassian.confluence.themes",
-         "com.atlassian.confluence.themes.ThemeManager",
-         "control - look and feel",
-         "CONTROL"],
-        ["com.atlassian.confluence.labels",
-         "com.atlassian.confluence.labels.SpaceLabelManager",
-         "control - space categories",
-         "CONTROL"],
-        ["com.atlassian.confluence.renderer",
-         "com.atlassian.confluence.renderer.ShortcutLinksManager",
-         "control - space shortcuts",
-         "CONTROL"],
-        ["com.atlassian.confluence.api.service.content",
-         "com.atlassian.confluence.api.service.content.SpacePropertyService",
-         "control - the JSON space property store",
-         "CONTROL"],
+        ["control - space permissions read side",
+         "com.atlassian.confluence.security.SpacePermissionManager", null, "CONTROL"],
+        ["control - space reader",
+         "com.atlassian.confluence.spaces.SpaceManager", null, "CONTROL"],
+        ["control - bandana manager",
+         "com.atlassian.bandana.BandanaManager", null, "CONTROL"],
     ]
 
-    /* Same helper as the Jira sibling: the JAX-RS namespace a ScriptRunner script
-     * needs follows the ScriptRunner version, not the product version. */
     static Class resolveResponseClass() {
         try {
             return Class.forName("jakarta.ws.rs.core.Response")
@@ -156,100 +128,182 @@ class Probe {
             return null
         }
         String message = error.getMessage()
-        return error.getClass().getSimpleName() + (message == null ? "" : ": " + message)
+        String detail = error.getClass().getSimpleName() + (message == null ? "" : ": " + message)
+        return detail.length() > 300 ? detail.substring(0, 300) + " [clamped]" : detail
     }
 
-    /* Which installed plugin, if any, can load this type. Reported rather than
-     * assumed: naming a plugin key up front would only prove the guess. */
-    static List<String> loaders(PluginAccessor pluginAccessor, String className, int cap) {
-        List<String> found = new ArrayList<String>()
-        for (Plugin plugin : pluginAccessor.getPlugins()) {
-            if (found.size() >= cap) {
-                break
-            }
-            ClassLoader loader = null
-            try {
-                loader = plugin.getClassLoader()
-            } catch (Throwable ignored) {
-                continue
-            }
-            if (loader == null) {
-                continue
-            }
-            try {
-                Class.forName(className, false, loader)
-                found.add(plugin.getKey())
-            } catch (Throwable ignored) {
-            }
+    static String param(Map queryParams, String name, String fallback) {
+        try {
+            Object value = duck(queryParams, "getFirst", [name] as Object[])
+            String text = (value == null) ? null : value.toString().trim()
+            return (text == null || text.isEmpty()) ? fallback : text
+        } catch (Throwable ignored) {
+            return fallback
         }
-        return found
     }
 
-    static Map probeOne(PluginAccessor pluginAccessor, List<String> candidate, int cap) {
-        Map row = [
-            pack        : candidate[0],
-            type        : candidate[1],
-            role        : candidate[2],
-            group       : candidate[3],
-            direct      : "NOT ATTEMPTED",
-            directWhy   : null,
-            viaPlugin   : "NOT ATTEMPTED",
-            plugins     : null,
-            viaPluginWhy: null,
-            component   : "NOT ATTEMPTED",
-            componentWhy: null,
-        ]
-        Class<?> resolved = null
-        try {
-            resolved = Class.forName(candidate[1])
-            row.direct = "RESOLVED"
-        } catch (Throwable error) {
-            row.direct = "NOT RESOLVED"
-            row.directWhy = why(error)
+    /* ---- A. acquisition ---------------------------------------------------- */
+
+    static Class<?> load(PluginAccessor pluginAccessor, String className, String pluginKey) {
+        if (pluginKey == null) {
+            return Class.forName(className)
         }
-        try {
-            List<String> keys = loaders(pluginAccessor, candidate[1], cap)
-            row.plugins = keys
-            row.viaPlugin = keys.isEmpty() ? "NO PLUGIN LOADS IT" : "LOADABLE"
-            if (resolved == null && !keys.isEmpty()) {
-                Plugin owner = pluginAccessor.getPlugin(keys.get(0))
-                if (owner != null && owner.getClassLoader() != null) {
-                    resolved = Class.forName(candidate[1], false, owner.getClassLoader())
-                }
-            }
-        } catch (Throwable error) {
-            row.viaPlugin = "UNREADABLE"
-            row.viaPluginWhy = why(error)
+        Plugin plugin = pluginAccessor.getPlugin(pluginKey)
+        ClassLoader loader = (plugin == null) ? null : plugin.getClassLoader()
+        return (loader == null) ? Class.forName(className)
+                                : Class.forName(className, false, loader)
+    }
+
+    /* The interface is read off the implementation rather than guessed, because a
+     * guessed bean type proves nothing when it comes back empty. */
+    static List<Map> beansViaPlugin(PluginAccessor pluginAccessor, String pluginKey, Class<?> type) {
+        List<Map> attempts = new ArrayList<Map>()
+        Plugin plugin = pluginAccessor.getPlugin(pluginKey)
+        if (plugin == null) {
+            attempts.add([iface: null, outcome: "PLUGIN NOT INSTALLED", detail: pluginKey])
+            return attempts
         }
-        if (resolved != null) {
+        if (!(plugin instanceof ContainerManagedPlugin)) {
+            attempts.add([iface: null, outcome: "PLUGIN NOT CONTAINER MANAGED",
+                          detail: plugin.getClass().getName()])
+            return attempts
+        }
+        Object accessor = ((ContainerManagedPlugin) plugin).getContainerAccessor()
+        List<Class<?>> types = new ArrayList<Class<?>>()
+        types.add(type)
+        for (Class<?> each : type.getInterfaces()) {
+            types.add(each)
+        }
+        for (Class<?> candidate : types) {
             try {
-                Object component = ComponentLocator.getComponent(resolved)
-                row.component = (component == null) ? "NULL" : "PRESENT"
+                Object beans = duck(accessor, "getBeansOfType", [candidate] as Object[])
+                int size = (beans == null) ? 0 : ((Collection) beans).size()
+                attempts.add([iface: candidate.getName(),
+                              outcome: size == 0 ? "NONE" : "FOUND " + size,
+                              detail: size == 0 ? null
+                                    : ((Collection) beans).collect { it.getClass().getName() }.take(3).join(", ")])
             } catch (Throwable error) {
-                row.component = "UNREADABLE"
-                row.componentWhy = why(error)
+                attempts.add([iface: candidate.getName(), outcome: "UNREADABLE", detail: why(error)])
             }
+        }
+        return attempts
+    }
+
+    static Map acquireOne(PluginAccessor pluginAccessor, List<String> candidate) {
+        Map row = [
+            label: candidate[0], type: candidate[1], plugin: candidate[2], group: candidate[3],
+            resolved: "NOT RESOLVED", resolvedWhy: null,
+            componentLocator: "NOT ATTEMPTED", componentLocatorWhy: null,
+            pluginContainer: null,
+        ]
+        Class<?> type = null
+        try {
+            type = load(pluginAccessor, candidate[1], candidate[2])
+            row.resolved = "RESOLVED"
+        } catch (Throwable error) {
+            row.resolvedWhy = why(error)
+            return row
+        }
+        try {
+            Object component = ComponentLocator.getComponent(type)
+            row.componentLocator = (component == null) ? "NULL" : "PRESENT: " + component.getClass().getName()
+        } catch (Throwable error) {
+            row.componentLocator = "UNREADABLE"
+            row.componentLocatorWhy = why(error)
+        }
+        if (candidate[2] != null) {
+            row.pluginContainer = beansViaPlugin(pluginAccessor, candidate[2], type)
         }
         return row
     }
 
-    static Map run(PluginAccessor pluginAccessor, int cap) {
+    /* ---- B and C. the property section, keys only --------------------------- */
+
+    static Map propertySmoke(SpaceManager spaceManager, BandanaManager bandanaManager,
+                             String requestedSpace, int limit) {
+        Map result = [spaces: new ArrayList<Map>(), globalKeyCount: null, globalWhy: null,
+                      inheritance: "UNKNOWN", spaceKeySource: null]
+        List<String> keys = new ArrayList<String>()
+        if (requestedSpace != null) {
+            keys.add(requestedSpace)
+            result.spaceKeySource = "space parameter"
+        } else {
+            try {
+                List<String> all = new ArrayList<String>(spaceManager.getAllSpaceKeys(SpaceStatus.CURRENT))
+                Collections.sort(all)
+                keys.addAll(all.take(limit))
+                result.spaceKeySource = "first " + keys.size() + " of " + all.size() + " current spaces, key order"
+            } catch (Throwable error) {
+                result.spaceKeySource = "UNREADABLE: " + why(error)
+                return result
+            }
+        }
+
+        Set<String> globalKeys = new LinkedHashSet<String>()
+        try {
+            for (String key : bandanaManager.getKeys(ConfluenceBandanaContext.GLOBAL_CONTEXT)) {
+                globalKeys.add(key)
+            }
+            result.globalKeyCount = globalKeys.size()
+        } catch (Throwable error) {
+            result.globalWhy = why(error)
+        }
+
+        boolean anyOverlap = false
+        boolean anyRead = false
+        for (String key : keys) {
+            Map row = [space: key, keyCount: null, sample: null, overlapWithGlobal: null, why: null]
+            try {
+                List<String> spaceKeys = new ArrayList<String>()
+                for (String each : bandanaManager.getKeys(new ConfluenceBandanaContext(key))) {
+                    spaceKeys.add(each)
+                }
+                row.keyCount = spaceKeys.size()
+                row.sample = spaceKeys.take(KEY_SAMPLE)
+                if (result.globalKeyCount != null) {
+                    int overlap = spaceKeys.count { globalKeys.contains(it) }
+                    row.overlapWithGlobal = overlap
+                    if (overlap > 0) {
+                        anyOverlap = true
+                    }
+                }
+                anyRead = true
+            } catch (Throwable error) {
+                row.why = why(error)
+            }
+            ((List) result.spaces).add(row)
+        }
+
+        if (!anyRead || result.globalKeyCount == null) {
+            result.inheritance = "UNKNOWN - not enough was read to say"
+        } else if (anyOverlap) {
+            result.inheritance = "KEYS OVERLAP GLOBAL - a space listing may be inheriting, do not trust the bytecode reading"
+        } else {
+            result.inheritance = "NO OVERLAP - consistent with getKeys delegating straight to the persister"
+        }
+        return result
+    }
+
+    static Map run(PluginAccessor pluginAccessor, SpaceManager spaceManager,
+                   BandanaManager bandanaManager, String requestedSpace, int limit) {
         List<Map> rows = new ArrayList<Map>()
-        for (List<String> candidate : CANDIDATES) {
-            rows.add(probeOne(pluginAccessor, candidate, cap))
+        for (List<String> candidate : ACQUIRE) {
+            rows.add(acquireOne(pluginAccessor, candidate))
         }
         List<Map> controls = rows.findAll { it.group == "CONTROL" }
-        List<Map> failedControls = controls.findAll { it.direct != "RESOLVED" }
+        List<Map> failed = controls.findAll { !((String) it.componentLocator).startsWith("PRESENT") }
         return [
-            version         : VERSION,
-            pluginCount     : pluginAccessor.getPlugins().size(),
-            controlsTotal   : controls.size(),
-            controlsFailed  : failedControls.size(),
-            verdictReadable : failedControls.isEmpty(),
-            verdictNote     : failedControls.isEmpty()
-                ? "Controls all resolved. The at-risk verdicts below are readable."
-                : "A CONTROL failed. The harness is suspect and NO at-risk verdict may be read out of this run.",
-            rows            : rows,
+            version        : VERSION,
+            pluginCount    : pluginAccessor.getPlugins().size(),
+            controlsTotal  : controls.size(),
+            controlsFailed : failed.size(),
+            verdictReadable: failed.isEmpty(),
+            verdictNote    : failed.isEmpty()
+                ? "Controls all acquired. The open verdicts below are readable."
+                : "A CONTROL was not acquired. The harness is suspect and NO verdict may be read out of this run.",
+            acquisition    : rows,
+            properties     : propertySmoke(spaceManager, bandanaManager, requestedSpace, limit),
+            valuesNote     : "Property VALUES are never read by this probe. They are XStream-serialised objects and apps store secrets in them.",
         ]
     }
 }
@@ -257,7 +311,24 @@ class Probe {
 spaceConfigProbe(httpMethod: "GET", groups: ["confluence-administrators"]) { queryParams, body ->
     Class responseClass = Probe.resolveResponseClass()
     PluginAccessor pluginAccessor = ComponentLocator.getComponent(PluginAccessor.class)
-    Map result = Probe.run(pluginAccessor, 3)
+    SpaceManager spaceManager = ComponentLocator.getComponent(SpaceManager.class)
+    BandanaManager bandanaManager = ComponentLocator.getComponent(BandanaManager.class)
+
+    String requestedSpace = Probe.param(queryParams, "space", null)
+    int limit = 5
+    try {
+        limit = Integer.parseInt(Probe.param(queryParams, "limit", "5"))
+    } catch (NumberFormatException ignored) {
+        limit = 5
+    }
+    if (limit < 1) {
+        limit = 1
+    }
+    if (limit > Probe.SPACE_LIMIT_MAX) {
+        limit = Probe.SPACE_LIMIT_MAX
+    }
+
+    Map result = Probe.run(pluginAccessor, spaceManager, bandanaManager, requestedSpace, limit)
     return Probe.ok(responseClass, JsonOutput.prettyPrint(JsonOutput.toJson(result)),
                     "application/json; charset=UTF-8")
 }
