@@ -517,8 +517,12 @@ ok("empty and unreadable sections still differ while both are closed",
  * tree than the one next to it. */
 ok("the tree view is rendered", collapsed.contains("class=\"tree view-tree\""))
 ok("the table view is rendered too", collapsed.contains("class=\"view-table hidden\""))
-ok("the table carries the path column", collapsed.contains("<th>Path</th>"))
-ok("the table carries the deepest node", collapsed.contains("SS &gt; Edit Screen"))
+/* The table names its levels as columns now. The deepest node is a row in the
+ * column its level belongs to, not a segment of a path string in one cell. */
+ok("the table names its levels as columns", collapsed.contains("class=\"col-level\""))
+ok("the table carries the deepest node", collapsed.contains(">Edit Screen<"))
+ok("the deepest node is not a path segment in a cell",
+    !collapsed.contains("SS &gt; Edit Screen"))
 ok("both views offer a switch",
     collapsed.contains("setView('tree')") && collapsed.contains("setView('table')"))
 ok("the page can expand and collapse itself",
@@ -833,16 +837,16 @@ Report crossChannel = new Report()
 crossChannel.section("issueTypeScheme", "Issue types: X").add(Nd.of("issueType", "Bug"))
 String crossHtml = Render.html(crossChannel, [:] as LinkedHashMap, false)
 String crossCsv = Render.csv(crossChannel)
-/* The full path, section included, still exists in the HTML channel - it moved from the
- * cell text to the title, because the section name is constant for a whole table and was
- * repeated on every row of the widest column. Escaped once, as a whole: composing an
- * attribute out of escaped and unescaped pieces is how a separator ends up raw inside a
- * quoted value. */
-ok("the html table carries the full path including the section",
-    crossHtml.contains("title=\"Issue types: X &gt; Bug\""))
-ok("but the visible cell does not repeat the section",
-    crossHtml.contains(">Bug</td>") && !crossHtml.contains(">Issue types: X &gt; Bug</td>"))
-ok("the csv prefixes the same label", crossCsv.contains("Issue types: X > Bug"))
+/* The channels no longer agree on one path string, and that is deliberate. The CSV
+ * is a machine feed and keeps the full path as its key. The HTML table carries the
+ * same containment as columns, because a table that holds it as text cannot be
+ * sorted on it - which was the whole reason the path column existed and the whole
+ * reason it did not work. */
+ok("the html table carries the containment as a column",
+    crossHtml.contains("<th class=\"col-level\">Issue types: X</th>"))
+ok("the html table does not concatenate a path into a cell",
+    !crossHtml.contains("Issue types: X &gt; Bug"))
+ok("the csv keeps the full path as its key", crossCsv.contains("Issue types: X > Bug"))
 
 /* ---- 21. the write gate --------------------------------------------------- */
 
@@ -1218,6 +1222,103 @@ check("the section headers add up to the headline",
 
 /* Inside the tree an inner node still reports what it hides, not what it is. */
 ok("an inner node counts its descendants", countHtml.contains('node-count muted">1</span>'))
+
+/* ---- 27. the table view holds records, not a flattened tree ---------------- */
+
+/* The defect this replaces: every node became a row, container and value alike,
+ * so one table carried two kinds of record. Sorting tore the containment apart,
+ * filtering removed the parent that gave a row its meaning, and a count over the
+ * rows counted headings alongside facts. These assertions are about those
+ * properties, not about the markup. */
+
+Report tblReport = new Report()
+Nd tblSection = tblReport.section("serviceDesk", "Jira Service Management")
+
+/* A child with a value of its own. */
+tblSection.add(Nd.of("serviceDeskPortal", "Customer portal").val("HR Service Center"))
+
+/* A child that is a set of like records, two levels deep below it. */
+Nd tblTypes = Nd.of("serviceDeskRequestTypes", "Request types").val("2 request types")
+Nd tblOne = Nd.of("serviceDeskRequestType", "Sabbatical")
+tblOne.add(Nd.of("serviceDeskRequestTypeField", "Help text").absent("No help text"))
+Nd tblFields = Nd.of("serviceDeskRequestTypeFields", "Fields on the customer form").val("2 fields")
+tblFields.add(Nd.of("serviceDeskRequestTypeFieldEntry", "Thema").val("required"))
+tblFields.add(Nd.of("serviceDeskRequestTypeFieldEntry", "Anhang").val("optional"))
+tblOne.add(tblFields)
+Nd tblTwo = Nd.of("serviceDeskRequestType", "HR Auftrag")
+tblTwo.add(Nd.of("serviceDeskRequestTypeField", "Visibility").val("OPEN"))
+tblTypes.add(tblOne)
+tblTypes.add(tblTwo)
+tblSection.add(tblTypes)
+
+/* A branch that could not be read at all. */
+tblSection.add(Nd.of("serviceDeskQueues", "Queues").failed("Read failed: ClassNotFoundException"))
+
+String tblPage = Render.html(tblReport, [:] as LinkedHashMap, false)
+/* Scoped to the table view. The tree ships in the same page and legitimately shows
+ * a container's summary, so an assertion against the whole page would pass or fail
+ * for the wrong reason. */
+String tblHtml = tblPage.substring(tblPage.indexOf("<div class=\"view-table hidden\">"))
+int tblRows = countOf(tblHtml, "<tr>") - countOf(tblHtml, "<thead><tr>")
+
+/* Six values: the portal, Help text, Thema, Anhang, Visibility, and the branch
+ * that failed. The tree holds ten nodes including the section. The difference is
+ * exactly the containers, and that difference is the whole point. */
+check("a row is a value, not a node", tblRows, 6)
+ok("the tree still holds more nodes than the table holds rows",
+    tblReport.nodeCount() > tblRows)
+
+/* The one exception, and it is not negotiable: a read that failed keeps its row
+ * even though it sits on a branch. A failure that vanished because of where it
+ * happened to sit is the absence-that-was-never-measured this report exists to
+ * prevent. */
+ok("a failed branch keeps its row", tblHtml.contains("ClassNotFoundException"))
+ok("and says why, not just that it failed",
+    tblHtml.contains("<td class=\"col-value\">Read failed: ClassNotFoundException</td>"))
+
+/* A container's summary is an aggregate. A table computes those; storing them as
+ * rows is what mixed the two record types in the first place. */
+ok("a container summary is not a row", !tblHtml.contains(">2 request types<"))
+ok("a nested container summary is not a row either", !tblHtml.contains(">2 fields<"))
+
+/* One table per node, so the section is cut rather than concatenated. Two here:
+ * the portal and the failed Queues branch both carry a value of their own and
+ * share the section's table, and Request types is a set of records and gets one. */
+check("the section is cut into one table per node", countOf(tblHtml, "<table class=\"flat\">"), 2)
+
+/* Ancestors are columns. The record name is repeated on every row of that record,
+ * which is what a sort, a filter and a pivot consume. */
+check("the record name repeats down its column", countOf(tblHtml, ">Sabbatical<"), 3)
+ok("the deepest level has its own column", tblHtml.contains("<th class=\"col-level\">Field entry</th>"))
+ok("a level whose kinds disagree is named for what it is",
+    tblHtml.contains("<th class=\"col-level\">Aspect</th>"))
+
+/* The path column that carried containment as text is gone, and with it the
+ * separator that made it unsortable. */
+ok("no row concatenates its ancestors into one cell", !tblHtml.contains("Sabbatical &gt; "))
+
+/* An empty value cell cannot be told apart from an unread one, which is the rule
+ * the whole report rests on. */
+ok("no value cell is left empty", !tblHtml.contains("<td class=\"col-value\"></td>"))
+
+/* Columns are addressed by class. The previous rules named column positions, and
+ * when a column was removed State slid one place left and silently lost its
+ * nowrap. */
+ok("state is addressed by class, not by position", tblPage.contains("table.flat th.col-state"))
+ok("no positional column rule survives", !tblPage.contains("table.flat th:nth-child(4)"))
+
+/* ---- 28. kind to column header -------------------------------------------- */
+
+check("a kind becomes words", Pc.humanKind("serviceDeskRequestType", null),
+    "Service desk request type")
+check("the level above is not repeated",
+    Pc.humanKind("serviceDeskRequestTypeFieldEntry", "serviceDeskRequestType"), "Field entry")
+check("a prefix that does not match is left alone",
+    Pc.humanKind("queueField", "serviceDeskRequestType"), "Queue field")
+check("a kind that is only the prefix keeps its own name",
+    Pc.humanKind("serviceDeskQueue", "serviceDeskQueue"), "Service desk queue")
+check("no kind is still a column", Pc.humanKind(null, null), "Item")
+check("a blank kind is still a column", Pc.humanKind("   ", null), "Item")
 
 /* ---- result --------------------------------------------------------------- */
 

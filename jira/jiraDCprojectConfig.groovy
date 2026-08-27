@@ -341,6 +341,67 @@ class Pc {
 
     /* "1 grants" is the kind of detail that makes a reader distrust the numbers next
      * to it. */
+    /* A machine kind turned into a column header. Every node carries one, so the
+     * headers come from the data rather than from a hand-maintained list that would
+     * drift the moment a section gains a level. The prefix of the level above is
+     * removed because the table already says it: serviceDeskRequestTypeFieldEntry
+     * under serviceDeskRequestType reads as "Field entry", not as the whole chain
+     * again. */
+    static String humanKind(String kind, String prefix) {
+        String rest = text(kind)
+        if (rest == null) {
+            return "Item"
+        }
+        /* Compared word by word rather than character by character. A container is
+         * routinely the plural of what it holds - serviceDeskRequestTypeFields over
+         * serviceDeskRequestTypeFieldEntry - and startsWith sees nothing in common
+         * past the "s", so the header came out as the whole chain again. On word
+         * boundaries the shared part is obvious and what remains is "Field entry". */
+        List<String> mine = camelWords(rest)
+        List<String> theirs = camelWords(text(prefix))
+        int shared = 0
+        while (shared < mine.size() && shared < theirs.size()
+               && mine.get(shared).equalsIgnoreCase(theirs.get(shared))) {
+            shared++
+        }
+        /* A kind that is entirely contained in the level above keeps its own name.
+         * An empty header would say less than a repetitive one. */
+        List<String> words = (shared == 0 || shared >= mine.size())
+            ? mine : mine.subList(shared, mine.size())
+        if (words.isEmpty()) {
+            return "Item"
+        }
+        StringBuilder out = new StringBuilder()
+        for (String word : words) {
+            if (out.length() > 0) {
+                out.append(' ')
+            }
+            out.append(word.toLowerCase())
+        }
+        String joined = out.toString()
+        return String.valueOf(Character.toUpperCase(joined.charAt(0))) + joined.substring(1)
+    }
+
+    private static List<String> camelWords(String value) {
+        List<String> words = new ArrayList<String>()
+        if (value == null) {
+            return words
+        }
+        StringBuilder word = new StringBuilder()
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i)
+            if (Character.isUpperCase(c) && word.length() > 0) {
+                words.add(word.toString())
+                word = new StringBuilder()
+            }
+            word.append(c)
+        }
+        if (word.length() > 0) {
+            words.add(word.toString())
+        }
+        return words
+    }
+
     static String plural(int count, String noun) {
         return String.valueOf(count) + " " + noun + (count == 1 ? "" : "s")
     }
@@ -1390,42 +1451,97 @@ class Render {
      * stale against the other. */
     private static String sectionTable(Nd node) {
         StringBuilder out = new StringBuilder()
-        out.append("<div class=\"view-table hidden\"><table class=\"flat\"><thead><tr>")
-        out.append("<th>Path</th><th>Value</th><th>State</th><th>In Jira</th>")
-        out.append("</tr></thead><tbody>")
-        List<Nd> flat = new ArrayList<Nd>()
-        List<String> paths = new ArrayList<String>()
-        /* The path is relative to the section, and the section name is not repeated on
-         * every row. It cannot vary inside one table - this table is rendered per
-         * section and every row is seeded with that one section's label - so writing it
-         * out was a constant repeated hundreds of times, in the widest column, two
-         * lines below the heading that already says it. What comes after it does vary:
-         * a scheme with several layers puts a different workflow name in the middle of
-         * the same table, so only the constant prefix is dropped.
-         *
-         * The rest stays written out rather than indented. This view exists to be
-         * sorted and pasted into a spreadsheet, and indentation stops meaning anything
-         * the moment somebody sorts by another column. The tree next to it is the view
-         * for reading. The CSV and the exported page keep the full path including the
-         * section, because there it is the key a remark is carried over by. */
+        out.append("<div class=\"view-table hidden\">")
+        /* Children that carry a value of their own rather than a subtree share one
+         * table under the section's own name. Every other child gets a table to
+         * itself, because its subtree is a set of records of one kind and that is
+         * what a table can actually hold. */
+        List<Nd> loose = new ArrayList<Nd>()
+        List<Nd> branches = new ArrayList<Nd>()
         for (Nd child : node.children) {
-            flattenInto(child, "", flat, paths)
+            if (child.children.isEmpty() || !child.isReadable()) {
+                loose.add(child)
+            } else {
+                branches.add(child)
+            }
         }
-        for (int i = 0; i < flat.size(); i++) {
-            Nd row = flat.get(i)
+        if (!loose.isEmpty()) {
+            out.append(subTable(Pc.orNa(node.label), loose))
+        }
+        for (Nd branch : branches) {
+            out.append(subTable(Pc.orNa(branch.label), branch.children))
+        }
+        if (loose.isEmpty() && branches.isEmpty()) {
+            out.append("<p class=\"linknote\">Nothing to tabulate.</p>")
+        }
+        out.append("</div>")
+        return out.toString()
+    }
+
+    /* One table over one set of like records. members are the records; everything
+     * below each of them becomes columns, not a longer string in one cell. */
+    private static String subTable(String heading, List<Nd> members) {
+        List<Nd> rows = new ArrayList<Nd>()
+        List<List<Nd>> chains = new ArrayList<List<Nd>>()
+        for (Nd member : members) {
+            collectRows(member, new ArrayList<Nd>(), chains, rows)
+        }
+        if (rows.isEmpty()) {
+            return ""
+        }
+        int depth = 0
+        for (List<Nd> chain : chains) {
+            if (chain.size() > depth) {
+                depth = chain.size()
+            }
+        }
+        StringBuilder out = new StringBuilder()
+        out.append("<h4 class=\"table-head\">").append(Pc.html(heading))
+        out.append(" <span class=\"muted\">").append(Pc.plural(rows.size(), "row")).append("</span></h4>")
+        out.append("<table class=\"flat\"><thead><tr>")
+        for (int level = 0; level < depth; level++) {
+            out.append("<th class=\"col-level\">")
+            out.append(Pc.html(levelHeader(chains, level, heading))).append("</th>")
+        }
+        out.append("<th class=\"col-value\">Value</th>")
+        out.append("<th class=\"col-state\">State</th>")
+        out.append("<th class=\"col-link\">In Jira</th>")
+        out.append("</tr></thead><tbody>")
+        for (int i = 0; i < rows.size(); i++) {
+            Nd row = rows.get(i)
+            List<Nd> chain = chains.get(i)
             out.append("<tr>")
-            /* The full path, section included, on the title so it can still be read
-             * and copied where it is needed. */
-            String fullPath = Pc.orNa(node.label) + " > " + paths.get(i)
-            out.append("<td class=\"mono\" title=\"").append(Pc.html(fullPath)).append("\">")
-            out.append(Pc.html(paths.get(i))).append("</td>")
-            out.append("<td>").append(valueHtml(row.value)).append("</td>")
-            out.append("<td>")
+            for (int level = 0; level < depth; level++) {
+                out.append("<td class=\"col-level\">")
+                if (chain.size() > level) {
+                    /* Written out on every row on purpose. A repeated ancestor down a
+                     * column is what a sort, a filter and a pivot consume; the same
+                     * repetition inside one text cell was the defect. An empty cell
+                     * here means the level does not apply to this record, not that
+                     * something was not read - the State column is what says that. */
+                    out.append(Pc.html(Pc.orNa(chain.get(level).label)))
+                }
+                out.append("</td>")
+            }
+            /* A failed read records its reason as a diagnostic rather than a value,
+             * and the tree prints it at the node. A table row that said only "could
+             * not be read" would be poorer than the tree at the one point where it
+             * matters most, so the reason takes the value cell when there is no
+             * value. What is never allowed is a blank cell: blank cannot be told
+             * apart from a value nobody managed to read, which is the distinction
+             * this whole report rests on. */
+            String cell = valueHtml(row.value)
+            if (cell.isEmpty() && !row.diagnostics.isEmpty()) {
+                cell = valueHtml(String.join("; ", row.diagnostics))
+            }
+            out.append("<td class=\"col-value\">")
+            out.append(cell.isEmpty() ? Pc.html(Pc.NA) : cell).append("</td>")
+            out.append("<td class=\"col-state\">")
             if (!row.isReadable()) {
                 out.append("<span class=\"state state-").append(Pc.html(row.state)).append("\">")
                 out.append(Pc.html(stateLabel(row.state))).append("</span>")
             }
-            out.append("</td><td>")
+            out.append("</td><td class=\"col-link\">")
             if (row.deepLink != null) {
                 out.append("<a href=\"").append(Pc.html(row.deepLink))
                 out.append("\" target=\"_blank\" rel=\"noreferrer\">")
@@ -1436,16 +1552,66 @@ class Render {
             }
             out.append("</td></tr>")
         }
-        out.append("</tbody></table></div>")
+        out.append("</tbody></table>")
         return out.toString()
     }
 
-    private static void flattenInto(Nd node, String parentPath, List<Nd> flat, List<String> paths) {
-        String path = parentPath.isEmpty() ? Pc.orNa(node.label) : parentPath + " > " + Pc.orNa(node.label)
-        flat.add(node)
-        paths.add(path)
+    /* The header of one level. Level zero is the record itself, so the table's own
+     * name is the honest header for it. Below that the kind decides, and a level
+     * whose nodes do not agree on a kind is a mixed level: "Aspect" is what such a
+     * level is, and inventing a more specific word for it would be a guess. */
+    private static String levelHeader(List<List<Nd>> chains, int level, String heading) {
+        if (level == 0) {
+            return heading
+        }
+        String kind = null
+        String parent = null
+        boolean mixed = false
+        boolean parentMixed = false
+        for (List<Nd> chain : chains) {
+            if (chain.size() <= level) {
+                continue
+            }
+            String here = chain.get(level).kind
+            if (kind == null) {
+                kind = here
+            } else if (!kind.equals(here)) {
+                mixed = true
+            }
+            String above = chain.get(level - 1).kind
+            if (parent == null) {
+                parent = above
+            } else if (!parent.equals(above)) {
+                parentMixed = true
+            }
+        }
+        if (kind == null || mixed) {
+            return "Aspect"
+        }
+        return Pc.humanKind(kind, parentMixed ? null : parent)
+    }
+
+    /* One row per configuration value. A container contributes no row of its own:
+     * its label becomes a column on the rows beneath it, and a summary value such as
+     * "15 fields" is an aggregate that a table computes rather than stores.
+     *
+     * The exception is not negotiable. A node that could not be read stays a row even
+     * when it has children, because a failure that vanishes because it happened to
+     * sit on a branch is precisely the absence-that-was-never-measured this report
+     * exists to prevent. */
+    private static void collectRows(Nd node, List<Nd> trail, List<List<Nd>> chains, List<Nd> rows) {
+        List<Nd> here = new ArrayList<Nd>(trail)
+        here.add(node)
+        boolean leaf = node.children.isEmpty()
+        if (leaf || !node.isReadable()) {
+            rows.add(node)
+            chains.add(here)
+        }
+        if (leaf) {
+            return
+        }
         for (Nd child : node.children) {
-            flattenInto(child, path, flat, paths)
+            collectRows(child, here, chains, rows)
         }
     }
 
@@ -1877,13 +2043,19 @@ table.flat tr:nth-child(even) td { background: var(--surface-subtle); }
 .section-head:hover .section-title { color: var(--blue); }
 .section-head .twisty { font-size: 13px; }
 .section-title { flex: 0 1 auto; }
-/* "open" must never wrap into "ope / n": the last two columns shrink to their own
-   content instead of taking a share of the width. */
-table.flat th:nth-child(4), table.flat td:nth-child(4),
-table.flat th:nth-child(5), table.flat td:nth-child(5) { white-space: nowrap; width: 1%; }
-table.flat td:nth-child(5) { text-align: right; }
-table.flat td:first-child { white-space: normal; font-size: 12px; }
-table.flat th:nth-child(2), table.flat td:nth-child(2) { min-width: 140px; }
+/* Addressed by class, never by column position. These rules used to name
+   nth-child(4) and nth-child(5); when a column was removed, State slid from the
+   fourth position to the third, silently lost its nowrap and started rendering as
+   "NOT CONFIGURE / D" with the break in the middle of the word. A positional
+   selector cannot tell that it is now pointing at a different column, so it goes on
+   styling the wrong one without any sign. A class moves with its cell. */
+table.flat th.col-state, table.flat td.col-state,
+table.flat th.col-link, table.flat td.col-link { white-space: nowrap; width: 1%; }
+table.flat td.col-link { text-align: right; }
+table.flat td.col-level { white-space: normal; font-size: 12px; }
+table.flat td.col-value { min-width: 140px; }
+h4.table-head { margin: 18px 0 0; font-size: 14px; font-weight: 600; }
+h4.table-head .muted { font-weight: 400; font-size: 12px; color: var(--text-subtle); }
 .section-value, .node-value, .linknote, table.flat td, .node-diag {
     overflow-wrap: anywhere; word-break: break-word;
 }
