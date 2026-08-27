@@ -1,67 +1,65 @@
 /* =============================================================================
- * Confluence Data Center - ScriptRunner reachability and acquisition probe
+ * Confluence Data Center - ScriptRunner reachability, acquisition and SQL probe
  * ScriptRunner Custom REST Endpoint. Admin-gated. Strictly read-only.
  *
- * Version 0.4. The endpoint name has not changed since 0.1, so replacing the
+ * Version 0.5. The endpoint name has not changed since 0.1, so replacing the
  * file in the script root is the whole deployment.
  *
- * WHY 0.2 DID NOT COMPILE, because the cause matters more than the fix
- *   It statically imported com.atlassian.plugin.ContainerManagedPlugin. The type
- *   exists, but as com.atlassian.plugin.module.ContainerManagedPlugin, in
- *   atlassian-plugins-api-9.1.7.jar. The package name was written from memory
- *   instead of read off the instance.
+ * What earlier passes established, measured on confluence-test
+ *   0.1  The ScriptRunner Import-Package header does not predict what a script
+ *        can reach. The boundary that exists is: Confluence PRODUCT classes
+ *        resolve directly, internal and dmz included; bundled PLUGIN classes do
+ *        not and need the exporting plugin classloader.
+ *   0.4  Resolution and acquisition are different questions. The plugin
+ *        container route works. SpacePropertyService and
+ *        EffectiveSpacePermissionsCalculator resolve and yield NO component:
+ *        the API service layer is a Spring proxy the chaining classloader
+ *        cannot use. BandanaManager.getKeys does not inherit global keys,
+ *        confirmed against a positive global control.
  *
- *   The deeper fault is that 0.2 named an unverified type STATICALLY at all.
- *   0.1 compiled under every outcome precisely because every type under probe
- *   was a string. A probe that cannot start is worth less than no probe, since
- *   it answers nothing while looking like a broken subject rather than a broken
- *   instrument. 0.3 restores the rule: the only static imports are types this
- *   endpoint has already MEASURED as reachable, and everything else is loaded by
- *   name and called reflectively.
+ * What direct SQL then showed, and why this pass exists
+ *   Per-space application configuration in PLUGIN_SETTING is not stored only
+ *   under the bare space key. The real namespaces on this instance are
+ *   com.atlassian.confluence.blueprints.plugin-module-state:ENG and the same
+ *   for HR, alongside a bare DEV. The form is <plugin namespace>:<SPACEKEY>.
  *
- * What 0.1 measured, and what still stands
- *   The ScriptRunner Import-Package header does not predict what a script can
- *   reach. Five of seven packages absent from it resolved anyway. The boundary
- *   that exists:
- *     Confluence PRODUCT classes resolve directly, internal and dmz included.
- *     Bundled PLUGIN classes do not, and need the exporting plugin classloader.
- *   Resolution and acquisition are different questions: five types resolved and
- *   still handed back no component, one of them a control.
+ *   createSettingsForKey(spaceKey) reaches only the bare form. A section built
+ *   on it would report "no application configuration" for a space that has
+ *   some, and the PluginSettings API cannot enumerate namespaces at all. Only
+ *   SQL can.
  *
- * What 0.3 asks
- *   A - ACQUISITION per route. ComponentLocator first; for a plugin-owned type,
- *       the exporting plugin container, asked for beans of each interface the
- *       implementation itself declares. The interface is read off the class, not
- *       guessed: a guessed bean type proves nothing when it returns empty.
- *   B - THE PROPERTY SECTION, functionally, across BOTH enumerable stores:
- *       Bandana under the space context, and PluginSettings under the space key.
- *       KEYS ONLY. Values are never read, rendered or logged - they are
- *       XStream-serialised objects and apps store secrets in them.
- *   C - INHERITANCE, empirically: space key sets against the global one, so the
- *       bytecode reading that getKeys does not inherit is checked against the
- *       running instance rather than only against the decompiler.
- *   D - BLUEPRINT STATE without touching the plugin, by reading the store the
- *       plugin writes rather than asking the plugin. That is what a
- *       configuration scanner should do anyway.
+ *   So this pass asks whether the endpoint may run SQL at all, and then proves
+ *   the gap on the instance rather than asserting it: the same space read both
+ *   ways, side by side, in one output.
+ *
+ * The trade-off, stated rather than absorbed
+ *   The Confluence schema is not a public API. SQL is the route of last resort,
+ *   used only where the Java API demonstrably cannot answer, and any section
+ *   resting on it must be labelled schema-coupled in the report. This probe uses
+ *   createReadOnly() and every statement here is a SELECT.
+ *
+ * Reporting discipline
+ *   Per item, never one verdict for the run. A failed read carries its reason.
+ *   Controls stay: if a control fails, the harness is suspect and no verdict may
+ *   be read out of the run.
+ *   Only types MEASURED reachable are imported statically. Everything under test
+ *   is loaded by name and called reflectively, which is why 0.1 could not fail
+ *   to start and 0.2 could.
  *
  * Parameters
- *   space=<KEY>   optional. Without it the first current spaces in key order.
- *   limit=<n>     optional, default 5, capped at 25.
+ *   spaces=A,B,C  optional, default DEV,ENG,HR - the three spaces this instance
+ *                 is known to carry per-space configuration for.
  *
  * Platform
  *   javax / jakarta neutral. The JAX-RS Response class is resolved at runtime and
  *   the closure parameters are untyped, so no jakarta.* or javax.* import appears.
  * ========================================================================== */
 
-/* Every import below is a type this endpoint measured as reachable in 0.1. */
+/* Every import below is a type these probes measured as reachable. */
 import com.atlassian.bandana.BandanaManager
 
 import com.atlassian.confluence.setup.bandana.ConfluenceBandanaContext
-import com.atlassian.confluence.spaces.SpaceManager
-import com.atlassian.confluence.spaces.SpaceStatus
 
-import com.atlassian.plugin.Plugin
-import com.atlassian.plugin.PluginAccessor
 import com.atlassian.sal.api.component.ComponentLocator
 import com.onresolve.scriptrunner.runner.rest.common.CustomEndpointDelegate
 
@@ -70,43 +68,24 @@ import groovy.transform.BaseScript
 
 import org.codehaus.groovy.runtime.InvokerHelper
 
+import java.lang.reflect.InvocationHandler
+import java.lang.reflect.Method
+import java.lang.reflect.Proxy
+import java.sql.Connection
+import java.sql.PreparedStatement
+import java.sql.ResultSet
+
 @BaseScript CustomEndpointDelegate delegate
 
 class Probe {
 
-    static final String VERSION = "0.4"
-    static final int KEY_SAMPLE = 12
-    static final int SPACE_LIMIT_MAX = 25
+    static final String VERSION = "0.5"
+    static final int ROW_CAP = 25
 
-    /* Measured 2026-08-27: com.atlassian.plugin.module.ContainerManagedPlugin in
-     * atlassian-plugins-api-9.1.7.jar. Held as a string, never imported. */
-    static final String CONTAINER_MANAGED = "com.atlassian.plugin.module.ContainerManagedPlugin"
+    static final String EXECUTOR_FACTORY = "com.atlassian.sal.api.rdbms.TransactionalExecutorFactory"
+    static final String CONNECTION_CALLBACK = "com.atlassian.sal.api.rdbms.ConnectionCallback"
     static final String SETTINGS_FACTORY =
         "com.atlassian.confluence.api.service.settings.ExtendedPluginSettingsFactory"
-
-    /* [label, class, owning plugin key or null for a product class, group] */
-    static final List<List<String>> ACQUIRE = [
-        ["JSON space property store",
-         "com.atlassian.confluence.api.service.content.SpacePropertyService", null, "OPEN"],
-        ["effective space permissions",
-         "com.atlassian.confluence.security.denormalisedpermissions.impl.space.EffectiveSpacePermissionsCalculator",
-         null, "OPEN"],
-        ["plugin container marker interface", CONTAINER_MANAGED, null, "OPEN"],
-        ["space blueprint state",
-         "com.atlassian.confluence.plugins.createcontent.PluginSettingsSpaceBlueprintStateController",
-         "com.atlassian.confluence.plugins.confluence-create-content-plugin", "OPEN"],
-        ["sidebar links",
-         "com.atlassian.confluence.plugins.ia.impl.DefaultSidebarLinkManager",
-         "com.atlassian.confluence.plugins.confluence-space-ia", "OPEN"],
-        ["per-space plugin settings", SETTINGS_FACTORY, null, "OPEN"],
-
-        ["control - space permissions read side",
-         "com.atlassian.confluence.security.SpacePermissionManager", null, "CONTROL"],
-        ["control - space reader",
-         "com.atlassian.confluence.spaces.SpaceManager", null, "CONTROL"],
-        ["control - bandana manager",
-         "com.atlassian.bandana.BandanaManager", null, "CONTROL"],
-    ]
 
     static Class resolveResponseClass() {
         try {
@@ -145,250 +124,211 @@ class Probe {
         }
     }
 
-    static List<String> namesOf(Object collection, int cap) {
-        List<String> names = new ArrayList<String>()
-        for (Object each : (Collection) collection) {
-            if (names.size() >= cap) {
-                break
-            }
-            names.add(each == null ? "null" : each.getClass().getName())
-        }
-        return names
+    static Object component(String className) {
+        return ComponentLocator.getComponent(Class.forName(className))
     }
 
-    /* ---- A. acquisition ---------------------------------------------------- */
+    /* ---- SQL, read only ----------------------------------------------------- */
 
-    static Class<?> load(PluginAccessor pluginAccessor, String className, String pluginKey) {
-        if (pluginKey == null) {
-            return Class.forName(className)
-        }
-        Plugin plugin = pluginAccessor.getPlugin(pluginKey)
-        ClassLoader loader = (plugin == null) ? null : plugin.getClassLoader()
-        return (loader == null) ? Class.forName(className)
-                                : Class.forName(className, false, loader)
-    }
-
-    /* Reflective throughout: the marker interface itself is one of the things
-     * under test, so it is never named statically. */
-    static List<Map> beansViaPlugin(PluginAccessor pluginAccessor, String pluginKey, Class<?> type) {
-        List<Map> attempts = new ArrayList<Map>()
-        Plugin plugin = pluginAccessor.getPlugin(pluginKey)
-        if (plugin == null) {
-            attempts.add([iface: null, outcome: "PLUGIN NOT INSTALLED", detail: pluginKey])
-            return attempts
-        }
-        Class<?> marker = null
-        try {
-            marker = Class.forName(CONTAINER_MANAGED)
-        } catch (Throwable error) {
-            attempts.add([iface: null, outcome: "MARKER UNREACHABLE", detail: why(error)])
-            return attempts
-        }
-        if (!marker.isInstance(plugin)) {
-            attempts.add([iface: null, outcome: "PLUGIN NOT CONTAINER MANAGED",
-                          detail: plugin.getClass().getName()])
-            return attempts
-        }
-        Object accessor
-        try {
-            accessor = duck(plugin, "getContainerAccessor", new Object[0])
-        } catch (Throwable error) {
-            attempts.add([iface: null, outcome: "NO CONTAINER ACCESSOR", detail: why(error)])
-            return attempts
-        }
-        List<Class<?>> types = new ArrayList<Class<?>>()
-        types.add(type)
-        for (Class<?> each : type.getInterfaces()) {
-            types.add(each)
-        }
-        for (Class<?> candidate : types) {
-            try {
-                Object beans = duck(accessor, "getBeansOfType", [candidate] as Object[])
-                int size = (beans == null) ? 0 : ((Collection) beans).size()
-                attempts.add([iface: candidate.getName(),
-                              outcome: size == 0 ? "NONE" : "FOUND " + size,
-                              detail: size == 0 ? null : namesOf(beans, 3).join(", ")])
-            } catch (Throwable error) {
-                attempts.add([iface: candidate.getName(), outcome: "UNREADABLE", detail: why(error)])
-            }
-        }
-        return attempts
-    }
-
-    static Map acquireOne(PluginAccessor pluginAccessor, List<String> candidate) {
-        Map row = [
-            label: candidate[0], type: candidate[1], plugin: candidate[2], group: candidate[3],
-            resolved: "NOT RESOLVED", resolvedWhy: null,
-            componentLocator: "NOT ATTEMPTED", componentLocatorWhy: null,
-            pluginContainer: null,
-        ]
-        Class<?> type
-        try {
-            type = load(pluginAccessor, candidate[1], candidate[2])
-            row.resolved = "RESOLVED"
-        } catch (Throwable error) {
-            row.resolvedWhy = why(error)
-            return row
-        }
-        try {
-            Object component = ComponentLocator.getComponent(type)
-            row.componentLocator = (component == null) ? "NULL" : "PRESENT: " + component.getClass().getName()
-        } catch (Throwable error) {
-            row.componentLocator = "UNREADABLE"
-            row.componentLocatorWhy = why(error)
-        }
-        if (candidate[2] != null) {
-            row.pluginContainer = beansViaPlugin(pluginAccessor, candidate[2], type)
-        }
-        return row
-    }
-
-    /* ---- B, C, D. the property stores, keys only ---------------------------- */
-
-    static Map settingsKeys(Object settingsFactory, String spaceKey) {
-        Map row = [keyCount: null, sample: null, blueprintKeys: null, why: null]
-        if (settingsFactory == null) {
-            row.why = "ExtendedPluginSettingsFactory not acquired"
-            return row
-        }
-        try {
-            Object settings = duck(settingsFactory, "createSettingsForKey", [spaceKey] as Object[])
-            Object keys = duck(settings, "getKeys", new Object[0])
-            List<String> all = new ArrayList<String>()
-            for (Object each : (Iterable) keys) {
-                all.add(String.valueOf(each))
-            }
-            row.keyCount = all.size()
-            row.sample = all.take(KEY_SAMPLE)
-            row.blueprintKeys = all.findAll { it.toLowerCase().contains("blueprint") }.take(5)
-        } catch (Throwable error) {
-            row.why = why(error)
-        }
-        return row
-    }
-
-    static Map propertySmoke(SpaceManager spaceManager, BandanaManager bandanaManager,
-                             Object settingsFactory, String requestedSpace, int limit) {
-        Map result = [spaces: new ArrayList<Map>(), globalKeyCount: null, globalWhy: null,
-                      inheritance: "UNKNOWN", spaceKeySource: null]
-        List<String> keys = new ArrayList<String>()
-        if (requestedSpace != null) {
-            keys.add(requestedSpace)
-            result.spaceKeySource = "space parameter"
-        } else {
-            try {
-                List<String> all = new ArrayList<String>(spaceManager.getAllSpaceKeys(SpaceStatus.CURRENT))
-                Collections.sort(all)
-                keys.addAll(all.take(limit))
-                result.spaceKeySource = "first " + keys.size() + " of " + all.size() + " current spaces, key order"
-            } catch (Throwable error) {
-                result.spaceKeySource = "UNREADABLE: " + why(error)
-                return result
-            }
-        }
-
-        Set<String> globalKeys = new LinkedHashSet<String>()
-        try {
-            for (String key : bandanaManager.getKeys(ConfluenceBandanaContext.GLOBAL_CONTEXT)) {
-                globalKeys.add(key)
-            }
-            result.globalKeyCount = globalKeys.size()
-        } catch (Throwable error) {
-            result.globalWhy = why(error)
-        }
-
-        boolean anyOverlap = false
-        boolean anyRead = false
-        for (String key : keys) {
-            Map row = [space: key, bandanaKeyCount: null, bandanaSample: null,
-                       overlapWithGlobal: null, bandanaWhy: null, pluginSettings: null]
-            try {
-                List<String> spaceKeys = new ArrayList<String>()
-                for (String each : bandanaManager.getKeys(new ConfluenceBandanaContext(key))) {
-                    spaceKeys.add(each)
-                }
-                row.bandanaKeyCount = spaceKeys.size()
-                row.bandanaSample = spaceKeys.take(KEY_SAMPLE)
-                if (result.globalKeyCount != null) {
-                    int overlap = spaceKeys.findAll { globalKeys.contains(it) }.size()
-                    row.overlapWithGlobal = overlap
-                    if (overlap > 0) {
-                        anyOverlap = true
+    /* The callback interface is loaded by name and implemented by a JDK proxy, so
+     * this file never names a SAL rdbms type statically and still compiles where
+     * the package is absent. */
+    static Object withConnection(Object executorFactory, Closure body) {
+        Class callbackType = Class.forName(CONNECTION_CALLBACK)
+        Object executor = duck(executorFactory, "createReadOnly", new Object[0])
+        Object callback = Proxy.newProxyInstance(
+            callbackType.getClassLoader(), [callbackType] as Class[],
+            new InvocationHandler() {
+                Object invoke(Object proxy, Method method, Object[] arguments) {
+                    String name = method.getName()
+                    if (name == "execute") {
+                        return body.call(arguments[0])
                     }
+                    if (name == "toString") {
+                        return "spaceConfigProbe-callback"
+                    }
+                    if (name == "hashCode") {
+                        return Integer.valueOf(System.identityHashCode(proxy))
+                    }
+                    if (name == "equals") {
+                        return Boolean.valueOf(proxy.is(arguments[0]))
+                    }
+                    return null
                 }
-                anyRead = true
-            } catch (Throwable error) {
-                row.bandanaWhy = why(error)
+            })
+        return duck(executor, "execute", [callback] as Object[])
+    }
+
+    static List<Map> query(Connection connection, String sql, List<String> arguments,
+                           List<String> columns) {
+        List<Map> rows = new ArrayList<Map>()
+        PreparedStatement statement = connection.prepareStatement(sql)
+        try {
+            for (int index = 0; index < arguments.size(); index++) {
+                statement.setString(index + 1, arguments.get(index))
             }
-            row.pluginSettings = settingsKeys(settingsFactory, key)
-            ((List) result.spaces).add(row)
+            ResultSet results = statement.executeQuery()
+            try {
+                while (results.next() && rows.size() < ROW_CAP) {
+                    Map row = new LinkedHashMap()
+                    for (String column : columns) {
+                        row.put(column, results.getString(column))
+                    }
+                    rows.add(row)
+                }
+            } finally {
+                results.close()
+            }
+        } finally {
+            statement.close()
+        }
+        return rows
+    }
+
+    static Map sqlForSpace(Connection connection, String spaceKey) {
+        Map out = [space: spaceKey]
+        try {
+            out.put("pluginSettingNamespaces", query(connection,
+                "SELECT namespace, setting_key FROM plugin_setting " +
+                "WHERE namespace = ? OR namespace LIKE ? ORDER BY namespace, setting_key",
+                [spaceKey, "%:" + spaceKey], ["namespace", "setting_key"]))
+        } catch (Throwable error) {
+            out.put("pluginSettingNamespacesWhy", why(error))
+        }
+        try {
+            out.put("spaceDescriptionProperties", query(connection,
+                "SELECT cp.propertyname FROM contentproperties cp " +
+                "JOIN spaces s ON s.spacedescid = cp.contentid WHERE s.spacekey = ? " +
+                "ORDER BY cp.propertyname",
+                [spaceKey], ["propertyname"]))
+        } catch (Throwable error) {
+            out.put("spaceDescriptionPropertiesWhy", why(error))
+        }
+        try {
+            out.put("permissionGrants", query(connection,
+                "SELECT p.permtype, p.permgroupname, p.permusername, p.permalluserssubject, " +
+                "p.creator, p.creationdate FROM spacepermissions p " +
+                "JOIN spaces s ON s.spaceid = p.spaceid WHERE s.spacekey = ? " +
+                "ORDER BY p.permtype",
+                [spaceKey], ["permtype", "permgroupname", "permusername",
+                             "permalluserssubject", "creator", "creationdate"]))
+        } catch (Throwable error) {
+            out.put("permissionGrantsWhy", why(error))
+        }
+        return out
+    }
+
+    /* ---- the same space, read the other way -------------------------------- */
+
+    static Map apiForSpace(Object settingsFactory, BandanaManager bandanaManager, String spaceKey) {
+        Map out = [space: spaceKey]
+        if (settingsFactory == null) {
+            out.put("pluginSettingsWhy", "ExtendedPluginSettingsFactory not acquired")
+        } else {
+            try {
+                Object settings = duck(settingsFactory, "createSettingsForKey", [spaceKey] as Object[])
+                List<String> keys = new ArrayList<String>()
+                for (Object each : (Iterable) duck(settings, "getKeys", new Object[0])) {
+                    keys.add(String.valueOf(each))
+                }
+                out.put("pluginSettingsKeys", keys)
+            } catch (Throwable error) {
+                out.put("pluginSettingsWhy", why(error))
+            }
+        }
+        try {
+            List<String> keys = new ArrayList<String>()
+            for (String each : bandanaManager.getKeys(new ConfluenceBandanaContext(spaceKey))) {
+                keys.add(each)
+            }
+            out.put("bandanaKeys", keys)
+        } catch (Throwable error) {
+            out.put("bandanaWhy", why(error))
+        }
+        return out
+    }
+
+    static Map run(BandanaManager bandanaManager, List<String> spaceKeys) {
+        Map result = [version: VERSION, spacesProbed: spaceKeys]
+
+        Object settingsFactory
+        try {
+            settingsFactory = component(SETTINGS_FACTORY)
+        } catch (Throwable ignored) {
+            settingsFactory = null
         }
 
-        if (!anyRead || result.globalKeyCount == null) {
-            result.inheritance = "UNKNOWN - not enough was read to say"
-        } else if (anyOverlap) {
-            result.inheritance = "KEYS OVERLAP GLOBAL - a space listing may be inheriting, do not trust the bytecode reading"
-        } else {
-            result.inheritance = "NO OVERLAP - consistent with getKeys delegating straight to the persister"
+        /* CONTROL: a component already proven acquirable. If this fails the
+         * harness is broken and nothing below may be read as a verdict. */
+        boolean controlOk
+        try {
+            controlOk = (ComponentLocator.getComponent(BandanaManager.class) != null)
+        } catch (Throwable ignored) {
+            controlOk = false
+        }
+        result.put("controlBandanaAcquired", controlOk)
+        result.put("controlSettingsFactoryAcquired", settingsFactory != null)
+
+        Object executorFactory
+        try {
+            executorFactory = component(EXECUTOR_FACTORY)
+            result.put("sqlFactory", executorFactory == null
+                ? "NULL" : "PRESENT: " + executorFactory.getClass().getName())
+        } catch (Throwable error) {
+            executorFactory = null
+            result.put("sqlFactory", "UNREADABLE")
+            result.put("sqlFactoryWhy", why(error))
+        }
+
+        List<Map> viaApi = new ArrayList<Map>()
+        for (String key : spaceKeys) {
+            viaApi.add(apiForSpace(settingsFactory, bandanaManager, key))
+        }
+        result.put("viaApi", viaApi)
+
+        if (executorFactory == null) {
+            result.put("viaSql", null)
+            result.put("viaSqlWhy", "the SAL rdbms factory was not acquired, so no statement was attempted")
+            result.put("verdict", "SQL UNAVAILABLE - namespace enumeration, grant provenance and the space description property store have no route yet")
+            return result
+        }
+
+        try {
+            Object sql = withConnection(executorFactory, { Connection connection ->
+                Map inner = new LinkedHashMap()
+                List<Map> perSpace = new ArrayList<Map>()
+                for (String key : spaceKeys) {
+                    perSpace.add(sqlForSpace(connection, key))
+                }
+                inner.put("perSpace", perSpace)
+                inner.put("catalog", connection.getCatalog())
+                return inner
+            })
+            result.put("viaSql", sql)
+            result.put("verdict", "SQL AVAILABLE - compare viaApi against viaSql for the same space")
+        } catch (Throwable error) {
+            result.put("viaSql", null)
+            result.put("viaSqlWhy", why(error))
+            result.put("verdict", "SQL FACTORY ACQUIRED BUT THE STATEMENT FAILED - see viaSqlWhy, which is not the same as unavailable")
         }
         return result
-    }
-
-    static Object settingsFactory() {
-        try {
-            return ComponentLocator.getComponent(Class.forName(SETTINGS_FACTORY))
-        } catch (Throwable ignored) {
-            return null
-        }
-    }
-
-    static Map run(PluginAccessor pluginAccessor, SpaceManager spaceManager,
-                   BandanaManager bandanaManager, String requestedSpace, int limit) {
-        List<Map> rows = new ArrayList<Map>()
-        for (List<String> candidate : ACQUIRE) {
-            rows.add(acquireOne(pluginAccessor, candidate))
-        }
-        List<Map> controls = rows.findAll { it.group == "CONTROL" }
-        List<Map> failed = controls.findAll { !((String) it.componentLocator).startsWith("PRESENT") }
-        return [
-            version        : VERSION,
-            pluginCount    : pluginAccessor.getPlugins().size(),
-            controlsTotal  : controls.size(),
-            controlsFailed : failed.size(),
-            verdictReadable: failed.isEmpty(),
-            verdictNote    : failed.isEmpty()
-                ? "Controls all acquired. The open verdicts below are readable."
-                : "A CONTROL was not acquired. The harness is suspect and NO verdict may be read out of this run.",
-            acquisition    : rows,
-            properties     : propertySmoke(spaceManager, bandanaManager, settingsFactory(),
-                                           requestedSpace, limit),
-            valuesNote     : "Property VALUES are never read by this probe. They are XStream-serialised objects and apps store secrets in them.",
-        ]
     }
 }
 
 spaceConfigProbe(httpMethod: "GET", groups: ["confluence-administrators"]) { queryParams, body ->
     Class responseClass = Probe.resolveResponseClass()
-    PluginAccessor pluginAccessor = ComponentLocator.getComponent(PluginAccessor.class)
-    SpaceManager spaceManager = ComponentLocator.getComponent(SpaceManager.class)
     BandanaManager bandanaManager = ComponentLocator.getComponent(BandanaManager.class)
 
-    String requestedSpace = Probe.param(queryParams, "space", null)
-    String limitText = Probe.param(queryParams, "limit", "5")
-    int limit = 5
-    try {
-        limit = Integer.parseInt(limitText)
-    } catch (NumberFormatException ignored) {
-        limit = 5
-    }
-    if (limit < 1) {
-        limit = 1
-    }
-    if (limit > Probe.SPACE_LIMIT_MAX) {
-        limit = Probe.SPACE_LIMIT_MAX
+    String requested = Probe.param(queryParams, "spaces", "DEV,ENG,HR")
+    List<String> spaceKeys = new ArrayList<String>()
+    for (String piece : requested.split(",")) {
+        String trimmed = piece.trim()
+        if (!trimmed.isEmpty() && spaceKeys.size() < 10) {
+            spaceKeys.add(trimmed)
+        }
     }
 
-    Map result = Probe.run(pluginAccessor, spaceManager, bandanaManager, requestedSpace, limit)
+    Map result = Probe.run(bandanaManager, spaceKeys)
     return Probe.ok(responseClass, JsonOutput.prettyPrint(JsonOutput.toJson(result)),
                     "application/json; charset=UTF-8")
 }
