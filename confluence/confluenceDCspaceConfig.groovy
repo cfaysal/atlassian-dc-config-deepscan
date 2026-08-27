@@ -2960,7 +2960,7 @@ class Scan {
 
     private static void record(Map<String, Map<String, Object>> found, String namespace, String key,
                                String store, String value, boolean withValues) {
-        String id = namespace + " " + key
+        String id = namespace + "\u0000" + key
         Map<String, Object> entry = found.get(id)
         if (entry == null) {
             entry = new LinkedHashMap<String, Object>()
