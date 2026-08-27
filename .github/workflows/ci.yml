@@ -175,3 +175,33 @@ jobs:
             fi
           done
           exit $fail
+
+      # A helper named "call" is unusable in this file and the compiler will not say
+      # so. Every reader in the Service Management section runs inside a closure, and
+      # inside a closure an unqualified call(a, b, c) binds to Closure.call - the
+      # closure's own invocation operator - instead of to the static method of the
+      # enclosing class. The section died on its first line for exactly that reason,
+      # naming the closure as the receiver. It survived review because in an ordinary
+      # method the identical call resolves correctly, so a reader checking one call
+      # site proves nothing about another.
+      #
+      # This is the enforcement point rather than a comment, because a comment binds
+      # only the reader who happens to open that file. Qualified calls (obj.call(x))
+      # are untouched; only a bare call( is refused. Comment lines are excluded so the
+      # explanation above can quote the offending form.
+      - name: Refuse a bare call( that a closure would shadow
+        run: |
+          set -uo pipefail
+          fail=0
+          files=$(git ls-files '*.groovy')
+          [ -z "$files" ] && exit 0
+          for f in $files; do
+            hits=$(grep -nE '(^|[^.[:alnum:]_])call[[:space:]]*\(' "$f" \
+                   | grep -vE '^[0-9]+:[[:space:]]*(\*|//|/\*)' || true)
+            if [ -n "$hits" ]; then
+              echo "::error file=$f::Unqualified call( - inside a closure this resolves to Closure.call, not to your method. Give the helper a distinct name."
+              echo "$hits"
+              fail=1
+            fi
+          done
+          exit $fail

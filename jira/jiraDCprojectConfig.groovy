@@ -5355,8 +5355,19 @@ class Scan {
      * loading on an instance that never had it. Unlike Pc.duckAll this call does not
      * swallow. A failure has to reach the enclosing guard and be printed as a failed
      * read, because swallowed it would render as a service desk with no request
-     * types - a failure dressed up as a measured absence. */
-    private static Object call(Object target, String method, Object[] arguments) {
+     * types - a failure dressed up as a measured absence.
+     *
+     * The name matters and must not be shortened back to "call". Every reader below
+     * runs inside a guardOptional closure, and inside a closure an unqualified
+     * call(a, b, c) resolves to Closure.call - the closure's own invocation operator -
+     * rather than to a static method of the enclosing class. The whole section died on
+     * its first line for exactly that reason, with the closure itself named as the
+     * receiver: "No signature of method: Scan$_serviceDesk_closure27.call() ... for
+     * argument types: (ServiceDeskServiceImpl, String, [Ljava.lang.Object;)". It went
+     * unnoticed because in an ordinary method - jsmResults is one - the same call
+     * resolves correctly. Only the closure context shadows it, and every read lives
+     * there. */
+    private static Object jsmCall(Object target, String method, Object[] arguments) {
         return InvokerHelper.invokeMethod(target, method, arguments)
     }
 
@@ -5394,7 +5405,7 @@ class Scan {
         if (pagedResponse == null) {
             return items
         }
-        Object raw = call(pagedResponse, "getResults", new Object[0])
+        Object raw = jsmCall(pagedResponse, "getResults", new Object[0])
         if (raw instanceof Collection) {
             for (Object element : (Collection<?>) raw) {
                 items.add(element)
@@ -5454,7 +5465,7 @@ class Scan {
 
             Object desk
             try {
-                desk = call(service, "getServiceDeskForProject", [user, project] as Object[])
+                desk = jsmCall(service, "getServiceDeskForProject", [user, project] as Object[])
             } catch (Throwable error) {
                 /* The API throws rather than returning null when a project carries no
                  * service desk. That is an absence, not a failed read, and it is the
@@ -5469,7 +5480,7 @@ class Scan {
                 self.absent("This project carries no service desk.")
                 return
             }
-            Object deskId = call(desk, "getId", new Object[0])
+            Object deskId = jsmCall(desk, "getId", new Object[0])
             self.val("Service desk " + Pc.orNa(deskId)).ident(deskId)
 
             self.add(portalNode(user))
@@ -5491,14 +5502,14 @@ class Scan {
                 self.failed("PortalService could not be obtained from the plugin system.")
                 return
             }
-            Object portal = call(service, "getPortalForProject", [user, project] as Object[])
+            Object portal = jsmCall(service, "getPortalForProject", [user, project] as Object[])
             if (portal == null) {
                 self.absent("This project carries no customer portal.")
                 return
             }
-            self.val(Pc.orNa(call(portal, "getName", new Object[0])))
-            self.ident(call(portal, "getId", new Object[0]))
-            String description = Pc.text(call(portal, "getDescription", new Object[0]))
+            self.val(Pc.orNa(jsmCall(portal, "getName", new Object[0])))
+            self.ident(jsmCall(portal, "getId", new Object[0]))
+            String description = Pc.text(jsmCall(portal, "getDescription", new Object[0]))
             self.add(description == null
                 ? Nd.of("serviceDeskPortalField", "Description").absent("No description")
                 : Nd.of("serviceDeskPortalField", "Description").val(description))
@@ -5517,12 +5528,12 @@ class Scan {
                 self.failed("RequestTypeService could not be obtained from the plugin system.")
                 return
             }
-            Object builder = call(service, "newQueryBuilder", new Object[0])
-            call(builder, "serviceDesk", [toInteger(deskId)] as Object[])
-            call(builder, "pagedRequest", [jsmPage(JSM_PAGE_LIMIT)] as Object[])
-            Object query = call(builder, "build", new Object[0])
+            Object builder = jsmCall(service, "newQueryBuilder", new Object[0])
+            jsmCall(builder, "serviceDesk", [toInteger(deskId)] as Object[])
+            jsmCall(builder, "pagedRequest", [jsmPage(JSM_PAGE_LIMIT)] as Object[])
+            Object query = jsmCall(builder, "build", new Object[0])
             List<Object> types = jsmResults(
-                call(service, "getRequestTypes", [user, query] as Object[]), self, "request types")
+                jsmCall(service, "getRequestTypes", [user, query] as Object[]), self, "request types")
             if (types.isEmpty()) {
                 self.absent("This service desk offers no request type.")
                 return
@@ -5549,20 +5560,20 @@ class Scan {
         node.link(links.serviceDeskRequestTypes(project.getKey()),
             "Project settings > Request types.")
         return guardOptional(node) { Nd self ->
-            Object typeId = call(type, "getId", new Object[0])
+            Object typeId = jsmCall(type, "getId", new Object[0])
             self.ident(typeId)
 
-            String description = Pc.text(call(type, "getDescription", new Object[0]))
+            String description = Pc.text(jsmCall(type, "getDescription", new Object[0]))
             self.add(description == null
                 ? Nd.of("serviceDeskRequestTypeField", "Description").absent("No description")
                 : Nd.of("serviceDeskRequestTypeField", "Description").val(description))
 
-            String help = Pc.text(call(type, "getHelpText", new Object[0]))
+            String help = Pc.text(jsmCall(type, "getHelpText", new Object[0]))
             self.add(help == null
                 ? Nd.of("serviceDeskRequestTypeField", "Help text").absent("No help text")
                 : Nd.of("serviceDeskRequestTypeField", "Help text").val(help))
 
-            Object issueTypeId = call(type, "getIssueTypeId", new Object[0])
+            Object issueTypeId = jsmCall(type, "getIssueTypeId", new Object[0])
             String issueTypeKey = Pc.text(issueTypeId)
             Nd issueTypeNode = Nd.of("serviceDeskRequestTypeField", "Raises issue type")
             issueTypeNode.ident(issueTypeId)
@@ -5619,11 +5630,11 @@ class Scan {
             return node
         }
         return guardOptional(node) { Nd self ->
-            Object builder = call(fieldService, "newQueryBuilder", new Object[0])
-            call(builder, "serviceDesk", [toInteger(deskId)] as Object[])
-            call(builder, "requestType", [toInteger(typeId)] as Object[])
-            Object meta = call(fieldService, "getCustomerRequestCreateMeta",
-                [user, call(builder, "build", new Object[0])] as Object[])
+            Object builder = jsmCall(fieldService, "newQueryBuilder", new Object[0])
+            jsmCall(builder, "serviceDesk", [toInteger(deskId)] as Object[])
+            jsmCall(builder, "requestType", [toInteger(typeId)] as Object[])
+            Object meta = jsmCall(fieldService, "getCustomerRequestCreateMeta",
+                [user, jsmCall(builder, "build", new Object[0])] as Object[])
             if (meta == null) {
                 self.failed("The customer form of this request type could not be read.")
                 return
@@ -5639,7 +5650,7 @@ class Scan {
                 facts.add("add participants: " + Pc.flag(((Boolean) participants).booleanValue()))
             }
 
-            Object rawFields = call(meta, "requestTypeFields", new Object[0])
+            Object rawFields = jsmCall(meta, "requestTypeFields", new Object[0])
             List<Object> fields = new ArrayList<Object>()
             if (rawFields instanceof Collection) {
                 for (Object element : (Collection<?>) rawFields) {
@@ -5694,13 +5705,13 @@ class Scan {
                 self.failed("QueueService could not be obtained from the plugin system.")
                 return
             }
-            Object builder = call(service, "newQueueQueryBuilder", new Object[0])
-            call(builder, "serviceDeskId", [toInteger(deskId)] as Object[])
-            call(builder, "includeIssueCount", [Boolean.FALSE] as Object[])
-            call(builder, "pagedRequest", [jsmPage(JSM_PAGE_LIMIT)] as Object[])
-            Object query = call(builder, "build", new Object[0])
+            Object builder = jsmCall(service, "newQueueQueryBuilder", new Object[0])
+            jsmCall(builder, "serviceDeskId", [toInteger(deskId)] as Object[])
+            jsmCall(builder, "includeIssueCount", [Boolean.FALSE] as Object[])
+            jsmCall(builder, "pagedRequest", [jsmPage(JSM_PAGE_LIMIT)] as Object[])
+            Object query = jsmCall(builder, "build", new Object[0])
             List<Object> queues = jsmResults(
-                call(service, "getQueues", [user, query] as Object[]), self, "queues")
+                jsmCall(service, "getQueues", [user, query] as Object[]), self, "queues")
             if (queues.isEmpty()) {
                 self.absent("This service desk defines no queue.")
                 return
@@ -5745,7 +5756,7 @@ class Scan {
                 self.failed("TimeMetricService could not be obtained from the plugin system.")
                 return
             }
-            Object raw = call(service, "getTimeMetrics", [user, desk] as Object[])
+            Object raw = jsmCall(service, "getTimeMetrics", [user, desk] as Object[])
             List<Object> metrics = new ArrayList<Object>()
             if (raw instanceof Collection) {
                 for (Object element : (Collection<?>) raw) {
