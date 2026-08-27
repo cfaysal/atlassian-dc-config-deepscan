@@ -889,10 +889,14 @@ for (int i = 0; i < Cx.MAX_ROWS + 10; i++) {
 Map<String, Object> hugeModel = Cx.copyMap(exportModel)
 hugeModel.put("sections", [[label: "Fields", state: "read", children: manyChildren]])
 ExportOutcome huge = Cx.render(hugeModel, new RemarkRead())
-ok("a cut table says it is cut", huge.storage.contains("This table is not complete"))
+ok("a cut page says it is cut", huge.storage.contains("This page is not complete"))
+ok("and names the section it cut", huge.storage.contains("those are: Fields"))
+ok("the cut section says so on its own heading too",
+    huge.storage.contains(", the rest is cut)</ac:parameter>"))
 ok("the cut is reported to the caller as well", !huge.warnings.isEmpty())
 ok("the last row beyond the cap is absent", !huge.storage.contains("Field " + (Cx.MAX_ROWS + 9)))
-ok("an uncut table makes no such claim", !fresh.storage.contains("This table is not complete"))
+ok("an uncut page makes no such claim", !fresh.storage.contains("This page is not complete"))
+ok("and no section claims to be cut", !fresh.storage.contains("This section is not complete"))
 
 /* ---- 23. Every table is collapsed, and collapsing changes nothing else ----- */
 
@@ -1006,10 +1010,36 @@ spillModel.put("sections", [
     ]] as LinkedHashMap
 ])
 ExportOutcome spill = Cx.render(spillModel, new RemarkRead())
-ok("the cut is announced above the tables", spill.storage.contains("This table is not complete"))
-ok("nothing past the cap is written", !spill.storage.contains("Only workflow"))
-check("the section past the cap gets no macro of its own",
-    countOf(spill.storage, EXPAND_OPEN), 1)
+ok("the cut is announced above the tables", spill.storage.contains("This page is not complete"))
+/* This is the defect the shared budget exists to remove. With the budget spent in
+ * section order, Fields took all five thousand rows and Workflows got none - no
+ * table, no heading, nothing. A reader saw a page with no Workflows section and had
+ * no way to tell that from a project without workflows. */
+ok("the small section behind the greedy one is still written",
+    spill.storage.contains("Only workflow"))
+check("and it has a macro of its own", countOf(spill.storage, EXPAND_OPEN), 2)
+ok("the greedy section is the one that says it was cut",
+    spill.storage.contains("Fields (") && spill.storage.contains(", the rest is cut)"))
+ok("the small one claims no cut",
+    !spill.storage.contains("Workflows (1 of"))
+ok("the page names which section was cut", spill.storage.contains("those are: Fields"))
+
+/* The share itself, without the rendering around it. A section that wants less than
+ * its equal part gives the remainder back, and the remainder reaches the ones that
+ * want more - otherwise a page of small sections would waste most of the budget. */
+check("a budget nobody exhausts is handed out in full",
+    Cx.shareBudget([Integer.valueOf(3), Integer.valueOf(4)], 100),
+    [Integer.valueOf(3), Integer.valueOf(4)])
+check("what a small section does not want reaches the greedy one",
+    Cx.shareBudget([Integer.valueOf(90), Integer.valueOf(2)], 10),
+    [Integer.valueOf(8), Integer.valueOf(2)])
+check("two equally greedy sections split it evenly",
+    Cx.shareBudget([Integer.valueOf(90), Integer.valueOf(90)], 10),
+    [Integer.valueOf(5), Integer.valueOf(5)])
+check("no section is offered rows there are none of",
+    Cx.shareBudget([Integer.valueOf(5), Integer.valueOf(5)], 0),
+    [Integer.valueOf(0), Integer.valueOf(0)])
+check("an empty page needs no share", Cx.shareBudget([], 100), [])
 
 /* The two prose blocks below the tables are long as well, and they collapse the
  * same way. exportModel carries exactly one suppressed read. */

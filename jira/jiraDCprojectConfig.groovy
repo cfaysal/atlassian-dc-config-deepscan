@@ -581,6 +581,11 @@ class Dl {
         return value == null ? null : admin("ConfigureFieldLayoutScheme.jspa?id=" + Pc.urlQuery(value))
     }
 
+    /* Evidence: alias ViewCustomFields in the instance's own actions.xml. */
+    String customFields() {
+        return admin("ViewCustomFields.jspa")
+    }
+
     /* Evidence: alias ConfigureCustomField, setCustomFieldId(Long) and
      * setFieldConfigSchemeId(Long). The second parameter opens the context. */
     String customField(Object numericId) {
@@ -2905,30 +2910,52 @@ class Cx {
         }
         makePathsUnique(rows)
 
-        boolean truncated = rows.size() > MAX_ROWS
-        if (truncated) {
-            outcome.warnings.add("The table was cut at " + String.valueOf(MAX_ROWS) + " of " +
-                String.valueOf(rows.size()) + " rows.")
-            out.append("<p><strong>This table is not complete.</strong> It carries the first ")
+        List<Integer> sizes = new ArrayList<Integer>()
+        for (List<Map<String, Object>> sectionRows : grouped) {
+            sizes.add(Integer.valueOf(sectionRows.size()))
+        }
+        List<Integer> allowance = shareBudget(sizes, MAX_ROWS)
+
+        List<String> cutSections = new ArrayList<String>()
+        for (int i = 0; i < grouped.size(); i++) {
+            if (grouped.get(i).size() > allowance.get(i).intValue()) {
+                cutSections.add(str(grouped.get(i).get(0), "label", "Section"))
+            }
+        }
+        if (!cutSections.isEmpty()) {
+            outcome.warnings.add("Cut to " + String.valueOf(MAX_ROWS) + " of " +
+                String.valueOf(rows.size()) + " rows, in: " + cutSections.join(", "))
+            out.append("<p><strong>This page is not complete.</strong> It carries ")
             out.append(String.valueOf(MAX_ROWS)).append(" of ").append(String.valueOf(rows.size()))
-            out.append(" configuration items. The rest is in the report itself and in its ")
-            out.append("CSV and JSON output; it is missing here, not missing from the project.</p>")
+            out.append(" configuration items. Every section is on the page and keeps its ")
+            out.append("heading; the ones whose rows were cut say so on their own heading, and ")
+            out.append("those are: ").append(esc(cutSections.join(", "))).append(". ")
+            out.append("What is cut is in the report itself and in its CSV and JSON output; it ")
+            out.append("is missing from this page, not from the project.</p>")
         }
 
         Set<String> used = new LinkedHashSet<String>()
-        int budget = MAX_ROWS
-        for (List<Map<String, Object>> sectionRows : grouped) {
-            if (budget <= 0) {
-                break
-            }
-            List<Map<String, Object>> visible = sectionRows.size() > budget
-                ? sectionRows.subList(0, budget) : sectionRows
-            budget -= visible.size()
+        for (int i = 0; i < grouped.size(); i++) {
+            List<Map<String, Object>> sectionRows = grouped.get(i)
+            int allowed = allowance.get(i).intValue()
+            List<Map<String, Object>> visible = sectionRows.size() > allowed
+                ? sectionRows.subList(0, allowed) : sectionRows
+            boolean sectionCut = visible.size() < sectionRows.size()
 
             /* The first row of a section is the section node itself, so its label is
-             * the heading an administrator recognises from the report. */
-            out.append(expandOpen(str(visible.get(0), "label", "Section") +
-                " (" + Pc.plural(visible.size(), "item") + ")"))
+             * the heading an administrator recognises from the report. It is taken
+             * from the full list rather than from the visible one, because a section
+             * that was cut to nothing still has to carry its own name. */
+            String heading = str(sectionRows.get(0), "label", "Section")
+            out.append(expandOpen(sectionCut
+                ? heading + " (" + String.valueOf(visible.size()) + " of " +
+                    Pc.plural(sectionRows.size(), "item") + ", the rest is cut)"
+                : heading + " (" + Pc.plural(visible.size(), "item") + ")"))
+            if (sectionCut) {
+                out.append("<p><strong>This section is not complete.</strong> It carries ")
+                out.append(String.valueOf(visible.size())).append(" of ")
+                out.append(String.valueOf(sectionRows.size())).append(" items.</p>")
+            }
             out.append(rowTable(visible, read, used, outcome))
             out.append(expandClose())
         }
@@ -3073,7 +3100,49 @@ class Cx {
         return ""
     }
 
-    /* One table per section, so each of them can sit inside its own collapsed
+    /* The row budget belongs to the page, and spending it in section order let the
+     * first big section starve every section behind it. A starved section did not
+     * appear at all, not even by name, so a reader could not tell a section that is
+     * not configured from one that was cut away - which is the single thing this
+     * report exists not to do.
+     *
+     * The budget is shared instead. Every section is offered an equal part; a section
+     * that needs less than its part gives the remainder back, and the remainder is
+     * offered to the sections that want more. Smallest first, so the giving back
+     * happens before the taking. A section that is still cut keeps its heading and
+     * says what was cut, on the heading and above its table. */
+    static List<Integer> shareBudget(List<Integer> sizes, int total) {
+        List<Integer> allowance = new ArrayList<Integer>()
+        for (int i = 0; i < sizes.size(); i++) {
+            allowance.add(Integer.valueOf(0))
+        }
+        List<Integer> order = new ArrayList<Integer>()
+        for (int i = 0; i < sizes.size(); i++) {
+            order.add(Integer.valueOf(i))
+        }
+        order.sort { Integer left, Integer right ->
+            return sizes.get(left.intValue()).intValue() - sizes.get(right.intValue()).intValue()
+        }
+        int left = total
+        int remaining = sizes.size()
+        for (Integer index : order) {
+            if (remaining <= 0) {
+                break
+            }
+            /* Math.floorDiv, not "/". Groovy divides two ints into a BigDecimal, which
+             * the static type checker rejects here and which would otherwise hand out
+             * fractional rows. */
+            int share = Math.floorDiv(left, remaining)
+            int want = sizes.get(index.intValue()).intValue()
+            int give = want < share ? want : share
+            allowance.set(index.intValue(), Integer.valueOf(give))
+            left -= give
+            remaining--
+        }
+        return allowance
+    }
+
+    /* One table per section, so each of them can sit inside its own collapsed    /* One table per section, so each of them can sit inside its own collapsed
      * macro. The remark carry-over is unaffected by the split: the read scans every
      * table on the page and keys on the path, which is unique page-wide. */
     static String rowTable(List<Map<String, Object>> rows, RemarkRead read,
@@ -3751,17 +3820,101 @@ class Scan {
                 self.absent("No custom field is in scope for this project.")
                 return
             }
-            self.val(String.valueOf(fields.size()) + " custom fields are in scope for this project")
             List<CustomField> ordered = new ArrayList<CustomField>(fields)
             ordered.sort { CustomField left, CustomField right ->
                 String a = left.getName() == null ? "" : left.getName()
                 String b = right.getName() == null ? "" : right.getName()
                 return a.compareToIgnoreCase(b)
             }
+
+            /* "In scope" is not the same question as "configured here". A field whose
+             * only context is global is in scope for this project and for every other
+             * project on the instance, in exactly the same way. On an instance with
+             * eight hundred custom fields that is eight hundred fields, each expanded
+             * into its contexts, and the handful that somebody actually configured for
+             * this project is lost in the middle of them. The two are separated, and
+             * only the project's own are expanded. */
+            List<CustomField> configuredHere = new ArrayList<CustomField>()
+            List<CustomField> everywhere = new ArrayList<CustomField>()
             for (CustomField field : ordered) {
-                self.add(customFieldNode(field, optionsManager))
+                if (namesThisProject(field)) {
+                    configuredHere.add(field)
+                } else {
+                    everywhere.add(field)
+                }
+            }
+            self.val(Pc.plural(fields.size(), "custom field") + " in scope, " +
+                String.valueOf(configuredHere.size()) + " of them configured for this project")
+
+            Nd ownNode = Nd.of("customFieldGroup", "Configured for this project")
+            ownNode.link(links.projectFields(project.getKey()), null)
+            if (configuredHere.isEmpty()) {
+                ownNode.absent("No custom field carries a context that names this project. " +
+                    "Every field in scope reaches it through a context that reaches every project.")
+            } else {
+                ownNode.val(Pc.plural(configuredHere.size(), "custom field"))
+                for (CustomField field : configuredHere) {
+                    ownNode.add(customFieldNode(field, optionsManager))
+                }
+            }
+            self.add(ownNode)
+
+            Nd globalNode = Nd.of("customFieldGroup", "Applies to every project")
+            globalNode.link(links.customFields(), null)
+            if (everywhere.isEmpty()) {
+                globalNode.absent("Every custom field in scope is configured for this project.")
+            } else {
+                globalNode.val(Pc.plural(everywhere.size(), "custom field"))
+                /* One note on the group, not one per field. The same sentence written
+                 * eight hundred times is what buried the observations card before. */
+                globalNode.note("These reach this project through a context that reaches every " +
+                    "project on the instance. That makes them instance configuration rather " +
+                    "than configuration of this project, so they are named rather than " +
+                    "expanded. Open one to see its contexts.")
+                for (CustomField field : everywhere) {
+                    globalNode.add(globalFieldNode(field))
+                }
+            }
+            self.add(globalNode)
+        }
+    }
+
+    /* Whether any context of this field names this project by id. A global context is
+     * deliberately not enough: it names no project at all, it names all of them. */
+    private boolean namesThisProject(CustomField field) {
+        List<FieldConfigScheme> schemes = field.getConfigurationSchemes()
+        if (schemes == null) {
+            return false
+        }
+        for (FieldConfigScheme scheme : schemes) {
+            try {
+                if (scheme.isGlobal() || scheme.isAllProjects()) {
+                    continue
+                }
+                List<Long> ids = scheme.getAssociatedProjectIds()
+                if (ids != null && ids.contains(project.getId())) {
+                    return true
+                }
+            } catch (Exception ignored) {
+                /* An association that cannot be read counts as naming the project.
+                 * Expanding a field that turns out to be global costs a few rows;
+                 * collapsing one that was configured here loses the answer. */
+                return true
             }
         }
+        return false
+    }
+
+    /* A field that reaches this project only through a global context: named, linked
+     * and typed, and not expanded. Its contexts are the same on every project, so
+     * they are a fact about the instance and belong on the field's own page. */
+    private Nd globalFieldNode(CustomField field) {
+        Nd node = Nd.of("customField", Pc.orNa(field.getName()))
+        node.ident(field.getId())
+        node.link(links.customField(field.getIdAsLong()), null)
+        String typeName = Pc.text(Pc.duck(field.getCustomFieldType(), "getName", null))
+        node.val(typeName == null ? Pc.orNa(field.getId()) : typeName)
+        return node
     }
 
     Nd customFieldNode(CustomField field, OptionsManager optionsManager) {

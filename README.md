@@ -26,8 +26,12 @@ Every section is expanded, not summarised:
 - **Field configuration scheme**, per issue type, down to whether each field is required,
   hidden and which renderer it uses. Issue types that resolve to the same configuration are
   grouped under it instead of repeating it.
-- **Custom fields** in scope for the project, with the contexts that actually apply to it,
-  their issue types, their option lists and their defaults.
+- **Custom fields**, split by what the question actually is. A field whose context names
+  this project is expanded in full: its contexts, the other projects on them, their issue
+  types, option lists and defaults. A field that reaches the project only through a global
+  context is named, typed and linked, and not expanded - it reaches every project on the
+  instance in exactly the same way, which makes it instance configuration rather than an
+  answer about this project.
 - **Workflow scheme** with every layer, the default layer included, and for each layer the
   workflow, its statuses, and per status every transition with its target, its counts of
   conditions, validators and post functions, and its transition screen.
@@ -135,6 +139,10 @@ link, which is the only outbound path in the file.
 - A page that does not carry this export's marker is never overwritten, whatever its title.
 - A remark whose configuration item has disappeared is kept in a second table rather than
   dropped.
+- The row budget of the page is shared between the sections rather than spent in order, so a
+  large section cannot starve the ones behind it. A section whose rows were cut keeps its
+  heading and says what was cut, on the heading and above its table, and the page names which
+  sections those were. No section ever disappears.
 - Each section gets its own table inside Confluence's bundled Expand macro, so the page opens
   closed rather than as one wall of rows. Confluence indexes the body of an expand, so the
   page stays searchable while it is collapsed, and the remark read is unaffected: it scans
