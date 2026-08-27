@@ -95,6 +95,36 @@
  *   as REDACTED - a state of its own, neither absent nor unreadable. The values
  *   are XStream-serialised objects that apps put secrets into, and this report is
  *   meant to be exported.
+ *
+ * Confluence page export (POST on the same endpoint URL)
+ *   The report writes itself into a page of THIS instance. This endpoint runs
+ *   inside Confluence, so it writes through the local page APIs and makes NO
+ *   outbound call at all, in any format. There is no cross-instance export here
+ *   and there must not be one.
+ *
+ *   Three stages, one POST each, and none of them runs before the export button
+ *   is pressed: pick a space, pick or name a parent page, write. Rendering the
+ *   report itself performs no lookup.
+ *
+ *   The Remark column belongs to the administrator. It is read back from the
+ *   existing page and carried over verbatim. If that read fails for ANY reason
+ *   nothing is written at all and the answer is 409, because a remark that
+ *   cannot be read is a remark that must not be overwritten.
+ *
+ *   A page that does not carry this export's marker is never overwritten,
+ *   whatever its title. The marker and the title prefix differ from the Jira
+ *   sibling's on purpose: both tools can write into the same space, and the
+ *   remark parser scans every table on the page it is about to replace.
+ *
+ *   The write is read back. What the answer reports - page id, version, position
+ *   - is what the stored page carries afterwards, never what the save claimed.
+ *   Where the read-back itself fails the verdict is "unknown", never a claimed
+ *   or a denied write.
+ *
+ *   Property VALUES reach the page only when the run that produced the payload
+ *   was given values=true, and a key on the deny-list is withheld a second time
+ *   on the way in. The page is readable by everyone who can read the space, so
+ *   this gate is enforced in the export itself and not only in the report.
  * ========================================================================== */
 
 /* Every import below is a type MEASURED on the instance, either acquirable as a
@@ -108,10 +138,42 @@ import com.atlassian.confluence.setup.bandana.ConfluenceBandanaContext
 import com.atlassian.confluence.spaces.SpaceManager
 import com.atlassian.confluence.themes.ThemeManager
 
+/* The export write path. Every type below is named statically because the
+ * Confluence sibling of this endpoint - the App Footprint report - runs this
+ * exact set on this instance line, so they are measured rather than assumed. */
+import com.atlassian.confluence.api.model.Expansion
+import com.atlassian.confluence.api.model.content.Space as ApiSpace
+import com.atlassian.confluence.api.model.content.SpaceStatus as ApiSpaceStatus
+import com.atlassian.confluence.api.model.pagination.PageResponse
+import com.atlassian.confluence.api.model.pagination.SimplePageRequest
+import com.atlassian.confluence.api.service.content.SpaceService as ApiSpaceService
+import com.atlassian.confluence.api.service.content.SpaceService.SpaceFinder
+import com.atlassian.confluence.content.service.PageService
+import com.atlassian.confluence.content.service.SpaceService
+import com.atlassian.confluence.core.BodyContent
+import com.atlassian.confluence.core.BodyType
+import com.atlassian.confluence.core.DefaultSaveContext
+import com.atlassian.confluence.pages.Page
+import com.atlassian.confluence.pages.PageManager
+import com.atlassian.confluence.search.service.ContentTypeEnum
+import com.atlassian.confluence.search.v2.BooleanOperator
+import com.atlassian.confluence.search.v2.Index
+import com.atlassian.confluence.search.v2.SearchFieldMappings
+import com.atlassian.confluence.search.v2.SearchManager
+import com.atlassian.confluence.search.v2.SearchQuery
+import com.atlassian.confluence.search.v2.query.BooleanQuery
+import com.atlassian.confluence.search.v2.query.ContentTypeQuery
+import com.atlassian.confluence.search.v2.query.InSpaceQuery
+import com.atlassian.confluence.search.v2.query.TextFieldQuery
+import com.atlassian.confluence.search.v2.query.WildcardTextFieldQuery
+import com.atlassian.confluence.spaces.Space
+import com.atlassian.confluence.user.AuthenticatedUserThreadLocal
+
 import com.atlassian.sal.api.component.ComponentLocator
 import com.onresolve.scriptrunner.runner.rest.common.CustomEndpointDelegate
 
 import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
 import groovy.transform.BaseScript
 
 import org.codehaus.groovy.runtime.InvokerHelper
@@ -1175,6 +1237,12 @@ class Render {
         out.append(instanceCard(report))
         out.append(summaryCards(report))
         out.append(toolbar(activeParams, expandAll))
+        /* The values flag is the one report parameter the export has to know: a run
+         * that was not allowed to read a property value and a space whose properties
+         * are empty produce the same tree. It is read back out of the active
+         * parameters rather than passed separately, so it can never disagree with
+         * what the toolbar above shows. */
+        out.append(exportCard(report, activeParams != null && activeParams.get("values") != null))
         out.append(diagnosticsCard(report))
         out.append(notesCard(report))
         for (Nd node : report.sections) {
@@ -1997,6 +2065,73 @@ function pickFirstSpace(event) {
 """
     }
 
+    /* The export is staged behind its own button on purpose. Rendering the report
+     * reads nothing: the click lists the spaces of this instance, choosing a space
+     * opens the parent search, and only then can a page be written. Each stage is
+     * one POST to this same endpoint, and none of them leaves this instance -
+     * there is no cross-instance path in this file.
+     *
+     * withValues is passed in rather than read out of the payload. A run that was
+     * not allowed to read a property value and a space whose properties are empty
+     * produce the same tree, and the export gate has to tell those two apart. */
+    static String exportCard(Report report, boolean withValues) {
+        Map<String, Object> model = report.toMap()
+        Map<String, Object> options = new LinkedHashMap<String, Object>()
+        options.put("values", Boolean.valueOf(withValues))
+        model.put("options", options)
+        String payload = Pc.html(JsonOutput.toJson(model))
+        String defaultTitle = Pc.html(Cx.title(report.spaceKey))
+        return """<div class="export-card">
+    <div class="export-title">Export to a Confluence page</div>
+    <div class="export-note">
+        Writes this configuration report into a page of this instance and updates that same page on
+        every later run. The <strong>Remark</strong> column stays untouched: it is read back from the
+        existing page and carried over verbatim. If that read fails, nothing is written at all. A remark
+        whose configuration item has disappeared is kept in a second table rather than dropped. A page
+        that does not carry this export's marker is never overwritten. Nothing is read until the button
+        below is pressed, and nothing is sent anywhere outside this instance.
+    </div>
+    <div class="export-grid">
+        <button id="exportOpen" class="button" type="button" onclick="openExport()">Export to a page</button>
+    </div>
+    <div id="exportSettings" class="export-settings hidden">
+        <div id="exportSpaceStage">
+            <div class="export-grid">
+                <label class="export-field">Space - search by name or key
+                    <input id="exportSpaceQuery" class="wide" type="search" autocomplete="off"
+                           placeholder="Type at least ${Cx.MIN_SEARCH_CHARS} characters..." oninput="searchSpaces()"
+                           onkeydown="pickFirstHit(event, 'exportSpaceResults')">
+                </label>
+                <div class="export-chosen" id="exportSpaceChosen">No space selected.</div>
+            </div>
+            <div id="exportSpaceResults" class="export-results"></div>
+        </div>
+        <div id="exportPageStage" class="export-stage hidden">
+            <div class="export-grid">
+                <label class="export-field">Parent page - search by title (optional)
+                    <input id="exportParentQuery" class="wide" type="search" autocomplete="off"
+                           placeholder="Type at least ${Cx.MIN_SEARCH_CHARS} characters..." oninput="parentTyped()"
+                           onkeydown="pickFirstHit(event, 'exportParentResults')">
+                </label>
+                <div class="export-chosen" id="exportParentChosen">No parent page: the page is created at the top level of the space.</div>
+            </div>
+            <div id="exportParentResults" class="export-results"></div>
+            <div class="export-grid">
+                <label class="export-field">Page title
+                    <input id="exportTitle" class="wide" type="text" value="${defaultTitle}">
+                </label>
+                <button id="exportRun" class="button" type="button" onclick="exportToPage()">Generate the page</button>
+            </div>
+        </div>
+    </div>
+    <div id="exportStatus" class="export-status muted">Not written yet.</div>
+    <input id="exportPayload" type="hidden" value="${payload}">
+    <input id="exportSpace" type="hidden" value="">
+    <input id="exportParent" type="hidden" value="">
+</div>
+"""
+    }
+
     private static String style() {
         return """<style>
 :root {
@@ -2196,6 +2331,14 @@ details.long .long-body { margin-top: 6px; padding: 8px 10px; background: var(--
 }
 .export-hit:hover { border-color: var(--blue); background: var(--blue-soft); }
 .export-empty { color: var(--text-subtle); font-size: 12px; font-style: italic; }
+.export-settings { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-subtle); }
+.export-stage { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border-subtle); }
+.export-status { margin-top: 10px; font-size: 12px; }
+.export-status.good { color: var(--green); }
+.export-status.warn { color: var(--yellow); }
+.export-status.bad { color: var(--red); }
+.export-card button.button { height: 34px; }
+.export-card button.button[disabled] { opacity: .55; cursor: not-allowed; }
 </style>
 """
     }
@@ -2279,9 +2422,1262 @@ function setView(name) {
     if (treeButton) { treeButton.classList.toggle('on', !wantTable); }
     if (tableButton) { tableButton.classList.toggle('on', wantTable); }
 }
+
+/* The export is staged: nothing above ran a lookup, so every stage below asks the
+   POST branch of this same endpoint for exactly what it needs, and no further.
+   Three stages, not four: this endpoint writes into its own instance, so there is
+   no target to pick and no request ever leaves this Confluence. */
+var exportSpaceList = [];
+var exportPageSeq = 0;
+var exportPageTimer = null;
+
+function el(id) { return document.getElementById(id); }
+function say(cssClass, text) {
+    var node = el('exportStatus');
+    node.className = 'export-status ' + cssClass;
+    node.textContent = text;
+    return node;
+}
+function exportPost(payload) {
+    return fetch(window.location.pathname, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-Atlassian-Token': 'no-check' },
+        body: JSON.stringify(payload)
+    }).then(function (response) {
+        return response.json().then(function (parsed) { return { ok: response.ok, status: response.status, body: parsed }; });
+    });
+}
+function hit(label, onPick) {
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'export-hit';
+    button.textContent = label;
+    button.onclick = onPick;
+    return button;
+}
+function emptyNote(text) {
+    var note = document.createElement('div');
+    note.className = 'export-empty';
+    note.textContent = text;
+    return note;
+}
+/* Enter picks the first hit. The results are buttons in document order, so the
+   first one in the box is the first match. Enter with no hit does nothing, the
+   default is always suppressed so Enter can never submit or reload the page, and
+   picking a hit with the mouse keeps working unchanged. */
+function pickFirstHit(event, boxId) {
+    if (event.key !== 'Enter') { return; }
+    event.preventDefault();
+    var first = el(boxId).querySelector('.export-hit');
+    if (first) { first.click(); }
+}
+
+/* Stage 1. The first lookup of the whole report: the spaces of this instance. */
+function openExport() {
+    el('exportOpen').disabled = true;
+    el('exportSettings').classList.remove('hidden');
+    say('muted', 'Reading the spaces of this instance...');
+    exportPost({ action: 'spaces' }).then(function (result) {
+        var body = result.body || {};
+        if (!result.ok || body.ok !== true) {
+            el('exportSettings').classList.add('hidden');
+            el('exportOpen').disabled = false;
+            say('bad', body.error || 'The space list could not be read.');
+            return;
+        }
+        exportSpaceList = body.spaces || [];
+        say('muted', String(exportSpaceList.length) + ' current space(s). Type at least ' +
+            '${Cx.MIN_SEARCH_CHARS} characters to search by name or key.');
+    }).catch(function (error) {
+        el('exportSettings').classList.add('hidden');
+        el('exportOpen').disabled = false;
+        say('bad', 'The space list could not be read: ' + error);
+    });
+}
+
+/* Stage 2. Search, not a dropdown: only matches are ever put into the page. */
+function searchSpaces() {
+    var query = el('exportSpaceQuery').value.trim().toLowerCase();
+    var box = el('exportSpaceResults');
+    box.innerHTML = '';
+    if (query.length < ${Cx.MIN_SEARCH_CHARS}) { return; }
+    var shown = 0;
+    for (var i = 0; i < exportSpaceList.length && shown < ${Cx.SEARCH_LIMIT}; i++) {
+        var space = exportSpaceList[i];
+        if (space.name.toLowerCase().indexOf(query) < 0 && space.key.toLowerCase().indexOf(query) < 0) { continue; }
+        box.appendChild(hit(space.name + '  (' + space.key + ')', chooseSpace(space)));
+        shown++;
+    }
+    if (shown === 0) { box.appendChild(emptyNote('No current space matches "' + query + '".')); }
+}
+function chooseSpace(space) {
+    return function () {
+        el('exportSpace').value = space.key;
+        el('exportSpaceQuery').value = space.name;
+        el('exportSpaceResults').innerHTML = '';
+        el('exportSpaceChosen').textContent = 'Space: ' + space.name + ' (' + space.key + ')';
+        /* A parent search that is still running belongs to the previous space, so
+           it is discarded here as well - otherwise its answer would drop a list of
+           foreign pages into the field of the space just picked. */
+        if (exportPageTimer) { window.clearTimeout(exportPageTimer); }
+        exportPageSeq++;
+        el('exportParent').value = '';
+        el('exportParentQuery').value = '';
+        el('exportParentResults').innerHTML = '';
+        el('exportParentChosen').textContent = 'No parent page: the page is created at the top level of the space.';
+        el('exportPageStage').classList.remove('hidden');
+        say('muted', 'Space ' + space.key + ' selected. Pick a parent page or leave it empty, then generate.');
+    };
+}
+
+/* Stage 3. The parent field has no button: typing is what starts the search,
+   after a short idle pause rather than on every keystroke. The list that comes
+   back STAYS until an entry is picked or the field falls below the minimum - a
+   list that disappears while it is being read cannot confirm anything. Out-of-order
+   answers are dropped, so a slow answer to an older term never replaces the list
+   of the current one. */
+function parentTyped() {
+    /* Editing the term drops the picked parent, so a stale id can never travel
+       with a title the administrator has since changed. What travels then is the
+       title, and the generating run adopts or creates that page. */
+    el('exportParent').value = '';
+    var query = el('exportParentQuery').value.trim();
+    el('exportParentChosen').textContent = query
+        ? 'Parent page "' + query + '": pick it below if it is listed, otherwise it is created when the page is generated.'
+        : 'No parent page: the page is created at the top level of the space.';
+    if (exportPageTimer) { window.clearTimeout(exportPageTimer); }
+    if (query.length < ${Cx.MIN_SEARCH_CHARS}) {
+        /* Bumping the sequence here discards an answer that is still in flight,
+           so an empty field never fills back up on its own. */
+        exportPageSeq++;
+        el('exportParentResults').innerHTML = '';
+        return;
+    }
+    exportPageTimer = window.setTimeout(searchParents, ${Cx.SEARCH_IDLE_MS});
+}
+function searchParents() {
+    var query = el('exportParentQuery').value.trim();
+    var box = el('exportParentResults');
+    if (query.length < ${Cx.MIN_SEARCH_CHARS}) { box.innerHTML = ''; return; }
+    var seq = ++exportPageSeq;
+    exportPost({ action: 'pages', spaceKey: el('exportSpace').value, query: query }).then(function (result) {
+        if (seq !== exportPageSeq) { return; }
+        var body = result.body || {};
+        box.innerHTML = '';
+        if (!result.ok || body.ok !== true) {
+            box.appendChild(emptyNote(body.error || 'The page search failed.'));
+            return;
+        }
+        var pages = body.pages || [];
+        if (pages.length === 0) {
+            box.appendChild(emptyNote('Not found - will be created'));
+            return;
+        }
+        for (var i = 0; i < pages.length; i++) {
+            box.appendChild(hit(pages[i].title + '  #' + pages[i].id, chooseParent(pages[i])));
+        }
+        if (body.truncated === true) {
+            box.appendChild(emptyNote('More pages match than are listed here. Type more of the title to narrow it down.'));
+        }
+    }).catch(function (error) {
+        if (seq === exportPageSeq) {
+            box.innerHTML = '';
+            box.appendChild(emptyNote('The page search failed: ' + error));
+        }
+    });
+}
+function chooseParent(page) {
+    return function () {
+        el('exportParent').value = page.id;
+        el('exportParentQuery').value = page.title;
+        el('exportParentResults').innerHTML = '';
+        el('exportParentChosen').textContent = 'Parent page: ' + page.title + ' (id ' + page.id + ')';
+    };
+}
+
+/* Stage 4 of the interaction, stage 3 of the endpoint: the write. */
+function exportToPage() {
+    var button = el('exportRun');
+    function fail(text) { say('bad', text); }
+    var payload;
+    try { payload = JSON.parse(el('exportPayload').value); }
+    catch (error) { fail('Export payload could not be read: ' + error); return; }
+    payload.spaceKey = el('exportSpace').value;
+    /* Either the id of a page that was picked, or the title that was typed and
+       never picked - never both. The server refuses a request that carries two
+       parent instructions, so the choice is made here and only here. */
+    payload.parentPageId = el('exportParent').value.trim();
+    payload.parentTitle = payload.parentPageId ? '' : el('exportParentQuery').value.trim();
+    payload.title = el('exportTitle').value.trim();
+    if (!payload.spaceKey) { fail('Select a space first.'); return; }
+    if (!payload.title) { fail('Enter a page title first.'); return; }
+    button.disabled = true;
+    say('muted', 'Writing page...');
+    exportPost(payload).then(function (result) {
+        button.disabled = false;
+        var body = result.body || {};
+        if (!result.ok || body.ok !== true) {
+            fail('Nothing was written (' + result.status + '): ' + (body.error || 'unknown error'));
+            return;
+        }
+        /* Found and created are reported apart. An administrator who reads "found"
+           believes the parent was already there and stops looking for the page this
+           run has just made. */
+        var parent = '';
+        if (body.parentAction === 'created') {
+            parent = ' Parent page created: "' + body.parentTitle + '" (id ' + body.parentPageId + ').';
+        } else if (body.parentAction === 'found') {
+            parent = ' Parent page found: "' + body.parentTitle + '" (id ' + body.parentPageId + ').';
+        }
+        /* A parent that was named and not applied is said plainly, and the line
+           stops reading as a plain success. A silent mismatch is the worst outcome
+           here: the run looks like it worked and the report is not where it was
+           put. The three states are compared as strings on purpose - "unknown" is
+           not a failure and is never reported as one. */
+        var tone = 'good';
+        if (body.parentApplied === 'false') {
+            tone = 'bad';
+            parent += ' PARENT NOT APPLIED. ' +
+                (body.parentAppliedReason || 'The page was not moved under the parent page.');
+        } else if (body.parentApplied === 'unknown') {
+            tone = 'warn';
+            parent += ' PARENT NOT CONFIRMED. ' +
+                (body.parentAppliedReason || 'The position could not be read back.');
+        }
+        var status = say(tone, 'Page ' + body.action + ': "' + body.title + '" in ' + body.spaceKey +
+            ' (version ' + body.pageVersion + '). Remark read: ' + body.remarkRead +
+            ', carried over: ' + body.remarksCarried + ' of ' + body.remarksRead +
+            ', without a matching item: ' + body.orphanedRemarks + '.' + parent);
+        if (body.pageUrl) {
+            var link = document.createElement('a');
+            link.href = body.pageUrl;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.textContent = ' Open the page';
+            status.appendChild(link);
+        }
+    }).catch(function (error) {
+        button.disabled = false;
+        fail('Request failed, nothing was written: ' + error);
+    });
+}
 </script>
 """
     }
+}
+
+/* =============================================================================
+ * Confluence page export - storage format and remark carry-over
+ *
+ * The report can be written into a page of this instance and that same page is
+ * updated on every later run. Two rules make that safe enough to point at a
+ * production space:
+ *
+ *   A page is only ever updated when it carries the marker below. A page this
+ *   export did not create is never rewritten, whatever its title. The marker and
+ *   the title prefix differ from the Jira sibling's on purpose: both tools can
+ *   write into the same space, and the parser below scans every table on the
+ *   page it is about to replace.
+ *
+ *   The Remark column belongs to the administrator, not to this export. It is
+ *   read back from the existing page and carried over verbatim, and if that read
+ *   fails for any reason NOTHING is written. A remark that cannot be read is a
+ *   remark that must not be overwritten.
+ *
+ * Everything here is a pure function of its input, so the whole export is
+ * exercised by the offline suite without a page ever being written.
+ * ========================================================================== */
+
+class Cx {
+
+    /* Bumping this string orphans every existing page, which is the point: a page
+     * written by an older, differently shaped export is not silently adopted. */
+    static final String MARKER = "cfcon-space-config-export/1"
+
+    static final String COL_PATH = "Path"
+    static final String COL_ITEM = "Item"
+    static final String COL_VALUE = "Value"
+    static final String COL_STATE = "State"
+    static final String COL_LINK = "In Confluence"
+    static final String COL_REMARK = "Remark"
+
+    static final String DEFAULT_TITLE_PREFIX = "Confluence space configuration - "
+
+    static final int MAX_PAYLOAD_CHARS = 4000000
+    static final int MAX_TITLE_CHARS = 255
+
+    /* A deep scan of a large space runs into five figures of rows: a permission
+     * grid carries one row per grant plus one per provenance detail, and a space
+     * can hold many grants. Past this cap the page stops being readable and starts
+     * failing to save, so the table is cut - and the cut is stated on the page,
+     * because a shortened table that looks complete is worse than no table. */
+    static final int MAX_ROWS = 5000
+
+    /* Search stages. The space search shows at most this many matches and ignores
+     * a shorter term, so a single keystroke never renders the whole instance. */
+    static final int SEARCH_LIMIT = 25
+    static final int MIN_SEARCH_CHARS = 2
+
+    /* Idle pause before a typed parent title is searched for. The field has no
+     * button, so the search is what typing does - but not once per keystroke:
+     * that is a call per character and a list rebuilt faster than it can be read. */
+    static final int SEARCH_IDLE_MS = 300
+
+    /* Upper bound on the words a title search is built from. Every token becomes
+     * one clause of an AND query, and an unbounded clause count is an unbounded
+     * query. Beyond this the extra words add nothing: the first few already cut
+     * the result set down to what fits on the screen. */
+    static final int MAX_TITLE_TOKENS = 8
+
+    static String title(String spaceKey) {
+        String key = spaceKey == null ? "" : spaceKey.trim()
+        String candidate = DEFAULT_TITLE_PREFIX + (key.isEmpty() ? "unknown space" : key)
+        return candidate.length() > MAX_TITLE_CHARS ? candidate.substring(0, MAX_TITLE_CHARS) : candidate
+    }
+
+    /* Whole words of a title search, in the order they were typed. Everything
+     * that is neither a letter nor a digit separates, which is what a tokenised
+     * title field does anyway, and which also means no character with a meaning
+     * in the query language can survive into a term. Umlauts and every other
+     * non-ASCII letter are letters and are kept. The caller appends the one
+     * trailing star it wants; a term can therefore never start with one. */
+    static List<String> titleTokens(String query) {
+        List<String> tokens = new ArrayList<String>()
+        if (query == null) {
+            return tokens
+        }
+        StringBuilder current = new StringBuilder()
+        for (int i = 0; i < query.length() && tokens.size() < MAX_TITLE_TOKENS; i++) {
+            char character = query.charAt(i)
+            if (Character.isLetterOrDigit(character)) {
+                current.append(character)
+                continue
+            }
+            if (current.length() > 0) {
+                tokens.add(current.toString())
+                current.setLength(0)
+            }
+        }
+        if (current.length() > 0 && tokens.size() < MAX_TITLE_TOKENS) {
+            tokens.add(current.toString())
+        }
+        return tokens
+    }
+
+    /* A request carries either the id of a picked parent or the title of one to
+     * be created, never both. The refusal text is a constant so the offline
+     * suite can assert on the contract rather than on a copy of the sentence. */
+    static final String PARENT_BOTH = "The request carries a parent page id and a parent page title at the same time. " +
+        "Exactly one of them is expected: the id of a page that was picked, or the title of a page to create. " +
+        "Nothing is written."
+
+    static String parentProblem(String parentId, String parentTitle, String reportTitle) {
+        String id = parentId == null ? "" : parentId.trim()
+        String parent = parentTitle == null ? "" : parentTitle.trim()
+        String report = reportTitle == null ? "" : reportTitle.trim()
+        if (!id.isEmpty() && !parent.isEmpty()) {
+            return PARENT_BOTH
+        }
+        if (parent.length() > MAX_TITLE_CHARS) {
+            return "The parent page title exceeds " + String.valueOf(MAX_TITLE_CHARS) + " characters."
+        }
+        /* A page cannot be its own parent, and Confluence titles are unique per
+         * space, so the two titles being equal has no outcome that works. Caught
+         * here rather than halfway through: otherwise the container page is
+         * created first and the report write then fails on the duplicate title,
+         * leaving a page behind that nothing was ever filed under. */
+        if (!parent.isEmpty() && parent.equalsIgnoreCase(report)) {
+            return "The parent page and the report page carry the same title \"" + parent +
+                "\". A page cannot be its own parent. Nothing is written."
+        }
+        return ""
+    }
+
+    /* ---- Parent position ---------------------------------------------------- */
+
+    /* A parent named in THIS run - picked from the search or created from a typed
+     * title - is an instruction and is carried out even when the report page
+     * already exists. A run that names no parent does not touch the position, so
+     * a page an administrator moved by hand stays moved. */
+    static final String MOVE_REQUESTED = "move"
+    static final String MOVE_NOT_REQUESTED = "not-requested"
+    static final String MOVE_ALREADY_THERE = "already-there"
+
+    /* Pure decision, no instance needed, so the offline suite checks the rule and
+     * not a run that happened to behave. An unknown current position resolves to
+     * "move": carrying out the instruction is the safe direction, and only a
+     * positive match skips. The skip exists so an unchanged repeat run does not
+     * rewrite the page into the position it already holds. */
+    static String moveDecision(String requestedParentId, String currentParentId) {
+        String requested = requestedParentId == null ? "" : requestedParentId.trim()
+        if (requested.isEmpty()) {
+            return MOVE_NOT_REQUESTED
+        }
+        String current = currentParentId == null ? "" : currentParentId.trim()
+        if (!current.isEmpty() && current.equals(requested)) {
+            return MOVE_ALREADY_THERE
+        }
+        return MOVE_REQUESTED
+    }
+
+    /* Three states and no fourth. They are strings rather than a JSON boolean with
+     * a special case, because a browser that writes if (!body.parentApplied) reads
+     * a mixed boolean-or-string field as a success - which is exactly the silent
+     * mismatch this measurement exists to prevent. */
+    static final String PARENT_APPLIED_TRUE = "true"
+    static final String PARENT_APPLIED_FALSE = "false"
+    static final String PARENT_APPLIED_UNKNOWN = "unknown"
+
+    /* The direct parent out of an ancestor chain, kept apart from the case where
+     * no chain arrived at all. Ancestors run from the root of the space downwards,
+     * so the direct parent is the last entry that names an id.
+     *
+     * measured=true with a null parentId means the read answered and the page sits
+     * at the top level of the space - a real measurement. measured=false means no
+     * chain was readable, which measures nothing and must never be read as "the
+     * page has no parent".
+     *
+     * It takes the ids rather than the pages, so the rule stays free of Confluence
+     * types and the offline suite can check it. */
+    static Map<String, Object> innermostAncestor(List<String> ancestorIds) {
+        Map<String, Object> out = new LinkedHashMap<String, Object>()
+        out.put("measured", Boolean.FALSE)
+        out.put("parentId", null)
+        if (ancestorIds == null) {
+            return out
+        }
+        out.put("measured", Boolean.TRUE)
+        for (int i = ancestorIds.size() - 1; i >= 0; i--) {
+            String id = ancestorIds.get(i)
+            if (id != null && !id.trim().isEmpty()) {
+                out.put("parentId", id.trim())
+                return out
+            }
+        }
+        return out
+    }
+
+    /* The verdict on the position, and it is a measurement or it is nothing.
+     *
+     * "true"    - the read-back answered and named the requested parent.
+     * "false"   - the read-back answered and named something else, or nothing.
+     * "unknown" - the read-back itself did not answer.
+     *
+     * A failed or empty read is never reported as a successful move, and never as
+     * a failed one either: neither was measured, so neither is claimed. applied
+     * stays null when this run named no parent, because then there is no question
+     * to answer and the position was deliberately left alone.
+     *
+     * A move that returned without throwing is a report about itself and is
+     * deliberately not an input here. moveError only sharpens the wording of a
+     * verdict that was measured either way. */
+    static Map<String, Object> parentOutcome(String requestedParentId, boolean readBackOk,
+                                             String actualParentId, String moveError) {
+        Map<String, Object> out = new LinkedHashMap<String, Object>()
+        out.put("applied", null)
+        out.put("reason", null)
+
+        String requested = requestedParentId == null ? "" : requestedParentId.trim()
+        if (requested.isEmpty()) {
+            return out
+        }
+
+        String failure = moveError == null ? "" : moveError.trim()
+
+        if (!readBackOk) {
+            out.put("applied", PARENT_APPLIED_UNKNOWN)
+            out.put("reason", "The report page was written, but its position could not be read back" +
+                (failure.isEmpty() ? "" : " and the move reported \"" + failure + "\"") +
+                ", so whether it sits under the parent page was not measured. Open the parent page and " +
+                "check before relying on this run.")
+            return out
+        }
+
+        String actual = actualParentId == null ? "" : actualParentId.trim()
+        if (actual.equals(requested)) {
+            out.put("applied", PARENT_APPLIED_TRUE)
+            return out
+        }
+
+        out.put("applied", PARENT_APPLIED_FALSE)
+        out.put("reason", "The report page was written, but it does not sit under the parent page that was " +
+            "requested: it sits " + (actual.isEmpty() ? "at the top level of the space" : "under page " + actual) +
+            "." + (failure.isEmpty() ? "" : " The move reported \"" + failure + "\"."))
+        return out
+    }
+
+    /* Body of a parent page this export creates. Minimal on purpose: it says what
+     * the page is for and where it came from, and it holds no report data, which
+     * lives on the child page and is rewritten on every run. */
+    static final String PARENT_BODY = "<p>Container page for the Confluence space configuration export. " +
+        "It was created by that export because the chosen parent page did not exist yet. " +
+        "The report itself is the child page below; this page carries no report data and is never rewritten.</p>"
+
+    /* ---- Remark read -------------------------------------------------------- */
+
+    /* Confluence hands empty cells back self-closed after an editor round trip,
+     * so both forms are matched. The self-closing alternative has to come first,
+     * otherwise <td/> is consumed by the open-tag branch and swallows the row. */
+    static final java.util.regex.Pattern TBODY = java.util.regex.Pattern.compile("(?s)<tbody[^>]*>(.*?)</tbody>")
+    static final java.util.regex.Pattern ROW = java.util.regex.Pattern.compile("(?s)<tr[^>]*>(.*?)</tr>")
+    static final java.util.regex.Pattern CELL = java.util.regex.Pattern.compile("(?s)<t[hd][^>]*/>|<t[hd][^>]*>(.*?)</t[hd]>")
+    static final java.util.regex.Pattern TAG = java.util.regex.Pattern.compile("<[^>]+>")
+
+    static String plainText(String cellHtml) {
+        if (cellHtml == null) {
+            return ""
+        }
+        String value = TAG.matcher(cellHtml).replaceAll(" ")
+        value = value.replace("&nbsp;", " ").replace("&#160;", " ").replace("\u00A0", " ")
+        value = value.replace("&lt;", "<").replace("&gt;", ">")
+        value = value.replace("&quot;", "\"").replace("&#39;", "'").replace("&apos;", "'")
+        value = value.replace("&amp;", "&")
+        return value.replaceAll("\\s+", " ").trim()
+    }
+
+    /* Whitespace, a non-breaking space and the wrappers an editor leaves behind
+     * carry no remark. Anything else that is still a tag does: a status lozenge,
+     * an image, an emoticon, a link. */
+    static final java.util.regex.Pattern LAYOUT_TAG =
+        java.util.regex.Pattern.compile("(?i)</?(?:p|br|div|span)(?:\\s[^>]*)?/?>")
+
+    /* A cell is empty only when it holds neither text nor element content.
+     * Deciding that on the plain text alone dropped every cell whose markup
+     * carries no text node, and the row was not even counted as read. */
+    static boolean isEmptyCell(String cellHtml) {
+        if (cellHtml == null) {
+            return true
+        }
+        if (!plainText(cellHtml).isEmpty()) {
+            return false
+        }
+        String rest = LAYOUT_TAG.matcher(cellHtml).replaceAll("")
+        rest = rest.replace("&nbsp;", "").replace("&#160;", "").replace("\u00A0", "")
+        return rest.trim().isEmpty()
+    }
+
+    /* The placeholder written into a row that carries no remark: a grey status
+     * lozenge the administrator edits instead of building one. The Confluence
+     * status macro takes a colour and a title and carries no body. */
+    static final String REMARK_SEED =
+        "<ac:structured-macro ac:name=\"status\" ac:schema-version=\"1\">" +
+        "<ac:parameter ac:name=\"colour\">Grey</ac:parameter>" +
+        "<ac:parameter ac:name=\"title\">TBD</ac:parameter>" +
+        "</ac:structured-macro>"
+
+    static final java.util.regex.Pattern MACRO_ID =
+        java.util.regex.Pattern.compile("\\s+ac:macro-id=\"[^\"]*\"")
+
+    /* The seed is this export's own markup, never an administrator's note, so it
+     * reads back as no remark. An editor round trip stamps a macro-id onto every
+     * macro and may wrap the cell in a paragraph, so the comparison is made on the
+     * normalised form. Change the colour or the title and it is a remark again,
+     * carried over verbatim like any other. */
+    static boolean isRemarkSeed(String cellHtml) {
+        if (cellHtml == null) {
+            return false
+        }
+        String value = cellHtml.trim()
+        if (value.startsWith("<p>") && value.endsWith("</p>")) {
+            value = value.substring(3, value.length() - 4).trim()
+        }
+        value = MACRO_ID.matcher(value).replaceAll("")
+        return value.replaceAll(">\\s+<", "><").trim() == REMARK_SEED
+    }
+
+    static List<String> cellsOf(String rowHtml) {
+        List<String> cells = new ArrayList<String>()
+        if (rowHtml == null) {
+            return cells
+        }
+        java.util.regex.Matcher matcher = CELL.matcher(rowHtml)
+        while (matcher.find()) {
+            String inner = matcher.group(1)
+            cells.add(inner == null ? "" : inner)
+        }
+        return cells
+    }
+
+    static int headerIndex(List<String> header, String name) {
+        for (int i = 0; i < header.size(); i++) {
+            if (plainText(header.get(i)).equalsIgnoreCase(name)) {
+                return i
+            }
+        }
+        return -1
+    }
+
+    /* Exception class plus message. Both the remark read and the write path
+     * report a failure in exactly this wording. */
+    static String errorDetail(Throwable error) {
+        String detail = error.getClass().getSimpleName()
+        String message = error.getMessage()
+        if (message != null && !message.trim().isEmpty()) {
+            detail = detail + ": " + message.trim()
+        }
+        return detail
+    }
+
+    /* The read is a set of regular expressions over the page markup, and a regular
+     * expression cannot see nesting. A table placed inside a Remark cell therefore
+     * ends the enclosing table early: every remark below it is dropped, seeded again
+     * on the next write, and an administrator's text is gone without anything having
+     * reported a failure. That is the one outcome this export must never produce, so
+     * nesting is detected before the read starts and refused. */
+    static boolean hasNestedTableBody(String storage) {
+        int depth = 0
+        int at = 0
+        while (at < storage.length()) {
+            int open = storage.indexOf("<tbody", at)
+            int close = storage.indexOf("</tbody", at)
+            if (open < 0 && close < 0) {
+                return false
+            }
+            if (open >= 0 && (close < 0 || open < close)) {
+                depth++
+                if (depth > 1) {
+                    return true
+                }
+                at = open + 6
+            } else {
+                depth--
+                at = close + 7
+            }
+        }
+        return false
+    }
+
+    /* Reads every remark table on the page, not just the first one: the
+     * orphaned-remark table is a second table and its notes have to survive as
+     * well. Anything unexpected is FAILED, never an empty success. */
+    static RemarkRead parseRemarks(String storage) {
+        RemarkRead read = new RemarkRead()
+
+        try {
+            if (storage == null || storage.trim().isEmpty()) {
+                return read.fail("The existing page has an empty body. It was not produced by this export, so it is not overwritten.")
+            }
+            if (!storage.contains(MARKER)) {
+                return read.fail("The existing page does not carry the export marker \"" + MARKER + "\". It was not produced by this export, so it is not overwritten.")
+            }
+            if (hasNestedTableBody(storage)) {
+                return read.fail("A table is nested inside another table on the existing page. This read " +
+                    "works on the page markup and cannot tell which row such a remark belongs to, so " +
+                    "nothing is written. Take the nested table out of the Remark cell and export again.")
+            }
+
+            int tablesMatched = 0
+            java.util.regex.Matcher bodyMatcher = TBODY.matcher(storage)
+
+            while (bodyMatcher.find()) {
+                List<String> rows = new ArrayList<String>()
+                java.util.regex.Matcher rowMatcher = ROW.matcher(bodyMatcher.group(1))
+                while (rowMatcher.find()) {
+                    rows.add(rowMatcher.group(1))
+                }
+                if (rows.isEmpty()) {
+                    continue
+                }
+
+                List<String> header = cellsOf(rows.get(0))
+                int keyIndex = headerIndex(header, COL_PATH)
+                int remarkIndex = headerIndex(header, COL_REMARK)
+                if (keyIndex < 0 || remarkIndex < 0) {
+                    continue
+                }
+                tablesMatched++
+
+                int required = Math.max(keyIndex, remarkIndex) + 1
+                for (int i = 1; i < rows.size(); i++) {
+                    List<String> cells = cellsOf(rows.get(i))
+                    if (cells.isEmpty()) {
+                        continue
+                    }
+                    if (cells.size() < required) {
+                        return read.fail("Row " + String.valueOf(i) + " of a remark table carries " + String.valueOf(cells.size()) +
+                            " cell(s) where " + String.valueOf(required) + " are needed. The table structure was changed; nothing is written.")
+                    }
+
+                    String key = plainText(cells.get(keyIndex))
+                    String remarkHtml = cells.get(remarkIndex).trim()
+                    if (key.isEmpty() || isEmptyCell(remarkHtml) || isRemarkSeed(remarkHtml)) {
+                        continue
+                    }
+                    if (read.remarks.containsKey(key)) {
+                        return read.fail("Path \"" + key + "\" carries more than one remark on the existing page. That is ambiguous; nothing is written.")
+                    }
+                    read.remarks.put(key, remarkHtml)
+                }
+            }
+
+            if (tablesMatched == 0) {
+                return read.fail("No table with the columns \"" + COL_PATH + "\" and \"" + COL_REMARK +
+                    "\" was found on the existing page. The read is inconclusive; nothing is written.")
+            }
+
+            read.outcome = RemarkRead.PARSED
+            return read
+        } catch (Throwable error) {
+            return read.fail("The remark read failed (" + errorDetail(error) + "); nothing is written.")
+        }
+    }
+
+    /* ---- Payload accessors (the POST body is JSON, so nothing is assumed) --- */
+
+    static String str(Map<String, Object> source, String key, String fallback) {
+        Object raw = source == null ? null : source.get(key)
+        if (raw == null) {
+            return fallback
+        }
+        String value = raw.toString().trim()
+        return value.isEmpty() ? fallback : value
+    }
+
+    static boolean flag(Map<String, Object> source, String key) {
+        Object raw = source == null ? null : source.get(key)
+        if (raw instanceof Boolean) {
+            return ((Boolean) raw).booleanValue()
+        }
+        return raw != null && raw.toString().trim().equalsIgnoreCase("true")
+    }
+
+    static Map<String, Object> sub(Map<String, Object> source, String key) {
+        Object raw = source == null ? null : source.get(key)
+        return raw instanceof Map ? copyMap((Map<?, ?>) raw) : new LinkedHashMap<String, Object>()
+    }
+
+    static Map<String, Object> copyMap(Map<?, ?> source) {
+        Map<String, Object> result = new LinkedHashMap<String, Object>()
+        if (source == null) {
+            return result
+        }
+        for (Map.Entry<?, ?> entry : source.entrySet()) {
+            Object rawKey = entry.getKey()
+            if (rawKey != null) {
+                result.put(rawKey.toString(), entry.getValue())
+            }
+        }
+        return result
+    }
+
+    static List<Map<String, Object>> rowsOf(Map<String, Object> source, String key) {
+        List<Map<String, Object>> result = new ArrayList<Map<String, Object>>()
+        Object raw = source == null ? null : source.get(key)
+        if (!(raw instanceof List)) {
+            return result
+        }
+        for (Object element : (List<?>) raw) {
+            if (element instanceof Map) {
+                result.add(copyMap((Map<?, ?>) element))
+            }
+        }
+        return result
+    }
+
+    static List<String> textsOf(Map<String, Object> source, String key) {
+        List<String> result = new ArrayList<String>()
+        Object raw = source == null ? null : source.get(key)
+        if (!(raw instanceof List)) {
+            return result
+        }
+        for (Object element : (List<?>) raw) {
+            if (element != null) {
+                result.add(element.toString())
+            }
+        }
+        return result
+    }
+
+    /* ---- The property value gate -------------------------------------------- */
+
+    /* The sharpest edge in this tool. A space property value is an app's own
+     * serialised object and can hold a secret; the exported page is readable by
+     * everyone who can read the space. The report itself already withholds values
+     * unless values=true was passed and redacts a key on the deny-list, and this
+     * gate applies both rules a SECOND time, here, on the way into the page.
+     *
+     * The reason for the second application is the trust boundary: the payload
+     * travels through the browser, so the export cannot treat what comes back as
+     * the report's own output. What the gate can enforce is that no value reaches
+     * a page unless the request declares values=true, and that a deny-listed key
+     * is withheld even if the payload claims otherwise. What it cannot do is
+     * invent a secret the administrator does not already hold - the same
+     * administrator who may edit any page they can reach. That boundary is stated
+     * rather than pretended away. */
+    static final String VALUES_NOT_REQUESTED =
+        "Not read. The report was run without values=true, so no property value is on this page."
+    static final String VALUES_DENIED =
+        "Withheld. The key name matches this report's deny-list, so the value was not printed."
+
+    static final String PROPERTY_VALUE_KIND = "spacePropertyDetail"
+    static final String PROPERTY_VALUE_LABEL = "Value"
+
+    static boolean isPropertyValue(String kind, String label) {
+        return PROPERTY_VALUE_KIND.equals(kind) && PROPERTY_VALUE_LABEL.equals(label)
+    }
+
+    /* owner is the label of the node above, which for a property value is the
+     * property key - the only thing the deny-list needs. */
+    static String valueText(String kind, String label, String owner, String value, boolean valuesRequested) {
+        if (!isPropertyValue(kind, label)) {
+            return value == null ? "" : value
+        }
+        if (!valuesRequested) {
+            return VALUES_NOT_REQUESTED
+        }
+        if (Pc.sensitive(owner)) {
+            return VALUES_DENIED
+        }
+        return value == null ? "" : value
+    }
+
+    /* ---- Rendering ---------------------------------------------------------- */
+
+    /* The payload is the report the GET branch serialised for this run, so the page
+     * shows exactly the tree the administrator saw. It travels through the browser,
+     * which means an administrator could tamper with it - the same administrator
+     * who may edit any page they can reach anyway. Everything is escaped on the way
+     * into storage format, and the remark carry-over is unaffected by it: remarks
+     * come from the existing page and are read there. */
+    static ExportOutcome render(Map<String, Object> request, RemarkRead read) {
+        ExportOutcome outcome = new ExportOutcome()
+        outcome.remarksRead = read == null ? 0 : read.remarks.size()
+
+        Map<String, Object> space = sub(request, "space")
+        Map<String, Object> instance = sub(request, "instance")
+        Map<String, Object> totals = sub(request, "totals")
+        Map<String, Object> options = sub(request, "options")
+        boolean valuesRequested = flag(options, "values")
+
+        StringBuilder out = new StringBuilder()
+
+        out.append("<p>Complete configuration of space <strong>")
+        out.append(esc(str(space, "name", "unknown"))).append("</strong> (")
+        out.append(esc(str(space, "key", "?"))).append(") on ")
+        out.append(esc(str(instance, "title", "this instance")))
+        out.append(", Confluence ").append(esc(str(instance, "confluenceVersion", "unknown version")))
+        out.append(". Generated ").append(esc(str(request, "generatedAt", "unknown")))
+        out.append(" by the space configuration report v")
+        out.append(esc(str(request, "reportVersion", "?"))).append(".</p>")
+
+        out.append("<p>")
+        out.append(esc(str(totals, "nodes", "0"))).append(" configuration items, ")
+        out.append(esc(str(totals, "unreadable", "0"))).append(" of them unreadable, ")
+        out.append(esc(str(totals, "unlinked", "0"))).append(" without a deep link. ")
+        out.append("An unreadable item is not an empty one: it is an item whose configuration ")
+        out.append("could not be read, and it is marked as such in the State column.</p>")
+
+        /* What the page carries of the property store is said on the page, not
+         * only in the run that produced it. A reader who finds no values has to be
+         * able to tell "switched off" from "this space has none". */
+        out.append("<p>")
+        out.append(valuesRequested
+            ? "This run was given values=true, so this page carries space property VALUES. A key whose " +
+              "name matches secret, token, password, apikey or credential is withheld even so. Everyone " +
+              "who can read this space can read this page."
+            : "This run was not given values=true, so no space property value is on this page. The keys " +
+              "and their stores are listed, the values are not read.")
+        out.append("</p>")
+
+        out.append("<p>The <strong>").append(esc(COL_REMARK)).append("</strong> column belongs to you. ")
+        out.append("It is read back and carried over on every later run of this export. ")
+        out.append("Everything else on this page is overwritten each time.</p>")
+
+        /* Rows first, so the truncation notice can be placed above the tables it
+         * applies to rather than below them, where it would be read too late. Rows
+         * are grouped by section so that each section gets its own table, but the
+         * paths are made unique across the whole page rather than per table: a
+         * remark is carried over by its path, and the read refuses a path that
+         * carries text more than once anywhere on the page. */
+        List<Map<String, Object>> rows = new ArrayList<Map<String, Object>>()
+        List<List<Map<String, Object>>> grouped = new ArrayList<List<Map<String, Object>>>()
+        List<Map<String, Object>> sections = rowsOf(request, "sections")
+        List<Map<String, Object>> kept = new ArrayList<Map<String, Object>>()
+        for (Map<String, Object> section : sections) {
+            List<Map<String, Object>> sectionRows = new ArrayList<Map<String, Object>>()
+            flatten(section, "", "", sectionRows)
+            if (sectionRows.isEmpty()) {
+                continue
+            }
+            grouped.add(sectionRows)
+            kept.add(section)
+            /* The same row objects, not copies: making the paths unique below has to
+             * be visible in both views. */
+            rows.addAll(sectionRows)
+        }
+        makePathsUnique(rows)
+
+        List<Integer> sizes = new ArrayList<Integer>()
+        for (List<Map<String, Object>> sectionRows : grouped) {
+            sizes.add(Integer.valueOf(sectionRows.size()))
+        }
+        List<Integer> allowance = shareBudget(sizes, MAX_ROWS)
+
+        List<String> cutSections = new ArrayList<String>()
+        for (int i = 0; i < grouped.size(); i++) {
+            if (grouped.get(i).size() > allowance.get(i).intValue()) {
+                cutSections.add(str(grouped.get(i).get(0), "label", "Section"))
+            }
+        }
+        if (!cutSections.isEmpty()) {
+            outcome.warnings.add("Cut to " + String.valueOf(MAX_ROWS) + " of " +
+                String.valueOf(rows.size()) + " rows, in: " + cutSections.join(", "))
+            out.append("<p><strong>This page is not complete.</strong> It carries ")
+            out.append(String.valueOf(MAX_ROWS)).append(" of ").append(String.valueOf(rows.size()))
+            out.append(" configuration items. Every section is on the page and keeps its ")
+            out.append("heading; the ones whose rows were cut say so on their own heading, and ")
+            out.append("those are: ").append(esc(cutSections.join(", "))).append(". ")
+            out.append("What is cut is in the report itself and in its CSV and JSON output; it ")
+            out.append("is missing from this page, not from the space.</p>")
+        }
+
+        Set<String> used = new LinkedHashSet<String>()
+        for (int i = 0; i < grouped.size(); i++) {
+            List<Map<String, Object>> sectionRows = grouped.get(i)
+            int allowed = allowance.get(i).intValue()
+            List<Map<String, Object>> visible = sectionRows.size() > allowed
+                ? sectionRows.subList(0, allowed) : sectionRows
+            boolean sectionCut = visible.size() < sectionRows.size()
+
+            /* The first row of a section is the section node itself, so its label is
+             * the heading an administrator recognises from the report. It is taken
+             * from the full list rather than from the visible one, because a section
+             * that was cut to nothing still has to carry its own name. */
+            String heading = str(sectionRows.get(0), "label", "Section")
+            out.append(expandOpen(sectionCut
+                ? heading + " (" + String.valueOf(visible.size()) + " of " +
+                    Pc.plural(sectionRows.size(), "item") + ", the rest is cut)"
+                : heading + " (" + Pc.plural(visible.size(), "item") + ")"))
+            if (sectionCut) {
+                out.append("<p><strong>This section is not complete.</strong> It carries ")
+                out.append(String.valueOf(visible.size())).append(" of ")
+                out.append(String.valueOf(sectionRows.size())).append(" items.</p>")
+            }
+            /* A section that reads the database directly says so on the page, not
+             * only in the HTML report. Whoever opens this page months later has to
+             * see that the section is coupled to a schema which is not a public
+             * API, because that is what explains an UNREADABLE section after an
+             * upgrade. */
+            for (String note : textsOf(kept.get(i), "notes")) {
+                out.append("<p><em>").append(esc(note)).append("</em></p>")
+            }
+            out.append(rowTable(visible, read, used, outcome, valuesRequested))
+            out.append(expandClose())
+        }
+
+        /* A page with no table at all cannot be read back, and an unreadable page is
+         * never overwritten - so an empty report would brick its own export on the
+         * next run. The header alone is enough for the read to succeed. */
+        if (grouped.isEmpty()) {
+            out.append(rowTable(new ArrayList<Map<String, Object>>(), read, used, outcome, valuesRequested))
+        }
+
+        /* A remark whose row is gone is not deleted. The configuration it commented
+         * on may come back, and even if it does not, an administrator's own words
+         * are not this export's to discard. */
+        List<String> orphans = new ArrayList<String>()
+        if (read != null) {
+            for (Map.Entry<String, String> entry : read.remarks.entrySet()) {
+                if (!used.contains(entry.getKey())) {
+                    orphans.add(entry.getKey())
+                }
+            }
+        }
+        if (!orphans.isEmpty()) {
+            outcome.orphanKeys.addAll(orphans)
+            out.append("<h2>Remarks without a matching item</h2>")
+            out.append("<p>These remarks were carried over from the previous version of this page, ")
+            out.append("but the configuration item they belong to is no longer in the space. ")
+            out.append("They are kept here rather than dropped. Delete a row to be rid of it.</p>")
+            out.append(expandOpen("Remarks without a matching item (" +
+                Pc.plural(orphans.size(), "remark") + ")"))
+            out.append("<table><tbody>")
+            out.append(headerRow([COL_PATH, COL_REMARK]))
+            for (String key : orphans) {
+                out.append("<tr>").append(cell(esc(key)))
+                out.append(cell(read.remarks.get(key))).append("</tr>")
+            }
+            out.append("</tbody></table>")
+            out.append(expandClose())
+        }
+
+        List<String> notes = textsOf(request, "notes")
+        if (!notes.isEmpty()) {
+            out.append("<h2>Observations</h2>")
+            out.append("<p>Nothing failed to read here. These are things worth knowing about ")
+            out.append("the configuration itself.</p>")
+            out.append(expandOpen("Observations (" + Pc.plural(notes.size(), "note") + ")"))
+            out.append("<ul>")
+            for (String entry : notes) {
+                out.append("<li>").append(esc(entry)).append("</li>")
+            }
+            out.append("</ul>")
+            out.append(expandClose())
+        }
+
+        List<String> diagnostics = textsOf(request, "diagnostics")
+        if (!diagnostics.isEmpty()) {
+            out.append("<h2>Suppressed reads</h2>")
+            out.append("<p>Each entry is a read that failed. It is not an absence of configuration.</p>")
+            out.append(expandOpen("Suppressed reads (" + Pc.plural(diagnostics.size(), "failed read") + ")"))
+            out.append("<ul>")
+            for (String entry : diagnostics) {
+                out.append("<li>").append(esc(entry)).append("</li>")
+            }
+            out.append("</ul>")
+            out.append(expandClose())
+        }
+
+        out.append("<p><em>").append(esc(MARKER)).append("</em></p>")
+
+        outcome.storage = out.toString()
+        return outcome
+    }
+
+    /* The path is the carry-over key, so it has to be stable across runs. It is
+     * built from labels rather than from ids because an administrator who renames
+     * a template or a permission subject expects the remark to follow the name
+     * they see, and because the same report has to work on an instance where ids
+     * differ. The owner - the label of the node above - travels with the row as
+     * well, because the property value gate needs the property key. */
+    static void flatten(Map<String, Object> node, String parentPath, String owner,
+                        List<Map<String, Object>> rows) {
+        if (node == null) {
+            return
+        }
+        String label = str(node, "label", "")
+        String path = parentPath.isEmpty() ? label : parentPath + " > " + label
+        Map<String, Object> row = new LinkedHashMap<String, Object>()
+        row.put("path", path)
+        row.put("label", label)
+        row.put("kind", str(node, "kind", ""))
+        row.put("owner", owner)
+        row.put("value", str(node, "value", ""))
+        row.put("state", str(node, "state", "read"))
+        row.put("deepLink", str(node, "deepLink", null))
+        row.put("linkNote", str(node, "linkNote", null))
+        rows.add(row)
+        for (Map<String, Object> child : rowsOf(node, "children")) {
+            flatten(child, path, label, rows)
+        }
+    }
+
+    /* Two sibling nodes can carry the same label - two grants of the same type under
+     * one permission produce the identical path - and the path is the key a remark is
+     * carried over by. Left alone, that key stamped one administrator's remark onto
+     * every row sharing the path, counted it once per row, and on the run after that
+     * the parser found the same path twice with text in both and refused to write
+     * anything ever again. Fail-closed, so no text was lost, but the export bricked
+     * itself two runs after the first remark. A repeated path therefore gets an
+     * ordinal, which is stable as long as the configuration is. */
+    static void makePathsUnique(List<Map<String, Object>> rows) {
+        Map<String, Integer> seen = new LinkedHashMap<String, Integer>()
+        for (Map<String, Object> row : rows) {
+            String path = str(row, "path", "")
+            Integer count = seen.get(path)
+            if (count == null) {
+                seen.put(path, Integer.valueOf(1))
+                continue
+            }
+            int next = count.intValue() + 1
+            seen.put(path, Integer.valueOf(next))
+            row.put("path", path + " #" + String.valueOf(next))
+        }
+    }
+
+    static String stateText(String state) {
+        if (Pc.UNREADABLE.equals(state)) {
+            return "could not be read"
+        }
+        if (Pc.ABSENT.equals(state)) {
+            return "not configured"
+        }
+        if (Pc.TRUNCATED.equals(state)) {
+            return "shortened"
+        }
+        if (Pc.REDACTED.equals(state)) {
+            return "withheld"
+        }
+        return ""
+    }
+
+    static String linkCell(String deepLink, String linkNote) {
+        if (deepLink != null && !deepLink.trim().isEmpty()) {
+            return "<a href=\"" + esc(deepLink) + "\">open</a>"
+        }
+        if (linkNote != null && !linkNote.trim().isEmpty()) {
+            return esc(linkNote)
+        }
+        return ""
+    }
+
+    /* The row budget belongs to the page, and spending it in section order let the
+     * first big section starve every section behind it. A starved section did not
+     * appear at all, not even by name, so a reader could not tell a section that is
+     * not configured from one that was cut away - which is the single thing this
+     * report exists not to do.
+     *
+     * The budget is shared instead. Every section is offered an equal part; a section
+     * that needs less than its part gives the remainder back, and the remainder is
+     * offered to the sections that want more. Smallest first, so the giving back
+     * happens before the taking. A section that is still cut keeps its heading and
+     * says what was cut, on the heading and above its table. */
+    static List<Integer> shareBudget(List<Integer> sizes, int total) {
+        List<Integer> allowance = new ArrayList<Integer>()
+        for (int i = 0; i < sizes.size(); i++) {
+            allowance.add(Integer.valueOf(0))
+        }
+        List<Integer> order = new ArrayList<Integer>()
+        for (int i = 0; i < sizes.size(); i++) {
+            order.add(Integer.valueOf(i))
+        }
+        order.sort { Integer left, Integer right ->
+            return sizes.get(left.intValue()).intValue() - sizes.get(right.intValue()).intValue()
+        }
+        int left = total
+        int remaining = sizes.size()
+        for (Integer index : order) {
+            if (remaining <= 0) {
+                break
+            }
+            /* Math.floorDiv, not "/". Groovy divides two ints into a BigDecimal, which
+             * the static type checker rejects here and which would otherwise hand out
+             * fractional rows. */
+            int share = Math.floorDiv(left, remaining)
+            int want = sizes.get(index.intValue()).intValue()
+            int give = want < share ? want : share
+            allowance.set(index.intValue(), Integer.valueOf(give))
+            left -= give
+            remaining--
+        }
+        return allowance
+    }
+
+    /* One table per section, so each of them can sit inside its own collapsed
+     * macro. The remark carry-over is unaffected by the split: the read scans every
+     * table on the page and keys on the path, which is unique page-wide.
+     *
+     * NOTE: this is the flat form - one row per node, containment carried in a path
+     * string, an Item column - and the HTML report's table view no longer works that
+     * way. It is deliberately kept as the Jira sibling has it, because the path is
+     * the carry-over key and changing its shape reshapes every remark an
+     * administrator has already written. Bringing the two into line is blocked on
+     * proving the carry-over against a live instance first. */
+    static String rowTable(List<Map<String, Object>> rows, RemarkRead read,
+                           Set<String> used, ExportOutcome outcome, boolean valuesRequested) {
+        StringBuilder out = new StringBuilder("<table><tbody>")
+        out.append(headerRow([COL_PATH, COL_ITEM, COL_VALUE, COL_STATE, COL_LINK, COL_REMARK]))
+        for (Map<String, Object> row : rows) {
+            String path = str(row, "path", "")
+            String remark = read == null ? null : read.remarks.get(path)
+            if (remark != null) {
+                used.add(path)
+                outcome.remarksCarried++
+            }
+            out.append("<tr>")
+            out.append(cell(esc(path)))
+            out.append(cell(esc(str(row, "label", ""))))
+            out.append(cell(esc(valueText(str(row, "kind", ""), str(row, "label", ""),
+                str(row, "owner", ""), str(row, "value", ""), valuesRequested))))
+            out.append(cell(esc(stateText(str(row, "state", Pc.READ)))))
+            out.append(cell(linkCell(str(row, "deepLink", null), str(row, "linkNote", null))))
+            out.append(cell(remark == null ? REMARK_SEED : remark))
+            out.append("</tr>")
+        }
+        return out.append("</tbody></table>").toString()
+    }
+
+    /* This page is long by design, and a long page is read by nobody. Every table
+     * therefore sits inside Confluence's own Expand macro, which renders collapsed.
+     * It is storage-format markup of a bundled macro, so nothing has to be installed
+     * for the page to work, and the body of an expand is indexed like any other
+     * content - the page stays searchable while it is closed. The body stays a plain
+     * table, which is what the remark read looks for. */
+    static String expandOpen(String title) {
+        return "<ac:structured-macro ac:name=\"expand\"><ac:parameter ac:name=\"title\">" +
+            esc(title) + "</ac:parameter><ac:rich-text-body>"
+    }
+
+    static String expandClose() {
+        return "</ac:rich-text-body></ac:structured-macro>"
+    }
+
+    static String headerRow(List<String> names) {
+        StringBuilder out = new StringBuilder("<tr>")
+        for (String name : names) {
+            out.append("<th>").append(esc(name)).append("</th>")
+        }
+        return out.append("</tr>").toString()
+    }
+
+    static String cell(String html) {
+        return "<td>" + (html == null || html.isEmpty() ? "" : html) + "</td>"
+    }
+
+    /* Storage format is XHTML, so an unescaped angle bracket from a template name
+     * is not a cosmetic problem: it produces a page Confluence refuses to save. */
+    static String esc(Object value) {
+        if (value == null) {
+            return ""
+        }
+        return value.toString()
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\"", "&quot;")
+            .replace("'", "&#39;")
+    }
+}
+
+/* What a remark read found, and whether writing is allowed at all.
+ *
+ * The three outcomes are kept distinguishable on purpose: a failed read must
+ * never look like "this page has no remarks yet", because the caller would then
+ * render an empty Remark column and overwrite every administrator note. */
+class RemarkRead {
+
+    static final String NONE = "none"
+    static final String PARSED = "parsed"
+    static final String FAILED = "failed"
+
+    String outcome = NONE
+    String reason
+    String pageId
+    int pageVersion
+
+    Map<String, String> remarks = new LinkedHashMap<String, String>()
+
+    /* The single gate every write path has to pass. FAILED never gets through. */
+    boolean isWriteAllowed() {
+        return outcome == NONE || outcome == PARSED
+    }
+
+    RemarkRead fail(String why) {
+        outcome = FAILED
+        reason = why
+        remarks.clear()
+        return this
+    }
+
+    Map<String, Object> asMap() {
+        Map<String, Object> result = new LinkedHashMap<String, Object>()
+        result.put("outcome", outcome)
+        result.put("reason", reason)
+        result.put("remarks", Integer.valueOf(remarks.size()))
+        result.put("pageId", pageId)
+        result.put("pageVersion", Integer.valueOf(pageVersion))
+        return result
+    }
+}
+
+/* Rendered storage format plus what happened to the carried-over remarks. */
+class ExportOutcome {
+    String storage
+    int remarksRead
+    int remarksCarried
+    List<String> orphanKeys = new ArrayList<String>()
+    List<String> warnings = new ArrayList<String>()
 }
 
 /* =============================================================================
@@ -3588,4 +4984,776 @@ spaceConfig(
         return Http.build(responseClass, 200, Render.csv(report), Http.CSV, headers)
     }
     return Http.ok(responseClass, Render.html(report, activeParams, expandAll), Http.HTML)
+}
+
+
+/* =============================================================================
+ * The export write path
+ *
+ * Local page APIs only. This endpoint runs inside Confluence, so there is no
+ * transport here and no outbound call of any kind: no URL is built, no request
+ * factory is asked for, nothing leaves the JVM. The CI job that forbids an
+ * undeclared outbound call is therefore absolute on this side - a hit anywhere in
+ * this file is a defect, not a section to be declared.
+ *
+ * Everything below touches Confluence types and can only be verified on an
+ * instance. The rules it carries out - the fail-closed remark read, the marker,
+ * the row budget, the value gate - are all in Cx above the banner and are covered
+ * by the offline suite.
+ * ========================================================================== */
+
+class Cw {
+
+    /* Who this report describes, read from THIS instance and never taken from the
+     * payload the browser sent back. An administrator can edit the payload; they
+     * cannot edit what the settings report.
+     *
+     * The GET branch reads the same three values inline for the HTML report. They
+     * are read again here rather than trusted from the payload, which is the whole
+     * point: a page that outlives the run has to name the instance it describes.
+     * Both reads go through the invoker because neither SettingsManager nor
+     * ApplicationProperties is on the list of types measured acquirable here. */
+    static Map<String, String> instanceIdentity() {
+        Map<String, String> out = new LinkedHashMap<String, String>()
+        out.put("baseUrl", null)
+        out.put("title", null)
+        out.put("confluenceVersion", null)
+        try {
+            Object applicationProperties =
+                ComponentLocator.getComponent(Class.forName("com.atlassian.sal.api.ApplicationProperties"))
+            if (applicationProperties != null) {
+                out.put("baseUrl", Pc.firstText(applicationProperties, ["getBaseUrl"]))
+                out.put("title", Pc.firstText(applicationProperties, ["getDisplayName"]))
+                out.put("confluenceVersion", Pc.firstText(applicationProperties, ["getVersion"]))
+            }
+        } catch (Throwable ignored) {
+            /* One unreadable source costs the values it holds and nothing else. The
+             * caller falls back to the settings below and, failing that, prints the
+             * not-available marker rather than a guess. */
+        }
+        if (out.get("baseUrl") == null || out.get("title") == null) {
+            try {
+                Object settings = ComponentLocator.getComponent(
+                    Class.forName("com.atlassian.confluence.setup.settings.SettingsManager"))
+                Object global = Pc.duck(settings, "getGlobalSettings", null)
+                if (out.get("baseUrl") == null) {
+                    out.put("baseUrl", Pc.firstText(global, ["getBaseUrl"]))
+                }
+                if (out.get("title") == null) {
+                    out.put("title", Pc.firstText(global, ["getSiteTitle"]))
+                }
+            } catch (Throwable ignored) {
+                /* Same rule as above. */
+            }
+        }
+        return out
+    }
+
+    /* The browse address of a written page, built from this instance's own base
+     * URL. Nothing is fetched: this is string work over a value that was already
+     * read. A base URL that could not be read costs the link and says so; it never
+     * costs the write, which has already happened by then. */
+    static String pageUrl(String baseUrl, String pageId) {
+        String prefix = Pc.trimBase(baseUrl)
+        if (prefix == null || prefix.isEmpty() || pageId == null || pageId.trim().isEmpty()) {
+            return null
+        }
+        return prefix + "/pages/viewpage.action?pageId=" + Pc.urlQuery(pageId.trim())
+    }
+
+    /* Every current space of this instance, paginated to the end. A response that
+     * claims more results without advancing is a failed inventory and is raised as
+     * one: an inventory that silently stops short is indistinguishable from an
+     * instance with fewer spaces. */
+    static Map<String, Object> spaceRows(ApiSpaceService apiSpaceService) {
+        Map<String, Object> result = new LinkedHashMap<String, Object>()
+        List<Map<String, Object>> rows = new ArrayList<Map<String, Object>>()
+        result.put("ok", Boolean.FALSE)
+        result.put("error", null)
+        result.put("spaces", rows)
+
+        try {
+            int start = 0
+            final int pageSize = 100
+            SpaceFinder finder = apiSpaceService.find(new Expansion[0])
+            finder = finder.withStatus(ApiSpaceStatus.CURRENT)
+            while (true) {
+                PageResponse<ApiSpace> page = finder.fetchMany(new SimplePageRequest(start, pageSize))
+                for (ApiSpace space : page.getResults()) {
+                    String key = space == null ? null : space.getKey()
+                    if (key == null) {
+                        continue
+                    }
+                    String name = space.getName()
+                    Map<String, Object> row = new LinkedHashMap<String, Object>()
+                    row.put("key", key)
+                    row.put("name", name == null || name.trim().isEmpty() ? key : name)
+                    rows.add(row)
+                }
+                if (!page.hasMore()) {
+                    break
+                }
+                int returned = page.size()
+                if (returned <= 0) {
+                    throw new IllegalStateException("Space pagination did not advance")
+                }
+                start += returned
+            }
+        } catch (Exception error) {
+            result.put("error", "The space list could not be read (" + Cx.errorDetail(error) +
+                "). That is a failed read, not an instance without spaces.")
+            return result
+        }
+
+        rows.sort { Map<String, Object> a, Map<String, Object> b ->
+            int byName = Cx.str(a, "name", "").compareToIgnoreCase(Cx.str(b, "name", ""))
+            if (byName != 0) {
+                return byName
+            }
+            return Cx.str(a, "key", "").compareToIgnoreCase(Cx.str(b, "key", ""))
+        }
+        result.put("ok", Boolean.TRUE)
+        return result
+    }
+
+    /* One value out of a search document, which hands its fields back as arrays. */
+    static String firstIndexValue(Map<String, String[]> document, String fieldName) {
+        String[] values = document == null ? null : document.get(fieldName)
+        return values == null || values.length == 0 ? null : values[0]
+    }
+
+    /* The parent-page lookup, exact hit first and whole-word title matches after it.
+     *
+     * The index supplies content ids and nothing else. Title and space of every hit
+     * are read back through PageService's id locator, so what the administrator sees
+     * comes from the database - an index entry may name a page that was deleted or
+     * moved since it was written, and a hit that no longer resolves, or resolves
+     * into another space, is dropped rather than offered.
+     *
+     * A search that throws is reported as a failed search. "No such page" is said
+     * only when the search answered and named nothing: the caller answers a miss by
+     * creating a page, and a swallowed error would create a duplicate. */
+    static Map<String, Object> searchPagesByTitle(SearchManager searchManager, PageService pageService,
+                                                  String spaceKey, String query, int limit) {
+        Map<String, Object> result = new LinkedHashMap<String, Object>()
+        List<Map<String, Object>> pages = new ArrayList<Map<String, Object>>()
+        result.put("ok", Boolean.FALSE)
+        result.put("error", null)
+        result.put("pages", pages)
+        result.put("truncated", Boolean.FALSE)
+
+        Set<String> takenIds = new LinkedHashSet<String>()
+
+        /* The exact hit first. It is the one title lookup here with a documented
+         * null contract, and it stays on top so a title that is already correct is
+         * always the first thing offered. */
+        try {
+            Page exact = pageService.getTitleAndSpaceKeyPageLocator(spaceKey, query).getPage()
+            if (exact != null && takenIds.add(exact.getIdAsString())) {
+                pages.add(pageRow(exact))
+            }
+        } catch (Exception error) {
+            result.put("error", "The page \"" + query + "\" could not be looked up in \"" + spaceKey + "\" (" +
+                Cx.errorDetail(error) + "). That is a failed read, not a space without that page.")
+            return result
+        }
+
+        List<String> tokens = Cx.titleTokens(query)
+        if (tokens.isEmpty()) {
+            /* Punctuation only - there is no word to search for. The exact hit
+             * above, if there was one, still stands. */
+            result.put("ok", Boolean.TRUE)
+            return result
+        }
+
+        final String contentIdField = SearchFieldMappings.CONTENT_ID.getName()
+        final Set<String> requestedFields = new LinkedHashSet<String>()
+        requestedFields.add(contentIdField)
+
+        /* Four times the visible cap, so hits that resolve to null or into another
+         * space can be dropped without emptying the list. Collection stops there;
+         * seen keeps counting, which is how truncation is told apart from a result
+         * set that simply fits. */
+        final int idCap = limit * 4
+        final List<String> hitIds = new ArrayList<String>()
+        final int[] seen = new int[1]
+
+        try {
+            List<SearchQuery> clauses = new ArrayList<SearchQuery>()
+            clauses.add(new ContentTypeQuery(ContentTypeEnum.PAGE))
+            clauses.add(new InSpaceQuery(spaceKey))
+            String titleField = SearchFieldMappings.TITLE.getName()
+            if (tokens.size() > 1) {
+                clauses.add(new TextFieldQuery(titleField,
+                    String.join(" ", tokens.subList(0, tokens.size() - 1)), BooleanOperator.AND))
+            }
+            clauses.add(new WildcardTextFieldQuery(titleField,
+                tokens.get(tokens.size() - 1) + "*", BooleanOperator.AND))
+
+            searchManager.scan(
+                Collections.singletonList(Index.CONTENT),
+                BooleanQuery.andQuery(clauses.toArray(new SearchQuery[0])),
+                requestedFields,
+                new java.util.function.Consumer<Map<String, String[]>>() {
+                    @Override
+                    void accept(Map<String, String[]> document) {
+                        String contentId = Cw.firstIndexValue(document, contentIdField)
+                        if (contentId == null || contentId.trim().isEmpty()) {
+                            return
+                        }
+                        seen[0]++
+                        if (hitIds.size() < idCap) {
+                            hitIds.add(contentId.trim())
+                        }
+                    }
+                }
+            )
+        } catch (Exception error) {
+            result.put("error", "The page search in \"" + spaceKey + "\" failed (" + Cx.errorDetail(error) +
+                "). That is a failed search, not a space without a matching page.")
+            return result
+        }
+
+        List<Map<String, Object>> found = new ArrayList<Map<String, Object>>()
+        for (String contentId : hitIds) {
+            Page page = null
+            try {
+                page = pageService.getIdPageLocator(Long.parseLong(contentId)).getPage()
+            } catch (Exception ignored) {
+                /* One unreadable id costs one candidate, never the whole list. The
+                 * search itself answered, which is the distinction that matters to
+                 * the caller. */
+                continue
+            }
+            if (page == null || !spaceKey.equalsIgnoreCase(String.valueOf(page.getSpaceKey()))) {
+                continue
+            }
+            if (takenIds.add(page.getIdAsString())) {
+                found.add(pageRow(page))
+            }
+        }
+        found.sort { Map<String, Object> a, Map<String, Object> b ->
+            return Cx.str(a, "title", "").compareToIgnoreCase(Cx.str(b, "title", ""))
+        }
+
+        for (Map<String, Object> row : found) {
+            if (pages.size() >= limit) {
+                result.put("truncated", Boolean.TRUE)
+                break
+            }
+            pages.add(row)
+        }
+        if (seen[0] > hitIds.size()) {
+            result.put("truncated", Boolean.TRUE)
+        }
+
+        result.put("ok", Boolean.TRUE)
+        return result
+    }
+
+    private static Map<String, Object> pageRow(Page page) {
+        Map<String, Object> row = new LinkedHashMap<String, Object>()
+        row.put("id", page.getIdAsString())
+        row.put("title", page.getTitle())
+        return row
+    }
+}
+
+
+/* =============================================================================
+ * REST Endpoint - Confluence page export (POST)
+ *
+ * Same endpoint name as the report with a different httpMethod. The Adaptavist
+ * documentation states that several closures with the same name and different
+ * verbs may live in one file, so the report page can POST to its own URL without
+ * knowing the REST base path.
+ *
+ * The closure parameters stay untyped and the response class is resolved at
+ * runtime, for the same reason the GET branch does it: naming a JAX-RS type
+ * statically would tie this file to one ScriptRunner line.
+ *
+ * CSRF - UNVERIFIED. The Custom REST Endpoint documentation does not say whether
+ * these endpoints sit behind the Confluence XSRF filter, so the report page sends
+ * X-Atlassian-Token: no-check, which is required if the filter applies and is
+ * harmless if it does not. Reading that header back would need the three-argument
+ * HttpServletRequest closure form, and the servlet package this ScriptRunner
+ * version passes on Confluence 10 (javax or jakarta) is not documented either, so
+ * no header check is attempted here. What IS enforced on the server: the
+ * confluence-administrators gate, and the rule that only a page carrying the
+ * export marker is ever updated - a forged request can neither replace a foreign
+ * page nor drop a remark. TO CONFIRM before relying on more than that: whether
+ * the XSRF filter covers ScriptRunner endpoints, and which HttpServletRequest
+ * type is passed, so an explicit header check can be added.
+ * ========================================================================== */
+
+spaceConfig(
+    httpMethod: "POST",
+    groups: ["confluence-administrators"]
+) { queryParams, body ->
+
+    long started = System.currentTimeMillis()
+
+    Class responseClass = Http.resolveResponseClass()
+
+    def refuse = { int status, String stage, String message ->
+        Map<String, Object> payload = new LinkedHashMap<String, Object>()
+        payload.put("ok", Boolean.FALSE)
+        payload.put("written", Boolean.FALSE)
+        payload.put("stage", stage)
+        payload.put("error", message)
+        payload.put("executionMs", Long.valueOf(System.currentTimeMillis() - started))
+        return Http.build(responseClass, status,
+            JsonOutput.prettyPrint(JsonOutput.toJson(payload)), Http.JSON, null)
+    }
+
+    def answer = { Map<String, Object> data ->
+        data.put("executionMs", Long.valueOf(System.currentTimeMillis() - started))
+        return Http.ok(responseClass, JsonOutput.prettyPrint(JsonOutput.toJson(data)), Http.JSON)
+    }
+
+    String requestBody = body == null ? null : body.toString()
+    if (requestBody == null || requestBody.trim().isEmpty()) {
+        return refuse(400, "request", "The request body is empty. The export payload is expected as JSON.")
+    }
+    if (requestBody.length() > Cx.MAX_PAYLOAD_CHARS) {
+        return refuse(413, "request", "The export payload exceeds " +
+            String.valueOf(Cx.MAX_PAYLOAD_CHARS) + " characters.")
+    }
+
+    Object parsed = null
+    try {
+        parsed = new JsonSlurper().parseText(requestBody)
+    } catch (Exception error) {
+        return refuse(400, "request", "The request body is not valid JSON: " + error.getClass().getSimpleName())
+    }
+    if (!(parsed instanceof Map)) {
+        return refuse(400, "request", "The request body must be a JSON object.")
+    }
+
+    Map<String, Object> request = Cx.copyMap((Map<?, ?>) parsed)
+
+    /* ---- Staged lookups ---------------------------------------------------- */
+
+    /* Rendering the report reads nothing. Everything the export form needs arrives
+     * here on demand, one stage per request, discriminated by "action": spaces
+     * then pages then write. A body without an action is the write, so the write
+     * path below keeps the shape and the order it always had. There is no target
+     * stage: this endpoint writes into its own instance. */
+    String requestedAction = Cx.str(request, "action", "write").toLowerCase(Locale.ROOT)
+
+    if (requestedAction == "spaces") {
+        ApiSpaceService apiSpaceService = null
+        try {
+            apiSpaceService = ComponentLocator.getComponent(ApiSpaceService.class)
+        } catch (Throwable error) {
+            return refuse(500, "spaces", "The Confluence SpaceService could not be obtained (" +
+                Db.why(error) + "), so the space list could not be read. That is a failed read, " +
+                "not an instance without spaces.")
+        }
+        if (apiSpaceService == null) {
+            return refuse(500, "spaces", "The Confluence SpaceService could not be resolved, so the " +
+                "space list could not be read. That is a failed read, not an instance without spaces.")
+        }
+
+        Map<String, Object> listed = Cw.spaceRows(apiSpaceService)
+        if (listed.get("ok") != Boolean.TRUE) {
+            return refuse(500, "spaces", String.valueOf(listed.get("error")))
+        }
+        List<Map<String, Object>> spaceRows = (List<Map<String, Object>>) listed.get("spaces")
+        if (spaceRows.isEmpty()) {
+            return refuse(500, "spaces", "The space inventory answered but named no current space, " +
+                "so no space can be picked.")
+        }
+
+        Map<String, Object> spacePayload = new LinkedHashMap<String, Object>()
+        spacePayload.put("ok", Boolean.TRUE)
+        spacePayload.put("action", "spaces")
+        spacePayload.put("spaces", spaceRows)
+        return answer(spacePayload)
+    }
+
+    if (requestedAction == "pages") {
+        String searchSpace = Cx.str(request, "spaceKey", "")
+        String searchTitle = Cx.str(request, "query", "").trim()
+        if (searchSpace.isEmpty()) {
+            return refuse(400, "pages", "No space was selected, so there is nothing to look in.")
+        }
+        if (searchTitle.length() < Cx.MIN_SEARCH_CHARS) {
+            return refuse(400, "pages", "Type at least " + String.valueOf(Cx.MIN_SEARCH_CHARS) +
+                " characters of the page title.")
+        }
+
+        PageService pageLookup = null
+        SearchManager searchLookup = null
+        try {
+            pageLookup = ComponentLocator.getComponent(PageService.class)
+            searchLookup = ComponentLocator.getComponent(SearchManager.class)
+        } catch (Throwable error) {
+            return refuse(500, "pages", "A component needed for the page search could not be obtained (" +
+                Db.why(error) + "). That is a failed lookup, not a space without that page.")
+        }
+        if (pageLookup == null || searchLookup == null) {
+            return refuse(500, "pages", "A component needed for the page search could not be resolved (" +
+                (pageLookup == null ? "PageService" : "SearchManager") + "), so the parent page could " +
+                "not be looked up. That is a failed lookup, not a space without that page.")
+        }
+
+        Map<String, Object> found = Cw.searchPagesByTitle(searchLookup, pageLookup, searchSpace,
+            searchTitle, Cx.SEARCH_LIMIT)
+        if (found.get("ok") != Boolean.TRUE) {
+            return refuse(500, "pages", String.valueOf(found.get("error")))
+        }
+
+        Map<String, Object> pagePayload = new LinkedHashMap<String, Object>()
+        pagePayload.put("ok", Boolean.TRUE)
+        pagePayload.put("action", "pages")
+        pagePayload.put("spaceKey", searchSpace)
+        pagePayload.put("pages", found.get("pages"))
+        pagePayload.put("truncated", found.get("truncated"))
+        return answer(pagePayload)
+    }
+
+    /* ---- Page export: validate --------------------------------------------- */
+
+    String spaceKey = Cx.str(request, "spaceKey", "")
+    String title = Cx.str(request, "title", "")
+    String parentRaw = Cx.str(request, "parentPageId", "").trim()
+    String parentTitleRaw = Cx.str(request, "parentTitle", "").trim()
+
+    if (spaceKey.isEmpty()) {
+        return refuse(400, "validate", "No space was selected.")
+    }
+    if (title.isEmpty()) {
+        return refuse(400, "validate", "No page title was given.")
+    }
+    /* Exactly one parent instruction, never two. A picked page and a typed title
+     * can disagree, and guessing which one the administrator meant is how a report
+     * lands somewhere nobody looks. The request is refused instead. */
+    String parentProblem = Cx.parentProblem(parentRaw, parentTitleRaw, title)
+    if (!parentProblem.isEmpty()) {
+        return refuse(400, "validate", parentProblem)
+    }
+    if (title.length() > Cx.MAX_TITLE_CHARS) {
+        return refuse(400, "validate", "The page title exceeds " +
+            String.valueOf(Cx.MAX_TITLE_CHARS) + " characters.")
+    }
+    if (Cx.rowsOf(request, "sections").isEmpty()) {
+        return refuse(400, "validate", "The export payload carries no section. Nothing is written.")
+    }
+
+    PageManager pageManager = null
+    PageService pageService = null
+    SpaceService spaceService = null
+    try {
+        pageManager = ComponentLocator.getComponent(PageManager.class)
+        pageService = ComponentLocator.getComponent(PageService.class)
+        spaceService = ComponentLocator.getComponent(SpaceService.class)
+    } catch (Throwable error) {
+        return refuse(500, "validate", "A required Confluence component could not be obtained: " + Db.why(error))
+    }
+    if (pageManager == null || pageService == null || spaceService == null) {
+        return refuse(500, "validate", "A required Confluence component could not be resolved (" +
+            (pageManager == null ? "PageManager" : (pageService == null ? "PageService" : "SpaceService")) + ").")
+    }
+
+    Space space = null
+    try {
+        space = spaceService.getKeySpaceLocator(spaceKey).getSpace()
+    } catch (Exception error) {
+        return refuse(500, "validate", "The space \"" + spaceKey + "\" could not be read: " +
+            Cx.errorDetail(error))
+    }
+    if (space == null) {
+        return refuse(400, "validate", "There is no space with the key \"" + spaceKey + "\".")
+    }
+
+    /* Three outcomes, kept apart in the response: no parent, a parent that was
+     * found, and a parent this run created. Creating is never reported as finding -
+     * an administrator who reads "found" believes the page was already there and
+     * stops looking for the one that was just made. */
+    Page parentPage = null
+    String parentAction = "none"
+
+    if (!parentRaw.isEmpty()) {
+        long parentId = 0L
+        try {
+            parentId = Long.parseLong(parentRaw)
+        } catch (NumberFormatException ignored) {
+            return refuse(400, "validate", "The parent page ID \"" + parentRaw + "\" is not a number.")
+        }
+        try {
+            parentPage = pageService.getIdPageLocator(parentId).getPage()
+        } catch (Exception error) {
+            return refuse(500, "validate", "The parent page could not be read: " + Cx.errorDetail(error))
+        }
+        if (parentPage == null) {
+            return refuse(400, "validate", "There is no page with the ID " + parentRaw + ".")
+        }
+        if (!spaceKey.equalsIgnoreCase(String.valueOf(parentPage.getSpaceKey()))) {
+            return refuse(400, "validate", "The parent page " + parentRaw + " sits in space \"" +
+                String.valueOf(parentPage.getSpaceKey()) + "\", not in \"" + spaceKey + "\".")
+        }
+        parentAction = "found"
+    }
+
+    /* ---- Remark read ------------------------------------------------------- */
+
+    /* The exact locator returns the persistence Page the remark parser and the
+     * write path below both work on. */
+    Page existingPage = null
+    try {
+        existingPage = pageService.getTitleAndSpaceKeyPageLocator(spaceKey, title).getPage()
+    } catch (Exception error) {
+        return refuse(409, "read", "The existing page could not be read (" + Cx.errorDetail(error) +
+            "). Nothing is written, so no remark can be lost.")
+    }
+
+    RemarkRead read = new RemarkRead()
+    if (existingPage != null) {
+        String existingStorage = null
+        try {
+            existingStorage = existingPage.getBodyAsString()
+        } catch (Exception error) {
+            return refuse(409, "read", "The body of the existing page could not be read (" +
+                Cx.errorDetail(error) + "). Nothing is written, so no remark can be lost.")
+        }
+        read = Cx.parseRemarks(existingStorage)
+        read.pageId = existingPage.getIdAsString()
+        read.pageVersion = existingPage.getVersion()
+    }
+
+    /* Fail closed. This is the only path to a write and a FAILED read never passes
+     * it: no create, no update, reported to the caller as a failure. A page that
+     * would lose an administrator's own text is never produced. */
+    if (!read.isWriteAllowed()) {
+        Map<String, Object> refusal = new LinkedHashMap<String, Object>()
+        refusal.put("ok", Boolean.FALSE)
+        refusal.put("written", Boolean.FALSE)
+        refusal.put("stage", "read")
+        refusal.put("error", read.reason)
+        refusal.put("remarkRead", read.outcome)
+        refusal.put("remarkReadDetail", read.asMap())
+        refusal.put("spaceKey", spaceKey)
+        refusal.put("title", title)
+        refusal.put("executionMs", Long.valueOf(System.currentTimeMillis() - started))
+        return Http.build(responseClass, 409,
+            JsonOutput.prettyPrint(JsonOutput.toJson(refusal)), Http.JSON, null)
+    }
+
+    /* ---- Parent page from a typed title ------------------------------------ */
+
+    /* There is no Create button. A title that was typed and never picked is
+     * resolved here, in the generating request, which is the only moment at which
+     * the answer is still current. It sits AFTER the fail-closed remark read on
+     * purpose: a run that is about to be refused with a 409 must not leave a
+     * container page behind that nothing was ever filed under.
+     *
+     * The exact title is re-checked immediately before the create, not only in the
+     * search the browser ran earlier. That covers the page somebody else created in
+     * between and the administrator who saw a hit, did not click it and generated
+     * anyway. Neither produces a second page with the same title. A failed read
+     * stays a failed read and never degrades into "no such page", which would be
+     * answered by creating a duplicate. */
+    if (parentPage == null && !parentTitleRaw.isEmpty()) {
+        try {
+            parentPage = pageService.getTitleAndSpaceKeyPageLocator(spaceKey, parentTitleRaw).getPage()
+        } catch (Exception error) {
+            return refuse(500, "parent", "The parent page \"" + parentTitleRaw + "\" could not be looked " +
+                "up in \"" + spaceKey + "\" (" + Cx.errorDetail(error) + "). That is a failed read, not a " +
+                "space without that page, so nothing was created and nothing is written.")
+        }
+
+        if (parentPage != null) {
+            parentAction = "found"
+        } else {
+            try {
+                Page container = new Page()
+                container.setVersion(1)
+                container.setSpace(space)
+                container.setTitle(parentTitleRaw)
+                container.setBodyContent(new BodyContent(container, Cx.PARENT_BODY, BodyType.XHTML))
+                container.setCreator(AuthenticatedUserThreadLocal.get())
+                pageManager.saveContentEntity(container, DefaultSaveContext.SUPPRESS_NOTIFICATIONS)
+                parentPage = pageService.getTitleAndSpaceKeyPageLocator(spaceKey, parentTitleRaw).getPage()
+            } catch (Exception error) {
+                return refuse(500, "parent", "The parent page \"" + parentTitleRaw + "\" could not be " +
+                    "created in \"" + spaceKey + "\" (" + Cx.errorDetail(error) + "). Nothing is written: a " +
+                    "report filed at the top level of the space instead would sit where nobody looks for it.")
+            }
+            if (parentPage == null) {
+                return refuse(500, "parent", "The parent page \"" + parentTitleRaw + "\" is not readable " +
+                    "after the save, so the report has no confirmed place to go. Nothing is written.")
+            }
+            parentAction = "created"
+        }
+    }
+
+    /* ---- Write ------------------------------------------------------------- */
+
+    /* The instance block on the page is read from this instance, never taken from
+     * the payload the browser sent back. */
+    Map<String, String> identity = Cw.instanceIdentity()
+    Object instanceNode = request.get("instance")
+    Map<String, Object> instanceMap = instanceNode instanceof Map
+        ? (Map<String, Object>) instanceNode : new LinkedHashMap<String, Object>()
+    for (String field : ["baseUrl", "title", "confluenceVersion"]) {
+        if (identity.get(field) != null) {
+            instanceMap.put(field, identity.get(field))
+        }
+    }
+    request.put("instance", instanceMap)
+
+    ExportOutcome outcome = Cx.render(request, read)
+
+    String action = existingPage == null ? "created" : "updated"
+    int writtenVersion = existingPage == null ? 1 : read.pageVersion + 1
+    String pageId = read.pageId
+
+    /* The parent named in this run, and what this run does about the position of an
+     * existing page. Both are decided before the write so the branches below only
+     * carry it out. */
+    String requestedParentId = parentPage == null ? null : parentPage.getIdAsString()
+    String moveDecision = Cx.MOVE_NOT_REQUESTED
+    String moveError = null
+    boolean parentReadBackOk = false
+    String actualParentId = null
+
+    try {
+        if (existingPage == null) {
+            Page fresh = new Page()
+            fresh.setVersion(1)
+            fresh.setSpace(space)
+            fresh.setTitle(title)
+            fresh.setBodyContent(new BodyContent(fresh, outcome.storage, BodyType.XHTML))
+            fresh.setCreator(AuthenticatedUserThreadLocal.get())
+            if (parentPage != null) {
+                /* Ancestors run from the root of the space downwards, so the parent
+                 * is appended last. The create path carries the parent in the entity
+                 * itself; the update path below moves an existing page instead. */
+                moveDecision = Cx.MOVE_REQUESTED
+                fresh.setParentPage(parentPage)
+                parentPage.addChild(fresh)
+                List<Page> ancestors = new ArrayList<Page>()
+                List<Page> parentAncestors = parentPage.getAncestors()
+                if (parentAncestors != null) {
+                    ancestors.addAll(parentAncestors)
+                }
+                ancestors.add(parentPage)
+                fresh.setAncestors(ancestors)
+            }
+            pageManager.saveContentEntity(fresh, DefaultSaveContext.SUPPRESS_NOTIFICATIONS)
+        } else {
+            /* saveContentEntity(obj, origObj, ctx) is the documented history path:
+             * the modified as well as the original version of the object are handed
+             * over. The fetched entity carries the modification, so its
+             * pre-modification state is taken first and passed as the original. The
+             * body is all this save carries: the position is a separate operation
+             * and is handled right after it. */
+            Page original = (Page) existingPage.clone()
+            existingPage.setBodyAsString(outcome.storage)
+            pageManager.saveContentEntity(existingPage, original, DefaultSaveContext.SUPPRESS_NOTIFICATIONS)
+
+            /* A parent named in this run is applied to a page that already exists,
+             * not only to one this run creates. A run that names no parent still
+             * does not touch the position, so a page an administrator moved by hand
+             * stays moved. movePageAsChild owns the ancestor list; it is not
+             * hand-rolled here. */
+            Page currentParent = null
+            try {
+                currentParent = existingPage.getParent()
+            } catch (Exception ignored) {
+                currentParent = null
+            }
+            moveDecision = Cx.moveDecision(requestedParentId,
+                currentParent == null ? null : currentParent.getIdAsString())
+            if (Cx.MOVE_REQUESTED.equals(moveDecision)) {
+                try {
+                    pageManager.movePageAsChild(existingPage, parentPage)
+                } catch (Exception error) {
+                    /* The report is written at this point. A failed move costs the
+                     * position and is reported as such below; it never costs the
+                     * report, and it is never swallowed either. */
+                    moveError = Cx.errorDetail(error)
+                }
+            }
+        }
+
+        /* Read back rather than trusting the save. The id and the version that go
+         * into the response are the ones the page actually carries afterwards. */
+        Page stored = pageService.getTitleAndSpaceKeyPageLocator(space.getKey(), title).getPage()
+        if (stored == null) {
+            return refuse(500, "write", "The page could not be written: it is not readable after the save.")
+        }
+        pageId = stored.getIdAsString()
+        writtenVersion = stored.getVersion()
+
+        /* The position is read back too. A move that returned without throwing is a
+         * report about itself, not a measurement of the tree, and the create path
+         * setting an ancestor list on an entity is no different. What goes into the
+         * response is the chain the page actually carries afterwards.
+         *
+         * A chain that cannot be read leaves parentReadBackOk false, which the
+         * verdict below turns into "unknown" - never into a move that worked and
+         * never into one that failed. */
+        try {
+            List<Page> storedAncestors = stored.getAncestors()
+            List<String> ancestorIds = null
+            if (storedAncestors != null) {
+                ancestorIds = new ArrayList<String>()
+                for (Page ancestor : storedAncestors) {
+                    ancestorIds.add(ancestor == null ? null : ancestor.getIdAsString())
+                }
+            }
+            Map<String, Object> chain = Cx.innermostAncestor(ancestorIds)
+            parentReadBackOk = chain.get("measured") == Boolean.TRUE
+            actualParentId = chain.get("parentId") == null ? null : chain.get("parentId").toString()
+        } catch (Exception ignored) {
+            parentReadBackOk = false
+            actualParentId = null
+        }
+    } catch (Exception error) {
+        return refuse(500, "write", "The page could not be written: " + Cx.errorDetail(error))
+    }
+
+    String writtenUrl = Cw.pageUrl(identity.get("baseUrl"), pageId)
+    if (writtenUrl == null) {
+        outcome.warnings.add("The page was written, but the base URL of this instance could not be read, " +
+            "so the result carries no link to it.")
+    }
+
+    /* The measured verdict on the position. It is computed from the read-back, not
+     * from the fact that a move was attempted, and a run that named no parent gets
+     * a null rather than a claim it never made. */
+    Map<String, Object> parentVerdict = Cx.parentOutcome(requestedParentId, parentReadBackOk,
+        actualParentId, moveError)
+    if (parentVerdict.get("reason") != null) {
+        outcome.warnings.add(parentVerdict.get("reason").toString())
+    }
+
+    Map<String, Object> response = new LinkedHashMap<String, Object>()
+    response.put("ok", Boolean.TRUE)
+    response.put("written", Boolean.TRUE)
+    response.put("action", action)
+    response.put("spaceKey", spaceKey)
+    response.put("title", title)
+    response.put("pageId", pageId)
+    response.put("pageVersion", Integer.valueOf(writtenVersion))
+    response.put("pageUrl", writtenUrl)
+    response.put("parentPageId", parentPage == null ? null : parentPage.getIdAsString())
+    response.put("parentAction", parentAction)
+    response.put("parentTitle", parentPage == null ? null : parentPage.getTitle())
+    response.put("parentPageUrl", parentPage == null
+        ? null : Cw.pageUrl(identity.get("baseUrl"), parentPage.getIdAsString()))
+    response.put("parentMove", moveDecision)
+    response.put("parentApplied", parentVerdict.get("applied"))
+    response.put("parentAppliedReason", parentVerdict.get("reason"))
+    response.put("remarkRead", read.outcome)
+    response.put("remarkReadDetail", read.asMap())
+    response.put("remarksRead", Integer.valueOf(outcome.remarksRead))
+    response.put("remarksCarried", Integer.valueOf(outcome.remarksCarried))
+    response.put("orphanedRemarks", Integer.valueOf(outcome.orphanKeys.size()))
+    response.put("orphanedKeys", outcome.orphanKeys)
+    response.put("warnings", outcome.warnings)
+
+    return answer(response)
 }
