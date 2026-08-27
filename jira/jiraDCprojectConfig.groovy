@@ -1437,7 +1437,7 @@ class Render {
                 out.append(treeNode(child, expandAll, 1))
             }
             out.append("</ul>")
-            out.append(sectionTable(node))
+            out.append(sectionTable(node, expandAll))
         }
         out.append("</div>")
         out.append("</div>\n")
@@ -1449,7 +1449,7 @@ class Render {
      * spreadsheet and pasted into a hand-over document. Both are rendered into the
      * page and the toggle only switches which one is shown, so neither view can go
      * stale against the other. */
-    private static String sectionTable(Nd node) {
+    private static String sectionTable(Nd node, boolean expandAll) {
         StringBuilder out = new StringBuilder()
         out.append("<div class=\"view-table hidden\">")
         /* Children that carry a value of their own rather than a subtree share one
@@ -1465,11 +1465,17 @@ class Render {
                 branches.add(child)
             }
         }
+        /* The section heading is already on the page, so the pooled children need no
+         * heading of their own. Every branch names itself once, and everything below
+         * it is nested under that name rather than prefixed with it. */
         if (!loose.isEmpty()) {
-            out.append(subTable(Pc.orNa(node.label), loose))
+            out.append(subTable(loose, node.kind))
         }
         for (Nd branch : branches) {
-            out.append(subTable(Pc.orNa(branch.label), branch.children))
+            out.append(recordOpen(0, expandAll))
+            out.append(tableHeading(Pc.orNa(branch.label), 0, branch.countDescendants()))
+            emitTables(branch.children, 0, branch.kind, expandAll, out)
+            out.append("</details>")
         }
         if (loose.isEmpty() && branches.isEmpty()) {
             out.append("<p class=\"linknote\">Nothing to tabulate.</p>")
@@ -1478,9 +1484,135 @@ class Render {
         return out.toString()
     }
 
+    /* How deep the cut goes. One table per record, not one table listing every
+     * record with its name repeated down the first column: the name only means
+     * something inside its own record, and a collection table over all of them
+     * cannot be read as documentation.
+     *
+     * Split when every member is a container AND at least one of them contains a
+     * container of its own. Measured against the four nodes of a Service Management
+     * section, which is why it is this condition and not a row threshold:
+     *
+     *   Request types    all seven are containers, each holds "Fields on the
+     *                    customer form"                      -> split, seven tables
+     *   Queues           all twelve are containers, but a queue holds only leaves
+     *                    -> do NOT split, or you get twelve tables of two rows
+     *   Customer portal  its member is a leaf                 -> do not split
+     *   one request type five leaves and one container        -> do not split, the
+     *                    levels below stay columns
+     *
+     * A row threshold would have been the obvious alternative and the worse one: it
+     * needs a number per section and drifts the moment a section grows. */
+    private static boolean shouldSplit(List<Nd> members) {
+        boolean anyLeaf = false
+        boolean anyContainer = false
+        boolean holdsContainer = false
+        for (Nd member : members) {
+            if (member.children.isEmpty() || !member.isReadable()) {
+                anyLeaf = true
+                continue
+            }
+            anyContainer = true
+            for (Nd child : member.children) {
+                if (!child.children.isEmpty()) {
+                    holdsContainer = true
+                }
+            }
+        }
+        /* Mixed membership is the clearest case of all: a container sitting among
+         * leaves is a different kind of record than its neighbours, and a table may
+         * hold one kind. A request type carries five properties and one group of
+         * form fields; leaving them together is what put "Fields on the customer
+         * form" on fifteen consecutive rows. */
+        if (anyLeaf && anyContainer) {
+            return true
+        }
+        return anyContainer && holdsContainer
+    }
+
+    /* Emits the tables for one group. The group's own name is printed once, as a
+     * heading, and never again - not on every row, which was the first defect, and
+     * not as a breadcrumb on every table heading, which is the same defect one level
+     * up and was the second. Each level names itself exactly once. */
+    private static void emitTables(List<Nd> members, int depth, String ownerKind,
+                                   boolean expandAll, StringBuilder out) {
+        if (members.isEmpty()) {
+            return
+        }
+        if (!shouldSplit(members)) {
+            out.append(subTable(members, ownerKind))
+            return
+        }
+        /* A member that cannot be read, or that has nothing below it, has no table of
+         * its own to fill. Those are pooled rather than dropped - a failed read must
+         * never disappear because of where it happened to sit. They come first
+         * because they are the record's own properties; the groups follow. */
+        List<Nd> pooled = new ArrayList<Nd>()
+        for (Nd member : members) {
+            if (member.children.isEmpty() || !member.isReadable()) {
+                pooled.add(member)
+            }
+        }
+        if (!pooled.isEmpty()) {
+            out.append(subTable(pooled, ownerKind))
+        }
+        for (Nd member : members) {
+            if (member.children.isEmpty() || !member.isReadable()) {
+                continue
+            }
+            /* Wrapped, not merely indented. An indent is a claim that these things
+             * belong together; an element that encloses them is the thing itself,
+             * and it lets a single rule run down the whole record so the reader sees
+             * where it starts and ends without counting pixels. It also takes the
+             * indentation off an adjacent-sibling selector, which only ever reached
+             * the one table that happened to follow the heading. */
+            int level = depth + 1
+            out.append(recordOpen(level, expandAll))
+            out.append(tableHeading(Pc.orNa(member.label), level, member.countDescendants()))
+            emitTables(member.children, level, member.kind, expandAll, out)
+            out.append("</details>")
+        }
+    }
+
+    /* Each record encloses its own tables and can be collapsed. An indent is a claim
+     * that things belong together; a collapsed record IS the thing, so nobody has to
+     * read a margin to see where it starts and ends. It is also what the Confluence
+     * export already does with expand macros, so the two channels agree in shape and
+     * not only in content.
+     *
+     * Only the record level starts collapsed. The group above it stays open, or a
+     * reader would need two clicks to see anything, and the group below it stays
+     * open, because opening a record should show what hangs off it - that is the
+     * whole point of opening it. Expand all still reaches every one of them. */
+    private static String recordOpen(int level, boolean expandAll) {
+        boolean open = expandAll || level != 1
+        StringBuilder out = new StringBuilder()
+        out.append("<details class=\"rec lvl-").append(String.valueOf(level > 2 ? 2 : level))
+        out.append("\"").append(open ? " open" : "").append(">")
+        return out.toString()
+    }
+
+    /* The heading is the summary, so it is also the click target. Written as a
+     * heading element inside it, so the document still has an outline for anyone
+     * navigating by structure. Capped at h6 because HTML has no deeper heading and a
+     * fabricated one would not be one. */
+    private static String tableHeading(String label, int depth, int items) {
+        int level = 4 + depth
+        String tag = "h" + String.valueOf(level > 6 ? 6 : level)
+        StringBuilder out = new StringBuilder()
+        out.append("<summary class=\"table-head lvl-")
+        out.append(String.valueOf(depth > 2 ? 2 : depth)).append("\">")
+        out.append("<span class=\"twisty tw-closed\">&#9656;</span>")
+        out.append("<span class=\"twisty tw-open\">&#9662;</span>")
+        out.append("<").append(tag).append(">").append(Pc.html(label))
+        out.append(" <span class=\"muted\">").append(Pc.plural(items, "item")).append("</span>")
+        out.append("</").append(tag).append("></summary>")
+        return out.toString()
+    }
+
     /* One table over one set of like records. members are the records; everything
      * below each of them becomes columns, not a longer string in one cell. */
-    private static String subTable(String heading, List<Nd> members) {
+    private static String subTable(List<Nd> members, String ownerKind) {
         List<Nd> rows = new ArrayList<Nd>()
         List<List<Nd>> chains = new ArrayList<List<Nd>>()
         for (Nd member : members) {
@@ -1496,12 +1628,13 @@ class Render {
             }
         }
         StringBuilder out = new StringBuilder()
-        out.append("<h4 class=\"table-head\">").append(Pc.html(heading))
-        out.append(" <span class=\"muted\">").append(Pc.plural(rows.size(), "row")).append("</span></h4>")
+        /* No heading of its own. The caller printed the name of the group this table
+         * belongs to, once, and repeating it here would be the third place the same
+         * word appears. */
         out.append("<table class=\"flat\"><thead><tr>")
         for (int level = 0; level < depth; level++) {
             out.append("<th class=\"col-level\">")
-            out.append(Pc.html(levelHeader(chains, level, heading))).append("</th>")
+            out.append(Pc.html(levelHeader(chains, level, ownerKind))).append("</th>")
         }
         out.append("<th class=\"col-value\">Value</th>")
         out.append("<th class=\"col-state\">State</th>")
@@ -1560,10 +1693,10 @@ class Render {
      * name is the honest header for it. Below that the kind decides, and a level
      * whose nodes do not agree on a kind is a mixed level: "Aspect" is what such a
      * level is, and inventing a more specific word for it would be a guess. */
-    private static String levelHeader(List<List<Nd>> chains, int level, String heading) {
-        if (level == 0) {
-            return heading
-        }
+    private static String levelHeader(List<List<Nd>> chains, int level, String ownerKind) {
+        /* Always from the kind, never from the heading above. The heading sits
+         * directly over the table and says what the group is; a first column that
+         * repeated it would be the same word twice on the same screen. */
         String kind = null
         String parent = null
         boolean mixed = false
@@ -1578,11 +1711,21 @@ class Render {
             } else if (!kind.equals(here)) {
                 mixed = true
             }
-            String above = chain.get(level - 1).kind
-            if (parent == null) {
-                parent = above
-            } else if (!parent.equals(above)) {
-                parentMixed = true
+            /* The first level has no ancestor inside the chain, but it does have
+             * one: the container this table belongs to. Without it the header of a
+             * split-off group came out as the whole chain again, because there was
+             * nothing left to strip against. */
+            if (level == 0) {
+                if (parent == null) {
+                    parent = ownerKind
+                }
+            } else {
+                String above = chain.get(level - 1).kind
+                if (parent == null) {
+                    parent = above
+                } else if (!parent.equals(above)) {
+                    parentMixed = true
+                }
             }
         }
         if (kind == null || mixed) {
@@ -2054,8 +2197,36 @@ table.flat th.col-link, table.flat td.col-link { white-space: nowrap; width: 1%;
 table.flat td.col-link { text-align: right; }
 table.flat td.col-level { white-space: normal; font-size: 12px; }
 table.flat td.col-value { min-width: 140px; }
-h4.table-head { margin: 18px 0 0; font-size: 14px; font-weight: 600; }
-h4.table-head .muted { font-weight: 400; font-size: 12px; color: var(--text-subtle); }
+/* A record encloses its own tables. The indentation lives on the enclosing element,
+   not on an adjacent-sibling selector: that one only ever reached the single table
+   that happened to follow the heading, and silently missed everything after it. */
+details.rec { margin: 0; }
+details.rec.lvl-1, details.rec.lvl-2 { padding-left: 14px; border-left: 2px solid var(--border-subtle); }
+/* Proximity does the grouping, so the gaps must disagree with each other. What
+   belongs together sits closer than what does not - equal gaps at both levels was
+   why the nesting could be read past. */
+details.rec.lvl-1 { margin-top: 26px; }
+details.rec.lvl-2 { margin-top: 8px; margin-bottom: 14px; }
+details.rec[open] > summary { margin-bottom: 2px; }
+
+summary.table-head { cursor: pointer; list-style: none; padding: 3px 0; }
+summary.table-head::-webkit-details-marker { display: none; }
+summary.table-head h4, summary.table-head h5, summary.table-head h6 {
+    display: inline; margin: 0; font-weight: 600; }
+summary.table-head .muted { font-weight: 400; font-size: 12px; color: var(--text-subtle); }
+/* The same two glyphs as the tree, swapped rather than rotated, and carried in the
+   markup instead of a CSS content string. Written as a CSS escape it was read by
+   Groovy first, where a backslash followed by digits is an octal escape - the page
+   ended up with a control character and the literal text "B8". A glyph that has to
+   survive two escaping layers is a glyph in the wrong place. */
+summary.table-head .tw-open { display: none; }
+details.rec[open] > summary.table-head .tw-open { display: inline-block; }
+details.rec[open] > summary.table-head .tw-closed { display: none; }
+summary.table-head:hover { background: var(--surface-subtle); }
+.table-head.lvl-0 h4 { font-size: 15px; }
+.table-head.lvl-1 h5 { font-size: 13px; }
+.table-head.lvl-2 h6 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+details.rec > table.flat { margin-bottom: 4px; }
 .section-value, .node-value, .linknote, table.flat td, .node-diag {
     overflow-wrap: anywhere; word-break: break-word;
 }
@@ -2164,6 +2335,10 @@ function expandAll(open) {
     for (var s = 0; s < sections.length; s++) { toggleSection(sections[s], open); }
     var items = document.querySelectorAll('li.node');
     for (var i = 0; i < items.length; i++) { setTwisty(items[i], open); }
+    /* The table view collapses too, or the button would mean one thing in one view
+       and nothing in the other. */
+    var records = document.querySelectorAll('details.rec');
+    for (var r = 0; r < records.length; r++) { records[r].open = open; }
 }
 
 /* Both views are already in the page. Switching only changes which one is shown,
@@ -3345,9 +3520,15 @@ class Cx {
         return allowance
     }
 
-    /* One table per section, so each of them can sit inside its own collapsed    /* One table per section, so each of them can sit inside its own collapsed
+    /* One table per section, so each of them can sit inside its own collapsed
      * macro. The remark carry-over is unaffected by the split: the read scans every
-     * table on the page and keys on the path, which is unique page-wide. */
+     * table on the page and keys on the path, which is unique page-wide.
+     *
+     * NOTE: this is still the flat form the HTML view was built out of - one row per
+     * node, containment carried in a path string, an Item column. The HTML view no
+     * longer works that way. Bringing the two back into line is deliberately blocked
+     * on proving the remark carry-over against a live instance first, because this
+     * is the one path that can lose an administrator's own text. */
     static String rowTable(List<Map<String, Object>> rows, RemarkRead read,
                            Set<String> used, ExportOutcome outcome) {
         StringBuilder out = new StringBuilder("<table><tbody>")

@@ -842,8 +842,10 @@ String crossCsv = Render.csv(crossChannel)
  * same containment as columns, because a table that holds it as text cannot be
  * sorted on it - which was the whole reason the path column existed and the whole
  * reason it did not work. */
+/* The column takes its name from the kind, shortened against the kind of the
+ * container it sits in, so it never repeats the heading directly above it. */
 ok("the html table carries the containment as a column",
-    crossHtml.contains("<th class=\"col-level\">Issue types: X</th>"))
+    crossHtml.contains("<th class=\"col-level\">Issue type</th>"))
 ok("the html table does not concatenate a path into a cell",
     !crossHtml.contains("Issue types: X &gt; Bug"))
 ok("the csv keeps the full path as its key", crossCsv.contains("Issue types: X > Bug"))
@@ -1281,15 +1283,46 @@ ok("and says why, not just that it failed",
 ok("a container summary is not a row", !tblHtml.contains(">2 request types<"))
 ok("a nested container summary is not a row either", !tblHtml.contains(">2 fields<"))
 
-/* One table per node, so the section is cut rather than concatenated. Two here:
- * the portal and the failed Queues branch both carry a value of their own and
- * share the section's table, and Request types is a set of records and gets one. */
-check("the section is cut into one table per node", countOf(tblHtml, "<table class=\"flat\">"), 2)
+/* Cut down to the record. Three tables here: the portal and the failed Queues
+ * branch share the section's own table, and each of the two request types gets
+ * one to itself - because each holds a container ("Fields on the customer form"),
+ * which is the condition that makes a collection table unreadable. */
+/* Sabbatical is mixed - one leaf aspect and one group of fields - so it splits
+ * again: its own properties, then the field group. HR Auftrag has only leaves and
+ * stays one table. Plus the section's own pooled table. Four. */
+check("the section is cut down to the record", countOf(tblHtml, "<table class=\"flat\">"), 4)
+ok("each record names itself once, as a heading",
+    tblHtml.contains(">Sabbatical ") && tblHtml.contains(">HR Auftrag "))
+ok("no collection table lists every record",
+    !tblHtml.contains("<th class=\"col-level\">Request types</th>"))
 
-/* Ancestors are columns. The record name is repeated on every row of that record,
- * which is what a sort, a filter and a pivot consume. */
-check("the record name repeats down its column", countOf(tblHtml, ">Sabbatical<"), 3)
+/* The name of a group appears once, on its heading, and nowhere else. Repeating it
+ * as a breadcrumb on every nested heading is the same defect as repeating it on
+ * every row, one level up. */
+ok("a heading is a name, not a breadcrumb", !tblHtml.contains("Request types &gt; "))
+check("the group names itself exactly once", countOf(tblHtml, ">Request types "), 1)
+
+/* Nesting is carried by the heading level, so a reader sees where a table sits
+ * without the table having to say it. */
+ok("the group heads the outer level", tblHtml.contains("class=\"table-head lvl-0\">") && tblHtml.contains("<h4>Request types "))
+ok("the record heads the level below", tblHtml.contains("class=\"table-head lvl-1\">") && tblHtml.contains("<h5>Sabbatical "))
+ok("a group inside a record heads the level below that",
+    tblHtml.contains("class=\"table-head lvl-2\">") && tblHtml.contains("<h6>Fields on the customer form "))
+
+/* The record name is in its heading now, not repeated down a column. Repeating it
+ * was right while every record shared one table; once each record has its own, the
+ * repetition says nothing the heading has not already said. */
+ok("the record name is not repeated down a column", !tblHtml.contains("<td class=\"col-level\">Sabbatical</td>"))
+/* And neither is the group name: it moved from fifteen consecutive cells to one
+ * heading. That was the whole point. */
+ok("a group name is not repeated down a column",
+    !tblHtml.contains("<td class=\"col-level\">Fields on the customer form</td>"))
 ok("the deepest level has its own column", tblHtml.contains("<th class=\"col-level\">Field entry</th>"))
+/* The heading sits directly above the table, so a first column that repeated it
+ * would be the same word twice on one screen. It always comes from the kind. */
+ok("a column header never repeats the heading above it",
+    !tblHtml.contains("<th class=\"col-level\">Sabbatical</th>")
+    && !tblHtml.contains("<th class=\"col-level\">Fields on the customer form</th>"))
 ok("a level whose kinds disagree is named for what it is",
     tblHtml.contains("<th class=\"col-level\">Aspect</th>"))
 
@@ -1319,6 +1352,114 @@ check("a kind that is only the prefix keeps its own name",
     Pc.humanKind("serviceDeskQueue", "serviceDeskQueue"), "Service desk queue")
 check("no kind is still a column", Pc.humanKind(null, null), "Item")
 check("a blank kind is still a column", Pc.humanKind("   ", null), "Item")
+
+/* ---- 29. the same structure on a section that is not JSM ------------------ */
+
+/* One renderer serves every section, so the shape must not depend on which one.
+ * These assertions are deliberately the same as section 27, on a tree built from
+ * workflow kinds instead of service desk kinds. If a rule ever grows a special
+ * case for one section, this is what catches it. */
+
+Report wfReport = new Report()
+Nd wfSection = wfReport.section("workflowScheme", "Workflows: ENT001")
+Nd wfScheme = Nd.of("workflowLayer", "Software Simplified Workflow Scheme")
+Nd wfOne = Nd.of("workflow", "Simplified Workflow")
+wfOne.add(Nd.of("workflowDescription", "Description").val("Generated by Jira"))
+Nd wfStatuses = Nd.of("workflowStatuses", "Statuses").val("2 statuses")
+wfStatuses.add(Nd.of("workflowStatus", "Open").val("To Do"))
+wfStatuses.add(Nd.of("workflowStatus", "Done").val("Done"))
+wfOne.add(wfStatuses)
+Nd wfTwo = Nd.of("workflow", "Other Workflow")
+wfTwo.add(Nd.of("workflowDescription", "Description").val("Hand made"))
+wfScheme.add(wfOne)
+wfScheme.add(wfTwo)
+wfSection.add(wfScheme)
+
+String wfPage = Render.html(wfReport, [:] as LinkedHashMap, false)
+String wfHtml = wfPage.substring(wfPage.indexOf("<div class=\"view-table hidden\">"))
+
+/* Same nesting, same heading levels, on entirely different kinds. */
+ok("a non-JSM group heads the outer level",
+    wfHtml.contains("class=\"table-head lvl-0\">") && wfHtml.contains("<h4>Software Simplified Workflow Scheme "))
+ok("a non-JSM record heads the level below",
+    wfHtml.contains("class=\"table-head lvl-1\">") && wfHtml.contains("<h5>Simplified Workflow "))
+ok("a non-JSM group inside a record heads the level below that",
+    wfHtml.contains("class=\"table-head lvl-2\">") && wfHtml.contains("<h6>Statuses "))
+
+/* Same repetition rules. */
+ok("a non-JSM heading is a name, not a breadcrumb",
+    !wfHtml.contains("Simplified Workflow &gt; "))
+ok("a non-JSM group name is not repeated down a column",
+    !wfHtml.contains("<td class=\"col-level\">Statuses</td>"))
+ok("a non-JSM container summary is not a row", !wfHtml.contains(">2 statuses<"))
+
+/* Same header derivation: the kind, shortened against the container it sits in.
+ * workflowStatus under workflowStatuses leaves "Status", not the whole chain. */
+ok("a non-JSM column header comes from the kind",
+    wfHtml.contains("<th class=\"col-level\">Status</th>"))
+ok("a non-JSM column header does not repeat its heading",
+    !wfHtml.contains("<th class=\"col-level\">Statuses</th>"))
+
+/* Same row rule: four values, no container rows. */
+check("a non-JSM row is a value, not a node",
+    countOf(wfHtml, "<tr>") - countOf(wfHtml, "<thead><tr>"), 4)
+
+/* ---- 30. a record encloses its own tables and collapses ------------------- */
+
+/* Indentation was a claim that things belong together. An element that encloses
+ * them is the thing itself, and one that collapses cannot be read past at all. */
+
+ok("a record encloses its tables", tblHtml.contains("<details class=\"rec lvl-1\""))
+ok("a group inside a record encloses its own",
+    tblHtml.contains("<details class=\"rec lvl-2\""))
+/* Every element that opens has to close, or the rest of the page ends up nested
+ * inside the last record. Counted over all <details> on the page, long values
+ * included, because that is the property - a balance, not a per-class tally. */
+check("every details element that opens also closes",
+    countOf(tblPage, "<details"), countOf(tblPage, "</details>"))
+
+/* Only the record level starts collapsed. The group above stays open or a reader
+ * needs two clicks to see anything; the group below stays open because opening a
+ * record is exactly the request to see what hangs off it. */
+ok("a record starts collapsed", tblHtml.contains("<details class=\"rec lvl-1\">"))
+ok("the group above it does not", tblHtml.contains("<details class=\"rec lvl-0\" open>"))
+ok("the group below it does not", tblHtml.contains("<details class=\"rec lvl-2\" open>"))
+
+/* Expand all is one button for one page. A second collapse mechanism that the
+ * button does not reach would mean the control does something in one view and
+ * nothing in the other. */
+String tblOpen = Render.html(tblReport, [:] as LinkedHashMap, true)
+ok("expand all opens the records too",
+    tblOpen.contains("<details class=\"rec lvl-1\" open>"))
+ok("and the button reaches them", tblOpen.contains("querySelectorAll('details.rec')"))
+
+/* ---- 31. one collapse vocabulary for the whole page ----------------------- */
+
+/* The table view and the tree view sit in the same page, so a reader meets both.
+ * Two collapse controls that look different read as two different mechanisms.
+ * The tree swaps the glyph rather than rotating one, and so does the table. */
+ok("the table view uses the tree's closed glyph",
+    tblPage.contains("<span class=\"twisty tw-closed\">&#9656;</span>"))
+ok("and the tree's open glyph",
+    tblPage.contains("<span class=\"twisty tw-open\">&#9662;</span>"))
+ok("the tree still uses the same two glyphs",
+    tblPage.contains("&#9656;</button>") || tblPage.contains("&#9662;</button>"))
+
+/* A glyph written as a CSS escape inside a Groovy string is read twice. Groovy
+ * takes a backslash followed by digits as an OCTAL escape, so a CSS escape for
+ * the triangle became the control character 21 followed by the literal text B8,
+ * and the page rendered exactly that. The property asserted here is the general
+ * one: no C0 control character reaches the page, whatever produced it. Built
+ * from the code point so this file never has to contain one. */
+boolean anyControl = false
+for (int cp = 0; cp < 32; cp++) {
+    if (cp == 9 || cp == 10 || cp == 13) { continue }
+    if (tblPage.indexOf(String.valueOf((char) cp)) >= 0) { anyControl = true }
+}
+ok("no control character reaches the page", !anyControl)
+/* Deliberately no assertion against the literal text of the old symptom: the CSS
+ * comment that explains it ships in the page, so such a check fails on its own
+ * explanation. A symptom is not a property. */
 
 /* ---- result --------------------------------------------------------------- */
 
