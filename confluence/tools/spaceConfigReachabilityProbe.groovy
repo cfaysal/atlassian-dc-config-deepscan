@@ -2,7 +2,7 @@
  * Confluence Data Center - ScriptRunner reachability and acquisition probe
  * ScriptRunner Custom REST Endpoint. Admin-gated. Strictly read-only.
  *
- * Version 0.3. The endpoint name has not changed since 0.1, so replacing the
+ * Version 0.4. The endpoint name has not changed since 0.1, so replacing the
  * file in the script root is the whole deployment.
  *
  * WHY 0.2 DID NOT COMPILE, because the cause matters more than the fix
@@ -74,7 +74,7 @@ import org.codehaus.groovy.runtime.InvokerHelper
 
 class Probe {
 
-    static final String VERSION = "0.3"
+    static final String VERSION = "0.4"
     static final int KEY_SAMPLE = 12
     static final int SPACE_LIMIT_MAX = 25
 
