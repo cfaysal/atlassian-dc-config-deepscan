@@ -135,7 +135,7 @@ class Probe {
         return detail.length() > 300 ? detail.substring(0, 300) + " [clamped]" : detail
     }
 
-    static String param(Map queryParams, String name, String fallback) {
+    static String param(Object queryParams, String name, String fallback) {
         try {
             Object value = duck(queryParams, "getFirst", [name] as Object[])
             String text = (value == null) ? null : value.toString().trim()
@@ -310,7 +310,7 @@ class Probe {
                 row.bandanaKeyCount = spaceKeys.size()
                 row.bandanaSample = spaceKeys.take(KEY_SAMPLE)
                 if (result.globalKeyCount != null) {
-                    int overlap = spaceKeys.count { globalKeys.contains(it) }
+                    int overlap = spaceKeys.findAll { globalKeys.contains(it) }.size()
                     row.overlapWithGlobal = overlap
                     if (overlap > 0) {
                         anyOverlap = true
@@ -374,9 +374,10 @@ spaceConfigProbe(httpMethod: "GET", groups: ["confluence-administrators"]) { que
     BandanaManager bandanaManager = ComponentLocator.getComponent(BandanaManager.class)
 
     String requestedSpace = Probe.param(queryParams, "space", null)
+    String limitText = Probe.param(queryParams, "limit", "5")
     int limit = 5
     try {
-        limit = Integer.parseInt(Probe.param(queryParams, "limit", "5"))
+        limit = Integer.parseInt(limitText)
     } catch (NumberFormatException ignored) {
         limit = 5
     }
