@@ -230,3 +230,15 @@ jobs:
             fi
           done
           exit $fail
+
+      # The table renderer is duplicated on purpose: each endpoint has to stay a
+      # single self-contained file, because it is dropped into a script root on its
+      # own. That rules out a shared module, so nothing but this job keeps the two
+      # copies honest. It changed four times on 2026-08-27 alone; any one of those
+      # could have landed in one file only.
+      #
+      # Comments are excluded from the comparison on purpose. They may differ per
+      # product, and forcing them to match would produce worse comments rather than
+      # better code.
+      - name: Assert the shared table renderer has not drifted
+        run: python3 tools/shared-renderer-drift.py
