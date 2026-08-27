@@ -833,7 +833,15 @@ Report crossChannel = new Report()
 crossChannel.section("issueTypeScheme", "Issue types: X").add(Nd.of("issueType", "Bug"))
 String crossHtml = Render.html(crossChannel, [:] as LinkedHashMap, false)
 String crossCsv = Render.csv(crossChannel)
-ok("the html table prefixes the section label", crossHtml.contains("Issue types: X &gt; Bug"))
+/* The full path, section included, still exists in the HTML channel - it moved from the
+ * cell text to the title, because the section name is constant for a whole table and was
+ * repeated on every row of the widest column. Escaped once, as a whole: composing an
+ * attribute out of escaped and unescaped pieces is how a separator ends up raw inside a
+ * quoted value. */
+ok("the html table carries the full path including the section",
+    crossHtml.contains("title=\"Issue types: X &gt; Bug\""))
+ok("but the visible cell does not repeat the section",
+    crossHtml.contains(">Bug</td>") && !crossHtml.contains(">Issue types: X &gt; Bug</td>"))
 ok("the csv prefixes the same label", crossCsv.contains("Issue types: X > Bug"))
 
 /* ---- 21. the write gate --------------------------------------------------- */

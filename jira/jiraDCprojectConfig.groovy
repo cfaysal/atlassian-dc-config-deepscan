@@ -1352,7 +1352,8 @@ class Render {
 
         out.append("<div class=\"section-body").append(open ? "" : " hidden").append("\">")
         if (node.value != null) {
-            out.append("<div class=\"section-value\">").append(valueHtml(node.value)).append("</div>")
+            out.append("<div class=\"section-value\">")
+            out.append(valueHtml(node.value, SECTION_VALUE_CLAMP)).append("</div>")
         }
         if (node.linkNote != null) {
             out.append("<div class=\"linknote\">").append(Pc.html(node.linkNote)).append("</div>")
@@ -1382,22 +1383,34 @@ class Render {
     private static String sectionTable(Nd node) {
         StringBuilder out = new StringBuilder()
         out.append("<div class=\"view-table hidden\"><table class=\"flat\"><thead><tr>")
-        out.append("<th>Path</th><th>Item</th><th>Value</th><th>State</th><th>In Jira</th>")
+        out.append("<th>Path</th><th>Value</th><th>State</th><th>In Jira</th>")
         out.append("</tr></thead><tbody>")
         List<Nd> flat = new ArrayList<Nd>()
         List<String> paths = new ArrayList<String>()
-        /* The section label is part of the path in the CSV and on the exported page,
-         * so it is part of it here too. The same node reading "Default issue type" in
-         * one channel and "Issue types: X > Default issue type" in another is how a
-         * reader concludes the two are describing different things. */
+        /* The path is relative to the section, and the section name is not repeated on
+         * every row. It cannot vary inside one table - this table is rendered per
+         * section and every row is seeded with that one section's label - so writing it
+         * out was a constant repeated hundreds of times, in the widest column, two
+         * lines below the heading that already says it. What comes after it does vary:
+         * a scheme with several layers puts a different workflow name in the middle of
+         * the same table, so only the constant prefix is dropped.
+         *
+         * The rest stays written out rather than indented. This view exists to be
+         * sorted and pasted into a spreadsheet, and indentation stops meaning anything
+         * the moment somebody sorts by another column. The tree next to it is the view
+         * for reading. The CSV and the exported page keep the full path including the
+         * section, because there it is the key a remark is carried over by. */
         for (Nd child : node.children) {
-            flattenInto(child, Pc.orNa(node.label), flat, paths)
+            flattenInto(child, "", flat, paths)
         }
         for (int i = 0; i < flat.size(); i++) {
             Nd row = flat.get(i)
             out.append("<tr>")
-            out.append("<td class=\"mono\">").append(Pc.html(paths.get(i))).append("</td>")
-            out.append("<td>").append(Pc.html(Pc.orNa(row.label))).append("</td>")
+            /* The full path, section included, on the title so it can still be read
+             * and copied where it is needed. */
+            String fullPath = Pc.orNa(node.label) + " > " + paths.get(i)
+            out.append("<td class=\"mono\" title=\"").append(Pc.html(fullPath)).append("\">")
+            out.append(Pc.html(paths.get(i))).append("</td>")
             out.append("<td>").append(valueHtml(row.value)).append("</td>")
             out.append("<td>")
             if (!row.isReadable()) {
@@ -1500,17 +1513,27 @@ class Render {
      * worse answer. */
     static final int VALUE_CLAMP = 200
 
+    /* A section heading is a heading. Its value is the scheme description, which on a
+     * scheme maintained by a tool is a fingerprint blob thousands of characters long,
+     * and two hundred of those pushed the table another line down the page before the
+     * reader had seen a single row. The rest is one click away, unchanged. */
+    static final int SECTION_VALUE_CLAMP = 120
+
     static String valueHtml(Object value) {
+        return valueHtml(value, VALUE_CLAMP)
+    }
+
+    static String valueHtml(Object value, int clamp) {
         String text = Pc.text(value)
         if (text == null) {
             return ""
         }
-        if (text.length() <= VALUE_CLAMP) {
+        if (text.length() <= clamp) {
             return Pc.html(text)
         }
         StringBuilder out = new StringBuilder()
         out.append("<details class=\"long\"><summary>")
-        out.append("<span class=\"clamped\">").append(Pc.html(text.substring(0, VALUE_CLAMP)))
+        out.append("<span class=\"clamped\">").append(Pc.html(text.substring(0, clamp)))
         out.append("&#8230;</span>")
         out.append("<span class=\"more\">show all (").append(String.valueOf(text.length()))
         out.append(" characters)</span></summary>")
@@ -4352,13 +4375,44 @@ class Scan {
                 step.getMetaAttributes(), null))
             List actions = step.getActions()
             if (actions == null || actions.isEmpty()) {
-                self.add(Nd.of("workflowTransition", "Transitions")
-                    .absent("No transition leaves this status."))
+                /* A status with no transition of its own is the normal shape of a
+                 * Jira Software simplified workflow: those move issues with global
+                 * transitions, which belong to the workflow rather than to any one
+                 * status. Reporting that as "not configured" accuses a working
+                 * configuration of a defect. Only a status that has neither is a real
+                 * dead end, and that one is worth saying out loud. */
+                int loose = looseActionCount(workflow)
+                Nd transitions = Nd.of("workflowTransition", "Transitions")
+                if (loose > 0) {
+                    transitions.val("None of its own. This workflow moves issues with " +
+                        Pc.plural(loose, "global or initial transition") +
+                        ", listed under \"Global and initial transitions\".")
+                } else {
+                    transitions.absent("No transition leaves this status, and the workflow " +
+                        "defines no global or initial transition either. An issue that reaches " +
+                        "this status cannot leave it.")
+                }
+                self.add(transitions)
                 return
             }
             for (Object raw : actions) {
                 self.add(transitionNode(workflow, (ActionDescriptor) raw, status))
             }
+        }
+    }
+
+    /* How many transitions belong to the workflow rather than to a status. Read the
+     * same way looseTransitions reads them, so the two can never disagree. A read that
+     * fails counts as zero here on purpose: the caller only uses it to decide which of
+     * two sentences to print, and the group below reports the failure properly. */
+    private static int looseActionCount(JiraWorkflow workflow) {
+        try {
+            Object descriptor = workflow.getDescriptor()
+            List globals = (List) Pc.duck(descriptor, "getGlobalActions", null)
+            List initials = (List) Pc.duck(descriptor, "getInitialActions", null)
+            return (globals == null ? 0 : globals.size()) + (initials == null ? 0 : initials.size())
+        } catch (Exception ignored) {
+            return 0
         }
     }
 
@@ -4412,6 +4466,13 @@ class Scan {
         }
         if (entries.isEmpty()) {
             return node.absent("No property is set.")
+        }
+        /* One property does not need a row of its own plus a parent row that says there
+         * is one. Every status of every workflow carries jira.status.id, so that shape
+         * cost two rows per status for a value that fits in one. */
+        if (entries.size() == 1) {
+            Nd only = entries.get(0)
+            return node.val(Pc.orNa(only.label) + " = " + Pc.orNa(only.value))
         }
         node.val(Pc.plural(entries.size(), "property"))
         node.addAll(entries)
