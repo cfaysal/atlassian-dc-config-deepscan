@@ -36,3 +36,7 @@ desktop.ini
 
 # Isolated implementation workspaces.
 .worktrees/
+
+# Agent-run workspaces and local tool state. The agent runtime places its
+# worktrees under .claude/, which .worktrees/ above does not cover.
+.claude/
