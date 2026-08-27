@@ -90,8 +90,15 @@ These are the reason the output is worth trusting.
 
 1. ScriptRunner, **REST Endpoints**, **Add New**, **Custom endpoint**.
 2. Paste the contents of `jira/jiraDCprojectConfig.groovy`.
-3. Restrict it to `jira-administrators`.
-4. Open `/rest/scriptrunner/latest/custom/projectConfig`.
+3. Open `/rest/scriptrunner/latest/custom/projectConfig`.
+
+There is no restriction to set afterwards. The gate is `groups: ["jira-administrators"]`,
+declared on both entry points in the file itself and enforced by ScriptRunner before the
+script runs. Leaving that attribute off a ScriptRunner endpoint opens it to everyone,
+unauthenticated callers included, so it is not something to configure later and forget.
+
+If your administrators are not in a group called `jira-administrators`, change both
+occurrences before pasting the file, or you will lock yourself out of your own endpoint.
 
 Without a `project` parameter you get the project picker. Choosing a project takes you to a
 bookmarkable URL.
