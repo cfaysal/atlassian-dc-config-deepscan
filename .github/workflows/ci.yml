@@ -14,8 +14,28 @@ env:
 
 jobs:
   verify:
-    name: Parse check and offline tests
+    name: ${{ matrix.product }} parse check and offline tests
     runs-on: ubuntu-latest
+
+    # One leg per shipped endpoint. A single hard-coded path meant a new endpoint
+    # passed through zero gates while the run still reported green: a rule enforced
+    # for one product only is not enforced (Golden Rule 16).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - product: jira
+            endpoint: jira/jiraDCprojectConfig.groovy
+            tests: jira/tests/jiraDCprojectConfig.tests.groovy
+            banner: END OF THE JIRA-FREE BLOCK
+          - product: confluence
+            endpoint: confluence/confluenceDCspaceConfig.groovy
+            tests: confluence/tests/confluenceDCspaceConfig.tests.groovy
+            banner: END OF THE CONFLUENCE-FREE BLOCK
+          - product: confluence-probe
+            endpoint: confluence/tools/spaceConfigReachabilityProbe.groovy
+            tests: ""
+            banner: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -64,7 +84,7 @@ jobs:
       - name: Parse check
         run: |
           set -euo pipefail
-          F=jira/jiraDCprojectConfig.groovy
+          F='${{ matrix.endpoint }}'
           if [ ! -f "$F" ]; then
             echo "::error title=Missing::$F is not in the repository."
             exit 1
@@ -77,14 +97,19 @@ jobs:
       - name: Offline test suite
         run: |
           set -euo pipefail
-          F=jira/jiraDCprojectConfig.groovy
-          T=jira/tests/jiraDCprojectConfig.tests.groovy
+          F='${{ matrix.endpoint }}'
+          T='${{ matrix.tests }}'
+          BANNER='${{ matrix.banner }}'
+          if [ -z "$T" ]; then
+            echo "::notice title=No suite::$F ships without an offline suite."
+            exit 0
+          fi
           if [ ! -f "$T" ]; then
             echo "::notice title=Not present::Test suite missing, suite skipped."
             exit 0
           fi
           START=$(grep -n '^class Pc {' "$F" | cut -d: -f1)
-          END=$(( $(grep -n '^ \* END OF THE JIRA-FREE BLOCK$' "$F" | cut -d: -f1) - 2 ))
+          END=$(( $(grep -n "^ \* $BANNER$" "$F" | cut -d: -f1) - 2 ))
           if [ -z "$START" ] || [ "$END" -le "$START" ]; then
             echo "::error title=Cut markers moved::Could not locate the helper class block in $F."
             exit 1
