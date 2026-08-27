@@ -22,10 +22,16 @@ The endpoint is a single Groovy file and stays one, however long it gets. Splitt
 into modules over ScriptRunner script roots, or assembling it from parts at build time,
 have both been considered and both were declined.
 
-The reason is what this endpoint is for. An administrator opens a customer instance they
-do not own, pastes one file into the ScriptRunner console, and gets an answer. No script
-root, no distribution across cluster nodes, no deploy rights, no build step. For an audit
-tool you run on somebody else's system, that is half of what makes it usable.
+The reason is what this endpoint is for. An administrator drops one file into the script
+root of a customer instance they do not own, points a REST endpoint at it, and gets an
+answer. One file to place, one file to remove afterwards, nothing assembled at build time
+and nothing to keep in step across a cluster. For an audit tool you run on somebody else's
+system, that is half of what makes it usable.
+
+The file is far past the 99 000 character cap on an inline ScriptRunner script, so the
+script root is the only way in regardless. That is a consequence of the decision, not the
+reason for it: even at a tenth of the size, splitting it would mean handing an
+administrator a set of files that have to arrive together and stay in step.
 
 So the file is long, and the structure lives inside it: banner comments mark the blocks,
 and the Jira-free half is cut out by CI and unit tested. If a section grows unreadable,

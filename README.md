@@ -88,17 +88,46 @@ These are the reason the output is worth trusting.
 
 ## Installation
 
-1. ScriptRunner, **REST Endpoints**, **Add New**, **Custom endpoint**.
-2. Paste the contents of `jira/jiraDCprojectConfig.groovy`.
-3. Open `/rest/scriptrunner/latest/custom/projectConfig`.
+Install the script as a **file in your script root**, not as an inline script.
+
+1. Put `jira/jiraDCprojectConfig.groovy` into your ScriptRunner script root.
+2. Go to **Administration > ScriptRunner > REST Endpoints**.
+3. Choose **Custom endpoint**, switch it from inline to **File**, and point it at the file
+   you just placed.
+4. Save. ScriptRunner registers the endpoint under the name `projectConfig`.
+
+Pasting the code inline does not work here. ScriptRunner stores an inline script as a
+serialised configuration property, and that property is capped: saving a large one is
+refused with
+
+```
+Serialized value cannot be longer than 99,000 characters
+```
+
+The refusal happens while the endpoint configuration is saved, before Groovy is compiled or
+run, so it is not a Groovy limit. The cap counts the serialised value rather than the
+characters in the editor, and escaping adds to it, so a script somewhat below the number can
+already be rejected. This one is 348 000 characters, comfortably past it.
+
+A file in the script root has no such cap: the endpoint stores only the reference. It is
+also the better home for a script this size, because it can be versioned and diffed instead
+of living in a text box.
+
+Call it as an administrator:
+
+```
+https://<your-instance>/rest/scriptrunner/latest/custom/projectConfig
+```
 
 There is no restriction to set afterwards. The gate is `groups: ["jira-administrators"]`,
-declared on both entry points in the file itself and enforced by ScriptRunner before the
-script runs. Leaving that attribute off a ScriptRunner endpoint opens it to everyone,
+declared on both entry points in the file and enforced by ScriptRunner before the script
+runs. Leaving that attribute off a ScriptRunner endpoint opens it to everyone,
 unauthenticated callers included, so it is not something to configure later and forget.
 
-If your administrators are not in a group called `jira-administrators`, change both
-occurrences before pasting the file, or you will lock yourself out of your own endpoint.
+If your administrators are in a group under another name, change both occurrences. Get it
+wrong and the endpoint answers 403 until you correct it, which you can do at any time: the
+script is a file you own, and the endpoint configuration is a page every Jira administrator
+can reach.
 
 Without a `project` parameter you get the project picker. Choosing a project takes you to a
 bookmarkable URL.
