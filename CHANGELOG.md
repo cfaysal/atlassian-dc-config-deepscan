@@ -17,9 +17,10 @@ First working version.
   workflow's statuses and transitions, permission, notification and issue security schemes
   down to the resolved grant, project roles with actors, versions and components.
 - Custom fields are split into the ones a context names this project on, which are expanded
-  in full, and the ones that reach it only through a global context, which are named rather
-  than expanded. On an instance with hundreds of custom fields the second group is nearly all
-  of them, and expanding it buried the handful that answer the question.
+  in full, and the ones that reach it only through a global context, which are counted in one
+  line and not listed. On an instance with hundreds of custom fields the second group is
+  nearly all of them, its contents are identical on every project, and it buried the handful
+  that answer the question.
 - The row budget of the exported page is shared between sections instead of spent in section
   order, and a cut section keeps its heading and says so.
 - Priority scheme of the project with its priorities in picker order and the default for new

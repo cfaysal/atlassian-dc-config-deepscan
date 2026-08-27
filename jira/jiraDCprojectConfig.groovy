@@ -3859,21 +3859,19 @@ class Scan {
             }
             self.add(ownNode)
 
-            Nd globalNode = Nd.of("customFieldGroup", "Applies to every project")
+            /* Counted, not listed. These fields reach this project through a context
+             * that reaches every project, so the list is identical on every project on
+             * the instance and says nothing about this one. Eight hundred rows of it in
+             * a project configuration report are eight hundred rows the reader has to
+             * skip past to find the answer they came for. The number is worth knowing,
+             * the list is not, and the link goes where the list actually lives. */
+            Nd globalNode = Nd.of("customFieldGroup", "Reaching this project from a global context")
             globalNode.link(links.customFields(), null)
             if (everywhere.isEmpty()) {
-                globalNode.absent("Every custom field in scope is configured for this project.")
+                globalNode.absent("None. Every custom field in scope is configured for this project.")
             } else {
-                globalNode.val(Pc.plural(everywhere.size(), "custom field"))
-                /* One note on the group, not one per field. The same sentence written
-                 * eight hundred times is what buried the observations card before. */
-                globalNode.note("These reach this project through a context that reaches every " +
-                    "project on the instance. That makes them instance configuration rather " +
-                    "than configuration of this project, so they are named rather than " +
-                    "expanded. Open one to see its contexts.")
-                for (CustomField field : everywhere) {
-                    globalNode.add(globalFieldNode(field))
-                }
+                globalNode.val(Pc.plural(everywhere.size(), "custom field") +
+                    ", not listed here: the same list applies to every project on this instance")
             }
             self.add(globalNode)
         }
@@ -3903,18 +3901,6 @@ class Scan {
             }
         }
         return false
-    }
-
-    /* A field that reaches this project only through a global context: named, linked
-     * and typed, and not expanded. Its contexts are the same on every project, so
-     * they are a fact about the instance and belong on the field's own page. */
-    private Nd globalFieldNode(CustomField field) {
-        Nd node = Nd.of("customField", Pc.orNa(field.getName()))
-        node.ident(field.getId())
-        node.link(links.customField(field.getIdAsLong()), null)
-        String typeName = Pc.text(Pc.duck(field.getCustomFieldType(), "getName", null))
-        node.val(typeName == null ? Pc.orNa(field.getId()) : typeName)
-        return node
     }
 
     Nd customFieldNode(CustomField field, OptionsManager optionsManager) {

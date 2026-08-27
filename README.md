@@ -26,12 +26,11 @@ Every section is expanded, not summarised:
 - **Field configuration scheme**, per issue type, down to whether each field is required,
   hidden and which renderer it uses. Issue types that resolve to the same configuration are
   grouped under it instead of repeating it.
-- **Custom fields**, split by what the question actually is. A field whose context names
-  this project is expanded in full: its contexts, the other projects on them, their issue
-  types, option lists and defaults. A field that reaches the project only through a global
-  context is named, typed and linked, and not expanded - it reaches every project on the
-  instance in exactly the same way, which makes it instance configuration rather than an
-  answer about this project.
+- **Custom fields** that are configured for this project, meaning a context names it: the
+  contexts, the other projects on them, their issue types, option lists and defaults. Fields
+  that reach the project only through a global context are counted in one line and not
+  listed. That list is identical on every project of the instance, so it answers nothing
+  about this one; the line links to where it does belong.
 - **Workflow scheme** with every layer, the default layer included, and for each layer the
   workflow, its statuses, and per status every transition with its target, its counts of
   conditions, validators and post functions, and its transition screen.
@@ -152,12 +151,31 @@ link, which is the only outbound path in the file.
 
 The offline test suite is compiled together with the Jira-free classes cut out of the
 endpoint itself, so it always tests the shipped source rather than a copy that can drift.
+See [`jira/tests/README.md`](jira/tests/README.md) for what it covers, what it deliberately
+does not, and how to run it.
+
+The suite carries a control implementation of the naive renderer that cannot tell an empty
+section from an unreadable one, and asserts on every run that the shipped renderer keeps them
+apart where the control collapses them. A suite that has never been red proves nothing, so
+the discriminating power is measured rather than assumed.
+
 CI runs a parse check, that suite, a credential scan, and a check that application links are
 used only inside the declared transport section.
 
 What CI cannot do is resolve a Jira symbol. Before release the file is additionally compiled
 against a running instance's own classpath, and run through the static type checker against
 that same classpath.
+
+## Status
+
+Version 0.1. The endpoint is in active development and its interface may still change. What
+will not change is the reporting discipline described under Properties: no failed read
+rendered as an empty result, no deep link that is not backed by evidence, no issue counting,
+and no outbound call outside the Confluence export.
+
+The offline suite and the type check against a live instance's classpath are green. The
+report has not yet been run end to end against a production-sized instance by anyone but its
+author, so treat 0.1 as what it says it is.
 
 ## Licence
 
