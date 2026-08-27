@@ -141,6 +141,7 @@ import com.atlassian.jira.util.BuildUtilsInfo
 import com.atlassian.jira.util.I18nHelper
 import com.atlassian.jira.util.Page
 import com.atlassian.jira.util.PageRequests
+import com.atlassian.plugin.Plugin
 import com.atlassian.jira.workflow.AssignableWorkflowScheme
 import com.atlassian.jira.workflow.DraftWorkflowScheme
 import com.atlassian.jira.workflow.JiraWorkflow
@@ -5350,6 +5351,9 @@ class Scan {
      * answer was complete. */
     static final int JSM_PAGE_LIMIT = 100
 
+    /* The plugin key from the app's own atlassian-plugin.xml, not from memory. */
+    static final String JSM_PLUGIN_KEY = "com.atlassian.servicedesk"
+
     /* Every Service Management type is reached by name rather than by import: the
      * app is optional, and a class that is not there must not stop this file from
      * loading on an instance that never had it. Unlike Pc.duckAll this call does not
@@ -5371,15 +5375,42 @@ class Scan {
         return InvokerHelper.invokeMethod(target, method, arguments)
     }
 
+    /* Every Service Management type is loaded through the classloader of the plugin
+     * that exports it, never through Class.forName(name), which uses the caller's.
+     * The caller here is the script, and its loader hangs off ScriptRunner's bundle,
+     * which does not import every Service Management package. Measured in the
+     * DynamicImport-Package header of the running ScriptRunner bundle: api,
+     * api.portal, api.requesttype and api.util.paging are named, api.field,
+     * api.queue and api.sla.metrics are not, and there is no wildcard covering them.
+     * That is exactly the split the report showed - three sections reading, three
+     * raising ClassNotFoundException. The list is identical in 10.14.0 and 10.17.0,
+     * so it is not something a ScriptRunner upgrade resolves.
+     *
+     * Going around the import boundary is safe here only because no Service
+     * Management type is ever named statically in this file. Every call goes through
+     * jsmCall reflectively, so a class loaded by a foreign loader is never assigned
+     * to a variable whose type came from ours, and the identity mismatch that would
+     * normally make this a bad idea cannot arise.
+     *
+     * With the app absent the plugin is not found and the caller's loader is used, so
+     * the failure is the same ClassNotFoundException as before rather than a
+     * different and less obvious one. */
+    private static Class<?> jsmClass(String className) {
+        Plugin plugin = ComponentAccessor.getPluginAccessor().getPlugin(JSM_PLUGIN_KEY)
+        ClassLoader loader = (plugin == null) ? null : plugin.getClassLoader()
+        return (loader == null) ? Class.forName(className)
+                                : Class.forName(className, false, loader)
+    }
+
     private static Object jsmService(String className) {
-        return ComponentAccessor.getOSGiComponentInstanceOfType(Class.forName(className))
+        return ComponentAccessor.getOSGiComponentInstanceOfType(jsmClass(className))
     }
 
     /* Evidence for the argument order: javap -c of SimplePagedRequest shows the
      * (int, int) constructor writing the first argument to start and the second to
      * limit. */
     private static Object jsmPage(int limit) {
-        Class<?> type = Class.forName("com.atlassian.servicedesk.api.util.paging.SimplePagedRequest")
+        Class<?> type = jsmClass("com.atlassian.servicedesk.api.util.paging.SimplePagedRequest")
         return type.getConstructor(Integer.TYPE, Integer.TYPE)
             .newInstance(Integer.valueOf(0), Integer.valueOf(limit))
     }
@@ -5448,7 +5479,7 @@ class Scan {
         }
 
         try {
-            Class.forName("com.atlassian.servicedesk.api.ServiceDeskService")
+            jsmClass("com.atlassian.servicedesk.api.ServiceDeskService")
         } catch (Throwable ignored) {
             node.absent("Jira Service Management is not installed on this instance.")
             return node

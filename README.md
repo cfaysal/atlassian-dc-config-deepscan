@@ -215,21 +215,30 @@ deep link. The Confluence export wrote that project's page on the same instance.
 
 Still unproven, and named here rather than left to be assumed:
 
-- **The Service Management section is only partly proven.** Its first run on a service project
-  read the service desk, the customer portal and all request types. Three of its readers did
-  not resolve on that instance and reported `ClassNotFoundException` against
-  `RequestTypeFieldService`, `QueueService` and `TimeMetricService`, so request type fields,
-  queues and SLA time metrics are marked unreadable rather than empty. All three names are
-  correct and all three packages are exported in JSM 21.3.8, so the cause is not the names;
-  it has not been established yet and is not guessed at here.
+- **The Service Management section now reads end to end**, measured on JSM 21.3.8 with
+  ScriptRunner 10.17.0: service desk, customer portal, request types with their fields, queues
+  and SLA time metrics. It has been run on one such instance, not on many, so treat the
+  coverage as proven and the breadth as not.
 
-  That same first run also found a real defect, which is worth repeating because it is a trap
-  rather than a typo. The helper that dispatched every Service Management call was named
-  `call`, and every reader runs inside a closure. Inside a closure an unqualified
-  `call(a, b, c)` binds to `Closure.call`, the closure's own invocation operator, not to the
-  static method of the enclosing class, so the section died on its first line. It resolves
-  correctly from an ordinary method, which is why reading one call site proved nothing about
-  the others. The CI now refuses a bare `call(` outright.
+  Getting there turned up two things worth knowing before you adapt this file, because both
+  are traps rather than typos.
+
+  The first is that **ScriptRunner does not wire every Service Management package.** Its
+  `DynamicImport-Package` header names `api`, `api.portal`, `api.requesttype` and
+  `api.util.paging`, but not `api.field`, `api.queue` or `api.sla.metrics`, and there is no
+  wildcard covering them. `Class.forName(name)` uses the caller's classloader, which for a
+  script is ScriptRunner's, so those three raised `ClassNotFoundException` while their
+  neighbours resolved: a split that looks like three broken names and is not one. The header
+  is identical in 10.14.0 and 10.17.0, so upgrading does not help. The fix is to load each
+  type through the classloader of the plugin that exports it, which is safe here only because
+  no Service Management type is ever named statically in this file.
+
+  The second is that a helper named `call` is unusable in a file like this. Every reader runs
+  inside a closure, and inside a closure an unqualified `call(a, b, c)` binds to
+  `Closure.call`, the closure's own invocation operator, not to the static method of the
+  enclosing class, so the section died on its first line. It resolves correctly from an
+  ordinary method, which is why reading one call site proved nothing about the others. The CI
+  refuses a bare `call(` outright.
 - **The remark carry-over has been exercised offline but not on an instance.** That needs two
   exports in a row with a remark typed between them. It is the one path that loses an
   administrator's own text if it misbehaves, so treat it as unproven until you have done it
