@@ -914,6 +914,24 @@ ok("and no section claims to be cut", !fresh.storage.contains("This section is n
  * because the remark carry-over is the one thing on this page that is not
  * reproducible from the report. */
 
+int sumSectionCounts(String html) {
+    int total = 0
+    String needle = 'section-count muted">'
+    int at = html.indexOf(needle)
+    while (at >= 0) {
+        int start = at + needle.length()
+        int end = start
+        while (end < html.length() && Character.isDigit(html.charAt(end))) {
+            end++
+        }
+        if (end > start) {
+            total += Integer.parseInt(html.substring(start, end))
+        }
+        at = html.indexOf(needle, end)
+    }
+    return total
+}
+
 int countOf(String haystack, String needle) {
     int total = 0
     int at = haystack.indexOf(needle)
@@ -1165,6 +1183,41 @@ ok("and carries no path", globalGrouped.values().iterator().next().get(0).isEmpt
 String globalHtml = Render.html(globalReport, [:] as LinkedHashMap, false)
 ok("the card shows it", globalHtml.contains("The instance version could not be read."))
 ok("without an empty location line", !globalHtml.contains("<div class=\"muted\"></div>"))
+
+/* ---- 26. The section headers add up to the headline ---------------------- */
+
+/* Measured on a real project: fourteen section headers summed to 11 657 while the
+ * headline on the same page said 11 671 configuration items, and every section showed
+ * one more item on the exported Confluence page than in the report it came from. The
+ * section header counted its descendants and left itself out; the headline and the
+ * export both count it. Nothing was wrong with the data, but a reader comparing two
+ * numbers on one page concludes the two views disagree. */
+
+Report countReport = new Report()
+countReport.projectKey = "SCRUM"
+countReport.projectName = "Scrum Project"
+countReport.instanceBaseUrl = "https://jira.example.com"
+Nd countA = countReport.section("issueTypeScheme", "Issue types: X")
+countA.add(Nd.of("issueType", "Bug").add(Nd.of("issueTypeField", "Description")))
+countA.add(Nd.of("issueType", "Task"))
+Nd countB = countReport.section("versions", "Versions")
+countB.add(Nd.of("version", "1.0"))
+
+/* Vier: der Abschnittsknoten, Bug, dessen Description, Task. Plus zwei: der
+ * Abschnittsknoten und 1.0. */
+check("the headline counts the section nodes too", countReport.nodeCount(), 6)
+
+String countHtml = Render.html(countReport, [:] as LinkedHashMap, false)
+ok("the first header counts itself", countHtml.contains('>4 items</span>'))
+ok("the second header counts itself", countHtml.contains('>2 items</span>'))
+
+/* The property, not the two numbers: what the headers say must add up to what the
+ * headline says. */
+check("the section headers add up to the headline",
+    sumSectionCounts(countHtml), countReport.nodeCount())
+
+/* Inside the tree an inner node still reports what it hides, not what it is. */
+ok("an inner node counts its descendants", countHtml.contains('node-count muted">1</span>'))
 
 /* ---- result --------------------------------------------------------------- */
 

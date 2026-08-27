@@ -1331,8 +1331,15 @@ class Render {
         out.append(open ? "&#9662;" : "&#9656;").append("</button>")
         out.append("<h2 class=\"section-title\">").append(Pc.html(Pc.orNa(node.label))).append("</h2>")
         if (!node.children.isEmpty()) {
+            /* The section counts itself, the way the headline figure and the exported
+             * page do. Counting only the descendants made every section header one
+             * short of what the page above it claimed: on a real project the fourteen
+             * headers added up to 11 657 while the headline said 11 671, and the same
+             * section then showed a different number in Confluence than in the report
+             * it came from. Inside the tree the count on an inner node stays the number
+             * of things it hides, which is what a reader of a collapsed node asks. */
             out.append("<span class=\"section-count muted\">")
-            out.append(String.valueOf(node.countDescendants())).append(" items</span>")
+            out.append(String.valueOf(1 + node.countDescendants())).append(" items</span>")
         }
         /* A section that could not be read says so on its header, where it stays
          * visible while the section is closed. Behind the fold, a failed read turns

@@ -209,9 +209,25 @@ will not change is the reporting discipline described under Properties: no faile
 rendered as an empty result, no deep link that is not backed by evidence, no issue counting,
 and no outbound call outside the Confluence export.
 
-The offline suite and the type check against a live instance's classpath are green. The
-report has not yet been run end to end against a production-sized instance by anyone but its
-author, so treat 0.1 as what it says it is.
+**Measured on a production-sized instance**, Jira 11.3.10, on a project with 11 671
+configuration items across 14 sections: **1702 ms**, nothing unreadable, one item without a
+deep link. The Confluence export wrote that project's page on the same instance.
+
+Still unproven, and named here rather than left to be assumed:
+
+- **The Service Management section has never run.** It is reached entirely by name, because
+  the app is optional, and no instance with a service project has been available to run it
+  against. The one failure mode that would have answered *wrongly* rather than failing - the
+  query builders being immutable, which would have silently returned the request types of the
+  whole instance - was ruled out against the shipped bytecode of JSM 21.3.8, where both
+  builders mutate and return `this`. What remains would fail visibly.
+- **The remark carry-over has been exercised offline but not on an instance.** That needs two
+  exports in a row with a remark typed between them. It is the one path that loses an
+  administrator's own text if it misbehaves, so treat it as unproven until you have done it
+  once on your own instance.
+- On a project of that size the exported page hits the row cap: 5000 of 11 671 items. Every
+  section keeps its heading and the ones that were cut say so, but more than half of the
+  detail reaches the report and not the page.
 
 ## Licence
 
