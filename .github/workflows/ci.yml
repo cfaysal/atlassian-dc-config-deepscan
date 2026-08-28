@@ -242,3 +242,114 @@ jobs:
       # better code.
       - name: Assert the shared table renderer has not drifted
         run: python3 tools/shared-renderer-drift.py
+
+      # Slice 1 of OP-1005 shipped a literal 0x00 inside a string. Git, grep, diff
+      # and every review tool then treated the file as BINARY: the diff was
+      # unreadable, the offline suite could not be cut out of it and CI broke on a
+      # change nobody could see. The cause was a CSS escape inside a Groovy string,
+      # where a backslash followed by digits is an octal escape and \2 is a control
+      # character - two escaping layers over one glyph.
+      #
+      # The offline suite asserts that no control character reaches the rendered
+      # PAGE. That is a different claim from this one and neither implies the
+      # other: a control byte can sit in a comment, in a table of constants or in
+      # a string the suite never renders, and break every text tool just the same.
+      # This gate is about the SOURCE.
+      #
+      # Tab, newline and carriage return are the three that legitimately appear in
+      # text. Everything else below 0x20, plus DEL, is refused.
+      - name: Refuse a raw control byte in any tracked text file
+        run: |
+          set -uo pipefail
+          fail=0
+          for f in $(git ls-files); do
+            case "$f" in *.png|*.jpg|*.pdf) continue;; esac
+            hits=$(LC_ALL=C grep -nP '[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]' "$f" || true)
+            if [ -n "$hits" ]; then
+              echo "::error file=$f::Raw control byte in the source. Text tools treat this file as binary. Write the glyph as a literal character, never as an escape that two layers will read."
+              echo "$hits" | LC_ALL=C sed -n '1,5p' | cat -v
+              fail=1
+            fi
+          done
+          exit $fail
+
+      # This endpoint claims, in its own header, that every statement it issues is
+      # a SELECT, and it backs that with a read-only SAL executor. The claim is
+      # worth only as much as its enforcement: a reviewer reading 6000 lines will
+      # eventually miss one. Comment lines are excluded so the rule can be
+      # explained without tripping over itself.
+      #
+      # Each verb is matched in its SQL SHAPE rather than as a bare word. A
+      # permission GRANT is the subject matter of this endpoint and the word
+      # appears in prose in dozens of strings, so the pattern requires the object
+      # that a real GRANT statement carries. A gate that cries wolf gets loosened
+      # by the next person in a hurry, and then it guards nothing.
+      - name: Assert every statement is a SELECT
+        run: |
+          set -uo pipefail
+          fail=0
+          files=$(git ls-files '*.groovy')
+          [ -z "$files" ] && exit 0
+          write='"[^"]*\b(INSERT[[:space:]]+INTO|UPDATE[[:space:]]+[a-z_]+[[:space:]]+SET|DELETE[[:space:]]+FROM|DROP[[:space:]]+(TABLE|INDEX|VIEW)|ALTER[[:space:]]+TABLE|TRUNCATE[[:space:]]+TABLE|CREATE[[:space:]]+(TABLE|INDEX|VIEW)|GRANT[[:space:]]+(ALL|SELECT|INSERT|UPDATE|DELETE|EXECUTE)|MERGE[[:space:]]+INTO)\b'
+          for f in $files; do
+            hits=$(grep -nEi "$write" "$f" | grep -vE '^[0-9]+:[[:space:]]*(\*|//|/\*)' || true)
+            if [ -n "$hits" ]; then
+              echo "::error file=$f::A statement that is not a SELECT. This endpoint is read-only and says so in its header."
+              echo "$hits"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      # The script has to run on ScriptRunner 8.x to 9.x, which is javax.ws.rs, and
+      # on 10.x and above, which is jakarta.ws.rs. The namespace follows the
+      # SCRIPTRUNNER version rather than the product version, so naming either one
+      # statically pins the file to one line of ScriptRunner and it will not even
+      # compile on the other. The JAX-RS Response class is resolved at runtime for
+      # exactly this reason. An import is easy to add back by habit, so it is
+      # refused here rather than remembered.
+      - name: Refuse a jakarta or javax import
+        run: |
+          set -uo pipefail
+          fail=0
+          files=$(git ls-files '*.groovy')
+          [ -z "$files" ] && exit 0
+          for f in $files; do
+            hits=$(grep -nE '^[[:space:]]*import[[:space:]]+(jakarta|javax)\.' "$f" || true)
+            if [ -n "$hits" ]; then
+              echo "::error file=$f::A jakarta or javax import pins this file to one ScriptRunner line. Resolve the type at runtime instead."
+              echo "$hits"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      # SPACEPERMISSIONS holds the GLOBAL permissions of the instance as well as
+      # the per-space grants, and the global rows carry a NULL spaceid: measured on
+      # the reference instance, SYSTEMADMINISTRATOR, ADMINISTRATECONFLUENCE,
+      # USECONFLUENCE, CREATESPACE, PERSONALSPACE and BROWSEALLGROUPMEMBERS.
+      #
+      # An estate query that aggregates that table without restricting to rows that
+      # HAVE a spaceid reports the system-administrator right of the instance as a
+      # grant on some space. It produces a plausible number, so no test of the
+      # rendering catches it and no reviewer notices. The guard is on the statement
+      # text because that is where the mistake is made.
+      - name: Assert the estate sweep restricts SPACEPERMISSIONS to per-space rows
+        run: |
+          set -uo pipefail
+          F=confluence/confluenceDCspaceConfig.groovy
+          [ -f "$F" ] || { echo "::notice::$F is not in the repository."; exit 0; }
+          sweep=$(sed -n '/static final String SWEEP_SQL =/,/^$/p' "$F")
+          if [ -z "$sweep" ]; then
+            echo "::error file=$F::SWEEP_SQL not found. The estate sweep statement is the thing this gate exists to check."
+            exit 1
+          fi
+          fail=0
+          echo "$sweep" | grep -q 'FROM spacepermissions p ' || {
+            echo "::error file=$F::SWEEP_SQL no longer reads spacepermissions the way this gate understands."; fail=1; }
+          echo "$sweep" | grep -q 'WHERE p.spaceid IS NOT NULL' || {
+            echo "::error file=$F::SWEEP_SQL aggregates SPACEPERMISSIONS without restricting to rows that carry a spaceid. The global permissions of the instance would be counted as grants on a space."; fail=1; }
+          echo "$sweep" | grep -q 'ON g.sid = s.spaceid' || {
+            echo "::error file=$F::SWEEP_SQL no longer joins the per-space aggregate on spaceid."; fail=1; }
+          [ "$fail" = 0 ] && echo "The estate sweep joins on spaceid and excludes the global permission rows."
+          exit $fail

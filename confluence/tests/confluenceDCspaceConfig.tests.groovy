@@ -199,11 +199,22 @@ check("an unreadable section is counted", broken.unreadableCount(), 1)
 /* The probe that preceded this file returned exactly 25 permission rows, which
  * was its own cap, and said nothing. The output was indistinguishable from a
  * space with 25 grants. */
-Nd capped = Nd.of("spacePermissions", "Permissions").cappedAt(2000, "grants")
+Nd capped = Nd.of("spacePermissions", "Permissions")
+    .cappedAt(2000, "grants", "permission type, then grant id", "The Permissions screen lists them all.")
 check("a capped node is truncated", capped.state, Pc.TRUNCATED)
 ok("the cap number is in the node", capped.notes.join(" ").contains("2000"))
 ok("the node says the population is larger",
-    capped.notes.join(" ").contains("The full population is larger and was not read."))
+    capped.notes.join(" ").contains("not the number that exists"))
+
+/* "The first N" is only half an announcement. The landing page said "the first
+ * 2000" of 5038 spaces and never said the order was by space name, so a reader
+ * could not tell whether the tail of an alphabet or an arbitrary slice had been
+ * cut, nor go and find it. Both halves are arguments now, so no call site can
+ * forget one. */
+ok("a cap names the ordering it cut by",
+    capped.notes.join(" ").contains("ordered by permission type, then grant id"))
+ok("and the route to what it cut",
+    capped.notes.join(" ").contains("The Permissions screen lists them all."))
 
 Report cappedReport = new Report()
 cappedReport.spaceKey = "DEV"
@@ -284,41 +295,267 @@ check("fractional seconds are dropped", Pc.stamp("2026-04-24 07:20:52.804"), "20
 check("a stamp without them survives", Pc.stamp("2026-04-24 07:20:52"), "2026-04-24 07:20:52")
 check("no stamp", Pc.stamp(null), Pc.NA)
 
-/* ---- 9. the picker ------------------------------------------------------- */
+/* ---- 9. the landing page is an estate sweep, not a picker ---------------- */
 
-check("the whole population", Render.countLine(12, 12), "12 spaces")
-check("a filtered population", Render.countLine(3, 12), "3 of 12 spaces match")
-check("no match names the population", Render.countLine(0, 12), "no match out of 12 spaces")
-check("the row cap is announced", Render.countLine(100, 100), "100 spaces, showing the first 40")
+/* The page it replaced listed the first 2000 of 5038 space names. There is no
+ * question an administrator asks that a truncated alphabet of names answers, so
+ * the landing page now carries one row per space for every space, with the
+ * stored facts they triage on, and every key still links into the per-space
+ * report. */
+
+check("the whole population", Render.estateCountLine(12, 12), "12 spaces")
+check("a filtered population", Render.estateCountLine(3, 12), "3 of 12 spaces match")
+check("no match names the population", Render.estateCountLine(0, 12), "no match out of 12 spaces")
+
+/* The old count line ended in ", showing the first 40". Nothing is windowed any
+ * more: every delivered row is on the page and visible, because an administrator
+ * who cannot see all of them cannot analyse all of them. */
+ok("no row window is announced, because there is none",
+    !Render.estateCountLine(5038, 5038).contains("showing the first"))
+
+def sweepRow = { String key, String name, String type, String status,
+                 String grants, String anon, String admins, String cats,
+                 String css, String stores, String storeCount ->
+    return ([key: key, name: name, type: type, status: status, grants: grants,
+             anon: anon, admins: admins, categories: cats, stylesheet: css,
+             appconfig: stores, appconfigCount: storeCount] as LinkedHashMap)
+}
+
+def sweepOf = { List<Map<String, String>> rows, Map<String, String> columnFails ->
+    return ([rows: rows, columnFailures: columnFails, failure: null,
+             truncated: Boolean.FALSE, cap: Integer.valueOf(20000),
+             order: "space key"] as LinkedHashMap)
+}
 
 Report shell = new Report()
 shell.instanceBaseUrl = "https://confluence.example.org"
-List<Map<String, String>> rows = []
-rows << ([key: "DEV", name: "Development", type: "global", status: "CURRENT"] as LinkedHashMap)
-rows << ([key: "~cfaysal", name: "Faysal", type: "personal", status: "CURRENT"] as LinkedHashMap)
-rows << ([key: "OLD", name: "Retired", type: "global", status: "ARCHIVED"] as LinkedHashMap)
-String pickerPage = Render.picker(shell, rows, "", 3)
+List<Map<String, String>> estateRows = []
+estateRows << sweepRow("DEV", "Development", "global", "CURRENT", "44", "12", "3", "0", "0", "plugin settings, Bandana", "2")
+estateRows << sweepRow("ENG", "Engineering", "global", "CURRENT", "0", "0", "0", "2", "1", "plugin settings", "1")
+estateRows << sweepRow("HR", "People", "global", "CURRENT", "9", "0", "0", "0", "0", "", "0")
+estateRows << sweepRow("~cfaysal", "Faysal", "personal", "CURRENT", "6", "0", "1", "0", "0", "", "0")
+estateRows << sweepRow("OLD", "Retired", "global", "ARCHIVED", "5", "0", "1", "0", "0", "", "0")
 
-ok("the picker links a space by key", pickerPage.contains("?space=DEV"))
-ok("a personal space key is encoded", pickerPage.contains("?space=%7Ecfaysal"))
-ok("a personal space says so", pickerPage.contains("personal</span>"))
-ok("an archived space says so", pickerPage.contains("archived</span>"))
-ok("the picker does not claim a cap it did not hit", !pickerPage.contains("This list is not complete"))
+String estatePage = Render.estate(shell, sweepOf(estateRows, [:] as LinkedHashMap), "")
 
-/* A read cap on the picker hides the space somebody is looking for, so it is
- * announced next to the list rather than in a log. */
-String cappedPicker = Render.picker(shell, rows, "", 5038)
-ok("a capped picker says so", cappedPicker.contains("This list is not complete"))
-ok("and names the whole population", cappedPicker.contains("5038"))
-ok("and names what it holds", cappedPicker.contains("the first 3"))
+ok("the sweep links a space by key", estatePage.contains("?space=DEV"))
+ok("a personal space key is encoded", estatePage.contains("?space=%7Ecfaysal"))
+ok("every delivered row is on the page", estatePage.contains("?space=OLD"))
+check("and no row was dropped", estatePage.split("[?]space=", -1).length - 1, estateRows.size())
+ok("a personal space says so", estatePage.contains("Personal space"))
+ok("an archived space says so", estatePage.contains("Archived"))
+ok("the sweep does not claim a cap it did not hit", !estatePage.contains("This sweep is not complete"))
 
-/* A picker that could not read the list says that, rather than showing nothing
- * and letting the reader conclude the instance has no spaces. */
-Report brokenShell = new Report()
-brokenShell.globalDiagnostics.add("The space list could not be read: no executor.")
-String brokenPicker = Render.picker(brokenShell, [], "", 0)
-ok("a failed list is not an empty instance", brokenPicker.contains("could not be read"))
-ok("and is marked as a suppressed read", brokenPicker.contains("Some reads were suppressed"))
+/* The row of one space, so an assertion can be about THAT space rather than
+ * about the page containing a substring somewhere. A page-wide contains() is how
+ * a test passes for the wrong reason: "anon" is also in the class name col-anon
+ * on every single row. */
+def rowOf = { String page, String key ->
+    int anchor = page.indexOf('?space=' + key + '"')
+    if (anchor < 0) { return null }
+    int open = page.lastIndexOf('<tr ', anchor)
+    int close = page.indexOf('</tr>', anchor)
+    return open < 0 || close < 0 ? null : page.substring(open, close)
+}
+def flagsOf = { String page, String key ->
+    String row = rowOf(page, key)
+    if (row == null) { return "no such row" }
+    int at = row.indexOf('data-flags="')
+    return at < 0 ? "no flags" : row.substring(at + 12, row.indexOf('"', at + 12))
+}
+
+/* A row that is absent must FAIL an assertion, never throw one. A harness that
+ * throws stops the run and hides every assertion after it: the mutation that
+ * made the sweep drop rows was detected by a NullPointerException rather than by
+ * the assertion written for it, which is detection by accident. */
+def rowText = { String page, String key -> rowOf(page, key) ?: "" }
+
+ok("the row helper finds a row", rowOf(estatePage, "DEV") != null)
+ok("and does not find one that is not there", rowOf(estatePage, "NOSUCH") == null)
+ok("and a missing row fails an assertion rather than throwing one",
+    !rowText(estatePage, "NOSUCH").contains("anything"))
+
+/* Zero explicit grants is a configuration state - the defaults apply - and is
+ * rendered as words rather than as a bare 0 in a column of numbers, which reads
+ * as "nothing found" to anyone scanning. It is also NOT unreadable: the
+ * statement ran and returned a zero. */
+ok("no explicit grants is written out as a state, on the space that has none",
+    rowText(estatePage, "ENG").contains("none, defaults apply"))
+ok("and that row carries no unreadable cell",
+    !rowText(estatePage, "ENG").contains("state-unreadable"))
+ok("a space that HAS grants shows the number instead",
+    rowText(estatePage, "DEV").contains(">44<")
+        && !rowText(estatePage, "DEV").contains("none, defaults apply"))
+
+/* Both traps of this sweep have a visible, per-row consequence. */
+check("the space granting anonymous access carries that flag and no other case",
+    flagsOf(estatePage, "DEV"), "anon app")
+check("a space with grants but no administrator is flagged ownerless",
+    flagsOf(estatePage, "HR"), "noadmin orphan")
+check("a space with no grants at all is a different case, and is not ownerless",
+    flagsOf(estatePage, "ENG"), "nogrants noadmin app categories css")
+check("an archived space carries the archived flag", flagsOf(estatePage, "OLD"), "archived")
+/* The key is URL-encoded in the link, so the row is looked up by the encoded
+ * form. A personal space key is derived from a user key and is not URL-safe. */
+check("and a personal space the personal one", flagsOf(estatePage, "%7Ecfaysal"), "personal")
+ok("a space with an administrator is not flagged as missing one",
+    !flagsOf(estatePage, "DEV").contains("noadmin"))
+
+/* The two no-administrator numbers are reported separately, because a space with
+ * no grants at all is a space on the defaults while a space that has grants and
+ * no SETSPACEPERMISSIONS row is a space somebody configured and left ownerless.
+ * Of the five rows above: ENG and HR have no administrator, and HR has grants. */
+ok("the summary counts spaces with no administrator",
+    estatePage.contains("with no space administrator"))
+ok("and counts the ownerless ones separately",
+    estatePage.contains("of those have grants but no administrator"))
+
+/* ---- 9b. an unreadable column is never a measured zero ------------------- */
+
+/* The failure this whole report exists to prevent. A side statement that failed
+ * must not leave a column of zeroes behind: "no space has a category" and "the
+ * categories were not read" are different sentences and only one is true. */
+Map<String, String> brokenColumnFail = [categories: "The table label does not carry the column namespace."] as LinkedHashMap
+String brokenColumn = Render.estate(shell, sweepOf(estateRows, brokenColumnFail), "")
+ok("an unreadable column says so above the table",
+    brokenColumn.contains("Categories column could not be read"))
+ok("and names the reason", brokenColumn.contains("does not carry the column namespace"))
+/* EVERY cell in that column, not "the page mentions unreadable somewhere", and
+ * counted inside the table body so the CSS rule of the same name cannot make the
+ * assertion pass on its own. */
+def bodyOf = { String page ->
+    int open = page.indexOf('<tbody id="estateBody">')
+    return open < 0 ? "" : page.substring(open, page.indexOf("</tbody>", open))
+}
+check("every row cell in the column is marked unreadable, and exactly those",
+    bodyOf(brokenColumn).split("state-unreadable", -1).length - 1, estateRows.size())
+check("and a healthy column leaves no unreadable cell at all",
+    bodyOf(estatePage).split("state-unreadable", -1).length - 1, 0)
+ok("the cell of a space with two categories no longer claims two",
+    !rowText(brokenColumn, "ENG").contains(">2<"))
+ok("and it does not claim zero either",
+    !rowText(brokenColumn, "HR").contains("col-categories num\" data-sort=\"0\">0<"))
+ok("its summary tile is unreadable rather than a count",
+    brokenColumn.contains("with space categories"))
+ok("a column that WAS read is untouched by another column failing",
+    rowText(brokenColumn, "ENG").contains("none, defaults apply"))
+ok("and the other columns still carry their numbers",
+    rowText(brokenColumn, "DEV").contains(">44<"))
+
+/* ---- 9c. a failed sweep is not an empty instance ------------------------- */
+
+Map<String, Object> deadSweep = [rows: [], columnFailures: [:] as LinkedHashMap,
+    failure: "The SAL read-only executor factory resolved but no component was returned.",
+    truncated: Boolean.FALSE, cap: Integer.valueOf(20000), order: "space key"] as LinkedHashMap
+String deadPage = Render.estate(shell, deadSweep, "")
+ok("a failed sweep says so", deadPage.contains("The estate could not be read"))
+ok("and names the reason", deadPage.contains("no component was returned"))
+ok("and refuses to read as an instance with no spaces",
+    deadPage.contains("No row below is missing: none was read at all."))
+ok("and prints no summary it did not measure", !deadPage.contains("spaces, every one of them below"))
+/* And no table either. An empty table under the banner still carries a count
+ * line, and "no match out of 0 spaces" is a measurement of a population that was
+ * never read. */
+ok("and no table at all", !deadPage.contains("<tbody id=\"estateBody\">"))
+ok("so it cannot report a population it never read",
+    !deadPage.contains("out of 0 spaces"))
+
+/* A value that is not a number is not a zero either, even when its column read
+ * fine. */
+Map<String, String> odd = ([key: "ODD", name: "Odd", type: "global", status: "CURRENT",
+    grants: "not a number", anon: "0", admins: "1", categories: "0", stylesheet: "0",
+    appconfig: "", appconfigCount: "0"] as LinkedHashMap)
+String oddPage = Render.estate(shell, sweepOf([odd], [:] as LinkedHashMap), "")
+ok("an unparseable count is unreadable, not zero",
+    rowText(oddPage, "ODD").contains("state-unreadable"))
+ok("and is not reported as a space running on the defaults",
+    !rowText(oddPage, "ODD").contains("none, defaults apply"))
+
+/* ---- 9d. a cut announces its ordering and the route past it -------------- */
+
+Map<String, Object> cutSweep = sweepOf(estateRows, [:] as LinkedHashMap)
+cutSweep.put("truncated", Boolean.TRUE)
+String cutPage = Render.estate(shell, cutSweep, "")
+ok("a cut sweep says so", cutPage.contains("This sweep is not complete"))
+ok("and names what it holds", cutPage.contains("the first 5 spaces"))
+ok("and the ORDER it cut by, which the old banner never did",
+    cutPage.contains("ordered by space key"))
+ok("and how to reach what was cut",
+    cutPage.contains("putting its key in the space parameter"))
+ok("and calls the number its own rather than the population",
+    cutPage.contains("this report's own cap and not the number that exists"))
+
+/* ---- 9e. no round trip, and no state-changing address -------------------- */
+
+/* Filtering and sorting are client-side over the delivered rows on purpose: the
+ * page has to keep working after it has been saved or mailed on. */
+ok("the sweep issues no request of its own",
+    !estatePage.contains("XMLHttpRequest") && !estatePage.contains("fetch("))
+String estateLower = estatePage.toLowerCase(Locale.ROOT)
+boolean estateForbidden = false
+for (String word : forbidden) {
+    if (estateLower.contains(word)) {
+        estateForbidden = true
+    }
+}
+ok("no state-changing address reaches the sweep", !estateForbidden)
+ok("no do-verb action reaches the sweep", !(estateLower =~ /\/do[a-z]+\.action/))
+
+/* A control character in the page is the bug that made this file read as binary
+ * once already. Built from the code point so this suite never contains one. */
+boolean estateControl = false
+for (int cp = 0; cp < 32; cp++) {
+    if (cp == 9 || cp == 10 || cp == 13) {
+        continue
+    }
+    if (estatePage.indexOf(String.valueOf((char) cp)) >= 0) {
+        estateControl = true
+    }
+}
+ok("no control character reaches the sweep", !estateControl)
+
+/* ---- 9f. the columns are declared once ----------------------------------- */
+
+/* The header, the body and the sort all read one list, so a column cannot exist
+ * in one of the three and be missing from the other two. */
+ok("every declared column has a heading in the table", Render.SWEEP_COLUMNS.every {
+    estatePage.contains('<th class="col-' + it.get(0))
+})
+ok("and an explanation under it", Render.SWEEP_COLUMNS.every {
+    estatePage.contains(it.get(3))
+})
+check("the heading lookup answers for a real column", Render.columnHeading("anon"), "Anonymous")
+check("and returns the id rather than throwing for one it does not know",
+    Render.columnHeading("nosuchcolumn"), "nosuchcolumn")
+
+/* ---- 9g. a count that is not a number is not a zero ---------------------- */
+
+check("a stored count reads as its number", Render.asCount("12"), 12)
+check("a measured none reads as zero", Render.asCount("0"), 0)
+check("nothing at all is not a zero", Render.asCount(null), -1)
+check("and neither is a value that is not a number", Render.asCount("many"), -1)
+check("whitespace around a number is not a failure", Render.asCount(" 7 "), 7)
+
+/* ---- 9h. the store namespace rule, wildcards and all --------------------- */
+
+/* The per-space form of a property-store namespace is <plugin namespace>:<KEY>
+ * and the bare form is the key itself, both measured on the instance. The SQL
+ * shape of this rule would be LIKE '%:' || spacekey, where an underscore in a
+ * space key is a WILDCARD - so it is done here, on strings, with no wildcard in
+ * sight. */
+check("the suffixed form yields the space key",
+    Pc.storeSpaceKey("com.atlassian.confluence.blueprints.plugin-module-state:ENG"), "ENG")
+check("the bare form is the space key itself", Pc.storeSpaceKey("DEV"), "DEV")
+check("the last colon wins", Pc.storeSpaceKey("a:b:DEV"), "DEV")
+check("a trailing colon names no space", Pc.storeSpaceKey("com.example:"), null)
+check("nothing names no space", Pc.storeSpaceKey(null), null)
+check("and neither does blank", Pc.storeSpaceKey("   "), null)
+/* The wildcard case, which is the whole reason this is not SQL. A key holding an
+ * underscore must match only itself. */
+check("an underscore is a character here, not a wildcard",
+    Pc.storeSpaceKey("com.example:A_C"), "A_C")
+ok("so it does not answer for a key that a LIKE pattern would have matched",
+    Pc.storeSpaceKey("com.example:ABC") != "A_C")
 
 /* ---- 10. no state-changing URL reaches a rendered page ------------------- */
 

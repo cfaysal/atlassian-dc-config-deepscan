@@ -24,6 +24,30 @@
  *   this space configured", never "how much content is in it". That keeps the run
  *   cheap enough to be harmless on a production instance.
  *
+ * The landing page: an estate sweep, not a picker
+ *   Called without a space, this endpoint returns ONE ROW PER SPACE for EVERY
+ *   space, carrying the stored facts an administrator triages on: key, name,
+ *   type, status, explicit grant count, anonymous access, space administrator
+ *   present, app configuration present, space categories and custom stylesheet.
+ *   Each key links into the per-space report, so it is still a picker - it just
+ *   answers a question before asking for a click.
+ *
+ *   It used to be a list of space names capped at 2000. On the instance this was
+ *   built against that was 2000 of 5038, which is not a tool: an administrator
+ *   who cannot see the whole estate cannot triage the whole estate.
+ *
+ *   The sweep is FIVE statements in one read-only connection and not one of them
+ *   is per space. Measured over 5038 spaces: 46 ms for the core statement and
+ *   0.7 ms for the four side statements. The per-space report is 103 ms, so the
+ *   same answer by iteration would be roughly 8.6 minutes.
+ *
+ *   Every column is a STORED fact. Anything Confluence COMPUTES - an effective
+ *   permission with its group expansion, a theme resolved through inheritance -
+ *   stays in the per-space report. A sweep row says "worth looking at here"; it
+ *   never says "here is the verdict". Filtering and sorting run in the browser
+ *   over the rows already delivered, so the page makes no request after it is
+ *   loaded and keeps working once it has been saved or mailed on.
+ *
  * Read paths, and the rule that decides between them
  *   SQL for what Confluence stores. API for what Confluence computes.
  *
@@ -65,7 +89,8 @@
  *
  * Parameters
  *   space=<KEY>               none      the space to report on. Without it the
- *                                       endpoint renders the space picker.
+ *                                       endpoint sweeps the whole estate: see
+ *                                       below.
  *   format=html|json|csv      default html
  *   depth=full|collapsed      default collapsed   collapsed opens the sections
  *                                                  and leaves every card inside
@@ -502,6 +527,31 @@ class Pc {
 
     /* "1 grants" is the kind of detail that makes a reader distrust the numbers
      * next to it. */
+    /* The space key a property-store namespace refers to, or null when it names
+     * no space. The per-space form is the plugin namespace, a colon and the SPACE
+     * KEY; the bare form is the space key itself. Both were measured on the
+     * instance.
+     *
+     * This lives here, in the Confluence-free block, because it is a string rule
+     * with a trap in it and a string rule with a trap in it has to be tested
+     * rather than reviewed. The trap: the obvious implementation is in SQL, as
+     * namespace LIKE '%:' || spacekey, and a space key holding an underscore or a
+     * percent sign - both legal, and a personal space key is derived from a user
+     * key - becomes a LIKE WILDCARD there and starts matching namespaces that
+     * belong to other spaces. Taking the text after the last colon has no
+     * wildcard in it at all. */
+    static String storeSpaceKey(String namespace) {
+        String value = text(namespace)
+        if (value == null) {
+            return null
+        }
+        int colon = value.lastIndexOf(":")
+        if (colon < 0) {
+            return value
+        }
+        return colon + 1 < value.length() ? value.substring(colon + 1) : null
+    }
+
     static String plural(int count, String noun) {
         return String.valueOf(count) + " " + noun + (count == 1 ? "" : "s")
     }
@@ -920,12 +970,20 @@ class Nd {
     /* A cap that was reached says so IN the node, with the number. The probe that
      * preceded this file returned exactly 25 permission rows - its own cap - and
      * said nothing, so the output was indistinguishable from a space with 25
-     * grants. A cap nobody can see is a silent lie about the population. */
-    Nd cappedAt(int cap, String what) {
+     * grants. A cap nobody can see is a silent lie about the population.
+     *
+     * Saying "the first N" is only half an announcement. The first N BY WHAT? A
+     * reader who does not know the ordering cannot tell whether what was cut is
+     * the tail of an alphabet or an arbitrary slice, and cannot go and find it.
+     * The landing page announced "the first 2000" of 5038 spaces for exactly that
+     * reason - the ordering was by space name and the banner never said so - so
+     * both the ordering and the route to what was cut are arguments here rather
+     * than something each call site may forget. */
+    Nd cappedAt(int cap, String what, String ordering, String reach) {
         this.state = Pc.TRUNCATED
-        return note("Only the first " + String.valueOf(cap) + " " + what + " are listed. " +
-            "This is this report's own cap, not the number that exists. The full " +
-            "population is larger and was not read.")
+        return note("Only the first " + String.valueOf(cap) + " " + what + " are listed, ordered by " +
+            ordering + ". This is this report's own cap, not the number that exists: the rest was " +
+            "not read. " + reach)
     }
 
     boolean isReadable() {
@@ -1912,9 +1970,54 @@ class Render {
             ". Read-only: producing this report changes nothing and contacts nothing outside this instance.</div>\n"
     }
 
-    /* The picker. Rendered by the same endpoint when no space was named, so the
-     * administrator never has to know a space key by heart. */
-    static String picker(Report shell, List<Map<String, String>> spaces, String selfPath, int total) {
+    /* ---- The landing page: an estate sweep, not a picker --------------------
+     *
+     * Rendered by the same endpoint when no space was named. It used to be a
+     * picker that listed the first 2000 of 5038 space names, and a list of names
+     * at that scale answers nothing: there is no question an administrator asks
+     * that a truncated alphabet of space names is the answer to.
+     *
+     * So the landing page answers a question first. One row per space, ALL of
+     * them, carrying the facts an administrator triages on, and every key still
+     * links into the per-space report - it is still a picker, it just earns the
+     * click by saying which spaces are worth the click.
+     *
+     * Filtering and sorting happen in the BROWSER over the rows already
+     * delivered. No control on this page issues a request. That keeps the page a
+     * self-contained artifact: it can be saved, mailed and opened later and it
+     * still filters and sorts, which a server-side filter would not survive.
+     *
+     * What that costs, measured rather than assumed: 5038 rows render in 244 ms
+     * into 3.1 MiB of HTML. That is a heavy page and it is the deliberate trade.
+     * A lighter page would have to leave rows out, and leaving rows out is the
+     * exact complaint that produced this one. The number is recorded here so the
+     * next person weighing it up is weighing a measurement. */
+
+    /* The columns, declared once. The header, the body and the sort all read this
+     * list, so a column cannot exist in one of the three and be missing from the
+     * other two. Each entry is id, heading, whether it sorts as a number, and the
+     * one-line explanation shown under the table.
+     *
+     * Every column is a STORED fact. Nothing Confluence computes is here: no
+     * effective permission with its group expansion, no resolved theme. A row
+     * says "worth looking at here", never "here is the verdict". */
+    static final List<List<String>> SWEEP_COLUMNS = [
+        ["key", "Key", "text", "The space key. Links into the full configuration report for that space."],
+        ["name", "Name", "text", "The space name as stored in SPACES."],
+        ["type", "Type", "text", "Global or personal. A personal space is created per user and its key is derived from the user key."],
+        ["status", "Status", "text", "Current or archived, as stored. Archived spaces stay fully configured and are easy to overlook."],
+        ["grants", "Grants", "number", "How many explicit permission rows this space carries. Zero means the space permission defaults apply, which is a global setting and not part of this space."],
+        ["anon", "Anonymous", "number", "Grants whose subject is neither a group, nor a user, nor the all-users subject. That is the anonymous subject, and it is a real grant rather than an unreadable one."],
+        ["admins", "Administrators", "number", "SETSPACEPERMISSIONS grants. A space with none can have its permissions changed only by a Confluence administrator."],
+        ["appconfig", "App configuration", "number", "Which of the two enumerable key-value stores hold an entry keyed to this space. Not a judgement about which app: this report does not interpret the keys."],
+        ["categories", "Categories", "number", "Labels in the team namespace on the space description, which is what a space category is."],
+        ["stylesheet", "Stylesheet", "number", "Whether a custom stylesheet is stored for this space. The instance-wide sheet is not counted here."],
+    ]
+
+    static String estate(Report shell, Map<String, Object> sweep, String selfPath) {
+        List<Map<String, String>> rows = (List<Map<String, String>>) sweep.get("rows")
+        Map<String, String> columnFailures = (Map<String, String>) sweep.get("columnFailures")
+        String failure = Pc.text(sweep.get("failure"))
         StringBuilder out = new StringBuilder()
         out.append("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"UTF-8\">\n")
         out.append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n")
@@ -1922,11 +2025,42 @@ class Render {
         out.append("</head>\n<body>\n<div class=\"page\">\n")
         out.append("<div class=\"page-header\"><div>")
         out.append("<h1 class=\"page-title\">Space configuration</h1>")
-        out.append("<div class=\"page-subtitle\">Pick a space. The report expands every configuration ")
-        out.append("item of that space and links each one to the screen where it is maintained.</div>")
+        out.append("<div class=\"page-subtitle\">Every space on this instance, with the stored facts ")
+        out.append("an administrator triages on. Filter and sort here, then open a space for the full ")
+        out.append("report: what this table shows is what is STORED, and the expanded configuration ")
+        out.append("of one space is a click away on its key.</div>")
         out.append("</div></div>\n")
         out.append(instanceCard(shell))
-        out.append(spacePicker(spaces, selfPath, total))
+
+        if (failure != null) {
+            /* The whole sweep failed. An empty table here would read as an
+             * instance without spaces, which is the one thing it must never be
+             * mistaken for. */
+            out.append("<div class=\"diag diag-warn\"><strong>The estate could not be read.</strong> ")
+            out.append(Pc.html(failure))
+            out.append(" No row below is missing: none was read at all.</div>\n")
+        } else {
+            out.append(estateSummary(rows, columnFailures))
+        }
+        if (Boolean.TRUE.equals(sweep.get("truncated"))) {
+            /* A cut announces the ORDER it cut by and the route to what it cut.
+             * The banner this replaced said "the first 2000" and left the reader
+             * to guess; it was by space name, and nothing on the page said so. */
+            out.append("<div class=\"diag diag-warn\"><strong>This sweep is not complete.</strong> ")
+            out.append("It carries the first ").append(String.valueOf(rows.size()))
+            out.append(" spaces ordered by ").append(Pc.html(Pc.orNa(sweep.get("order"))))
+            out.append(", which is this report's own cap and not the number that exists. ")
+            out.append("A space past the cut is reached by putting its key in the space parameter ")
+            out.append("of this URL, which reads that space directly and does not depend on this ")
+            out.append("list at all.</div>\n")
+        }
+        for (Map.Entry<String, String> entry : columnFailures.entrySet()) {
+            out.append("<div class=\"diag diag-warn\"><strong>The ")
+            out.append(Pc.html(columnHeading(entry.getKey())))
+            out.append(" column could not be read.</strong> ").append(Pc.html(entry.getValue()))
+            out.append(" Every cell in that column is marked unreadable rather than shown as zero.")
+            out.append("</div>\n")
+        }
         if (!shell.globalDiagnostics.isEmpty()) {
             out.append("<div class=\"diag diag-warn\"><strong>Some reads were suppressed.</strong><ul>")
             for (String entry : shell.globalDiagnostics) {
@@ -1934,132 +2068,402 @@ class Render {
             }
             out.append("</ul></div>\n")
         }
-        out.append("</div>\n").append(pickerScript()).append("</body>\n</html>\n")
+        /* A sweep that failed renders NO table. An empty one under the banner
+         * would still carry its count line, and "no match out of 0 spaces" is a
+         * statement about a population that was never read. */
+        if (failure == null) {
+            out.append(estateTable(rows, columnFailures, selfPath))
+        }
+        out.append(footer(shell))
+        out.append("</div>\n").append(estateScript()).append("</body>\n</html>\n")
         return out.toString()
     }
 
-    /* How many space rows are visible at once. An instance with five thousand
-     * spaces turns a dropdown into a scroll hunt, so the list is searched rather
-     * than scrolled. Every space that was read is already in the page, which is
-     * what makes the search instant and keeps it from costing a request per
-     * keystroke. The cap here is on what is SHOWN; the cap on what was READ is a
-     * separate number and the count line names both, so a filtered list can never
-     * be mistaken for the whole one. */
-    static final int SPACE_ROWS = 40
+    static String columnHeading(String id) {
+        for (List<String> column : SWEEP_COLUMNS) {
+            if (column.get(0).equals(id)) {
+                return column.get(1)
+            }
+        }
+        return id
+    }
 
-    static String spacePicker(List<Map<String, String>> spaces, String selfPath, int total) {
+    /* The counts above the table. Each one is the number of ROWS DELIVERED that
+     * match, never an estimate: this page holds every row it counted.
+     *
+     * A count whose column could not be read is not printed as zero. It is
+     * printed as unreadable, because "no space has this" and "this was not
+     * measured" are different sentences and only one of them is true. */
+    static String estateSummary(List<Map<String, String>> rows, Map<String, String> columnFailures) {
+        int personal = 0
+        int archived = 0
+        int noGrants = 0
+        int anonymous = 0
+        int noAdmin = 0
+        int noAdminWithGrants = 0
+        int appConfig = 0
+        int categories = 0
+        int stylesheets = 0
+        for (Map<String, String> row : rows) {
+            if ("personal".equalsIgnoreCase(Pc.text(row.get("type")))) {
+                personal++
+            }
+            if ("ARCHIVED".equalsIgnoreCase(Pc.text(row.get("status")))) {
+                archived++
+            }
+            if (asCount(row.get("grants")) == 0) {
+                noGrants++
+            }
+            if (asCount(row.get("anon")) > 0) {
+                anonymous++
+            }
+            if (asCount(row.get("admins")) == 0) {
+                noAdmin++
+                if (asCount(row.get("grants")) > 0) {
+                    noAdminWithGrants++
+                }
+            }
+            if (asCount(row.get("appconfigCount")) > 0) {
+                appConfig++
+            }
+            if (asCount(row.get("categories")) > 0) {
+                categories++
+            }
+            if (asCount(row.get("stylesheet")) > 0) {
+                stylesheets++
+            }
+        }
+        StringBuilder out = new StringBuilder()
+        out.append("<div class=\"summary-grid\">")
+        out.append(summaryTile(String.valueOf(rows.size()), "spaces, every one of them below", null))
+        out.append(summaryTile(String.valueOf(personal), "personal", null))
+        out.append(summaryTile(String.valueOf(archived), "archived", null))
+        out.append(summaryTile(String.valueOf(noGrants), "with no explicit grants", null))
+        out.append(summaryTile(String.valueOf(anonymous), "granting anonymous access", null))
+        /* Two numbers rather than one, because they answer different questions. A
+         * space with no grants AT ALL has no administrator either, but it is a
+         * space running on the defaults; a space that has grants and still no
+         * SETSPACEPERMISSIONS row is a space somebody configured and left without
+         * an owner. Reporting only the total would hide the second inside the
+         * first, and the second is the one worth looking at. */
+        out.append(summaryTile(String.valueOf(noAdmin), "with no space administrator", null))
+        out.append(summaryTile(String.valueOf(noAdminWithGrants),
+            "of those have grants but no administrator", null))
+        out.append(summaryTile(String.valueOf(appConfig), "carrying app configuration",
+            columnFailures.get("appconfig")))
+        out.append(summaryTile(String.valueOf(categories), "with space categories",
+            columnFailures.get("categories")))
+        out.append(summaryTile(String.valueOf(stylesheets), "with a custom stylesheet",
+            columnFailures.get("stylesheet")))
+        out.append("</div>\n")
+        return out.toString()
+    }
+
+    private static String summaryTile(String value, String label, String failure) {
+        StringBuilder out = new StringBuilder()
+        out.append("<div class=\"summary-card\"><div class=\"summary-value\">")
+        if (failure == null) {
+            out.append(Pc.html(value))
+        } else {
+            out.append("<span class=\"state state-unreadable\">").append(Pc.html(Pc.UNREADABLE))
+            out.append("</span>")
+        }
+        out.append("</div><div class=\"summary-label\">").append(Pc.html(label))
+        out.append("</div></div>")
+        return out.toString()
+    }
+
+    /* A stored count as a number. A value that is not a number is not silently
+     * turned into a zero: it comes back as -1 so a caller can tell it apart from a
+     * measured none. */
+    static int asCount(Object value) {
+        String text = Pc.text(value)
+        if (text == null) {
+            return -1
+        }
+        try {
+            return Integer.parseInt(text.trim())
+        } catch (NumberFormatException ignored) {
+            return -1
+        }
+    }
+
+    /* The named views. Each one is a question an administrator actually arrives
+     * with, and each is a filter over the rows already on the page rather than a
+     * different query. The token is what the row carries in data-flags. */
+    static final List<List<String>> SWEEP_VIEWS = [
+        ["", "Every space"],
+        ["anon", "Granting anonymous access"],
+        ["nogrants", "With no explicit grants"],
+        ["noadmin", "With no space administrator"],
+        ["orphan", "With grants but no administrator"],
+        ["app", "Carrying app configuration"],
+        ["categories", "With space categories"],
+        ["css", "With a custom stylesheet"],
+        ["archived", "Archived"],
+        ["personal", "Personal"],
+    ]
+
+    static String estateTable(List<Map<String, String>> rows, Map<String, String> columnFailures,
+                              String selfPath) {
         StringBuilder out = new StringBuilder()
         out.append("<div class=\"export-card\">")
-        out.append("<div class=\"export-title\">Choose a space</div>")
+        out.append("<div class=\"export-title\">The estate</div>")
         out.append("<div class=\"export-grid\">")
         out.append("<label class=\"export-field\">Search by key or name")
-        out.append("<input id=\"spaceQuery\" class=\"wide\" type=\"search\" autocomplete=\"off\" ")
+        out.append("<input id=\"estateQuery\" class=\"wide\" type=\"search\" autocomplete=\"off\" ")
         out.append("placeholder=\"Type a space key or part of a name...\" ")
-        out.append("oninput=\"filterSpaces()\" onkeydown=\"pickFirstSpace(event)\"></label>")
-        out.append("<div class=\"export-chosen\" id=\"spaceCount\">")
-        out.append(Pc.html(countLine(spaces.size(), spaces.size())))
+        out.append("oninput=\"filterEstate()\" onkeydown=\"openFirstSpace(event)\"></label>")
+        out.append("<label class=\"export-field\">Show")
+        out.append("<select id=\"estateView\" onchange=\"filterEstate()\">")
+        for (List<String> view : SWEEP_VIEWS) {
+            out.append("<option value=\"").append(Pc.html(view.get(0))).append("\">")
+            out.append(Pc.html(view.get(1))).append("</option>")
+        }
+        out.append("</select></label>")
+        out.append("<div class=\"export-chosen\" id=\"estateCount\">")
+        out.append(Pc.html(estateCountLine(rows.size(), rows.size())))
         out.append("</div></div>")
 
-        /* The read cap belongs next to the list, not in a log. A picker that
-         * silently holds the first two thousand of five thousand spaces is a
-         * picker that hides the space somebody is looking for. */
-        if (total > spaces.size()) {
-            out.append("<div class=\"diag diag-warn\"><strong>This list is not complete.</strong> ")
-            out.append("The instance holds ").append(String.valueOf(total))
-            out.append(" spaces and this page carries the first ").append(String.valueOf(spaces.size()))
-            out.append(", which is this report's own cap. A space beyond it is reached by putting ")
-            out.append("its key in the space parameter of this URL.</div>")
+        out.append("<div class=\"view-table estate-scroll\"><table class=\"flat estate\" id=\"estateTable\">")
+        out.append("<thead><tr>")
+        for (int index = 0; index < SWEEP_COLUMNS.size(); index++) {
+            List<String> column = SWEEP_COLUMNS.get(index)
+            out.append("<th class=\"col-").append(Pc.html(column.get(0)))
+            out.append(" sortable\" onclick=\"sortEstate(").append(String.valueOf(index))
+            out.append(")\" title=\"Sort by ").append(Pc.html(column.get(1)))
+            out.append("\">").append(Pc.html(column.get(1))).append("</th>")
         }
-
-        out.append("<div id=\"spaceResults\" class=\"export-results project-list\">")
-        int shown = 0
-        for (Map<String, String> space : spaces) {
-            String key = Pc.orNa(space.get("key"))
-            String name = Pc.orNa(space.get("name"))
-            String type = Pc.text(space.get("type"))
-            String status = Pc.text(space.get("status"))
-            boolean visible = shown < SPACE_ROWS
-            if (visible) {
-                shown++
-            }
-            out.append("<a class=\"export-hit").append(visible ? "" : " hidden").append("\" href=\"")
-            out.append(Pc.html(selfPath)).append("?space=").append(Pc.html(Pc.urlQuery(key)))
-            out.append("\" data-find=\"")
-            out.append(Pc.html((key + " " + name).toLowerCase(Locale.ROOT)))
-            out.append("\"><strong>").append(Pc.html(key)).append("</strong> ")
-            out.append(Pc.html(name))
-            /* A personal space and an archived space are told apart here rather
-             * than after the click. Both exist in numbers on a real instance and
-             * both look like an ordinary space in a list that does not say. */
-            if ("personal".equalsIgnoreCase(type)) {
-                out.append(" <span class=\"tag\">personal</span>")
-            }
-            if ("ARCHIVED".equalsIgnoreCase(status)) {
-                out.append(" <span class=\"tag\">archived</span>")
-            }
-            out.append("</a>")
+        out.append("</tr></thead>\n<tbody id=\"estateBody\">")
+        for (Map<String, String> row : rows) {
+            out.append(estateRow(row, columnFailures, selfPath))
         }
-        out.append("</div>")
-        out.append("<div id=\"spaceEmpty\" class=\"export-empty hidden\">No space matches that search.</div>")
+        out.append("</tbody></table></div>")
+        out.append("<div id=\"estateEmpty\" class=\"export-empty hidden\">No space matches that filter.</div>")
 
-        out.append("<div class=\"export-note\">The report reads configuration only: no content is ")
-        out.append("counted and no search is run, so the run is harmless on a production instance.</div>")
+        out.append("<div class=\"export-note\"><strong>What the columns are.</strong><ul>")
+        for (List<String> column : SWEEP_COLUMNS) {
+            out.append("<li><strong>").append(Pc.html(column.get(1))).append("</strong> ")
+            out.append(Pc.html(column.get(3))).append("</li>")
+        }
+        out.append("</ul>")
+        out.append("Every value here is READ FROM STORAGE. Nothing Confluence computes is on this ")
+        out.append("page: an effective permission with its groups expanded, or a theme resolved ")
+        out.append("through its inheritance, is answered by the per-space report and not guessed at ")
+        out.append("here. No content is counted, no search is run and no query leaves this page: ")
+        out.append("filtering and sorting work on the rows already delivered.</div>")
         out.append("</div>\n")
+        return out.toString()
+    }
+
+    private static String estateRow(Map<String, String> row, Map<String, String> columnFailures,
+                                    String selfPath) {
+        String key = Pc.text(row.get("key"))
+        String name = Pc.text(row.get("name"))
+        boolean personal = "personal".equalsIgnoreCase(Pc.text(row.get("type")))
+        boolean archived = "ARCHIVED".equalsIgnoreCase(Pc.text(row.get("status")))
+        int grants = asCount(row.get("grants"))
+        int anon = asCount(row.get("anon"))
+        int admins = asCount(row.get("admins"))
+
+        /* The flags a filter matches on. They are computed once here rather than
+         * re-derived in the browser, so the page and the script can never disagree
+         * about what counts as a space with no administrator. */
+        List<String> flags = new ArrayList<String>()
+        if (anon > 0) {
+            flags.add("anon")
+        }
+        if (grants == 0) {
+            flags.add("nogrants")
+        }
+        if (admins == 0) {
+            flags.add("noadmin")
+            if (grants > 0) {
+                flags.add("orphan")
+            }
+        }
+        if (asCount(row.get("appconfigCount")) > 0) {
+            flags.add("app")
+        }
+        if (asCount(row.get("categories")) > 0) {
+            flags.add("categories")
+        }
+        if (asCount(row.get("stylesheet")) > 0) {
+            flags.add("css")
+        }
+        if (archived) {
+            flags.add("archived")
+        }
+        if (personal) {
+            flags.add("personal")
+        }
+
+        StringBuilder out = new StringBuilder()
+        out.append("<tr data-find=\"")
+        out.append(Pc.html((Pc.orNa(key) + " " + Pc.orNa(name)).toLowerCase(Locale.ROOT)))
+        out.append("\" data-flags=\"").append(Pc.html(flags.join(" "))).append("\">")
+
+        out.append("<td class=\"col-key mono\">")
+        if (key == null) {
+            out.append("<span class=\"state state-unreadable\">").append(Pc.html(Pc.UNREADABLE))
+            out.append("</span>")
+        } else {
+            out.append("<a class=\"node-link\" href=\"").append(Pc.html(selfPath))
+            out.append("?space=").append(Pc.html(Pc.urlQuery(key))).append("\">")
+            out.append(Pc.html(key)).append("</a>")
+        }
+        out.append("</td>")
+
+        out.append("<td class=\"col-name\">").append(Pc.html(Pc.orNa(name))).append("</td>")
+        out.append("<td class=\"col-type nowrap\">").append(Pc.html(Pc.spaceType(row.get("type")))).append("</td>")
+        out.append("<td class=\"col-status nowrap\">").append(Pc.html(Pc.spaceStatus(row.get("status")))).append("</td>")
+
+        /* Zero explicit grants is a configuration state, not a gap in the read,
+         * and it is written out in words for exactly that reason. A bare 0 in a
+         * column of numbers reads as "nothing found" to anyone scanning quickly,
+         * which is the mistake this whole report exists to prevent. */
+        out.append(numberCell("grants", grants, columnFailures,
+            grants == 0 ? "none, defaults apply" : null))
+        out.append(numberCell("anon", anon, columnFailures, null))
+        out.append(numberCell("admins", admins, columnFailures,
+            admins == 0 ? "none" : null))
+
+        out.append("<td class=\"col-appconfig\" data-sort=\"")
+        out.append(Pc.html(Pc.orNa(row.get("appconfigCount")))).append("\">")
+        if (columnFailures.containsKey("appconfig")) {
+            out.append("<span class=\"state state-unreadable\">").append(Pc.html(Pc.UNREADABLE)).append("</span>")
+        } else {
+            String stores = Pc.text(row.get("appconfig"))
+            out.append(stores == null
+                ? "<span class=\"muted\">none</span>" : Pc.html(stores))
+        }
+        out.append("</td>")
+
+        out.append(numberCell("categories", asCount(row.get("categories")), columnFailures, null))
+        out.append(numberCell("stylesheet", asCount(row.get("stylesheet")), columnFailures,
+            asCount(row.get("stylesheet")) > 0 ? "yes" : "no"))
+        out.append("</tr>\n")
+        return out.toString()
+    }
+
+    /* One numeric cell. The data-sort attribute carries the number so the browser
+     * sorts on the value rather than on whatever words the cell shows, and a
+     * column whose source statement failed shows UNREADABLE rather than the zero
+     * it would otherwise be indistinguishable from. */
+    private static String numberCell(String id, int value, Map<String, String> columnFailures,
+                                     String words) {
+        StringBuilder out = new StringBuilder()
+        out.append("<td class=\"col-").append(Pc.html(id)).append(" num\" data-sort=\"")
+        /* Two ways to be unreadable, and they render the same: the statement that
+         * feeds this column failed, or it succeeded and this one value did not
+         * parse as a number. Neither of them is a zero. */
+        boolean unreadable = columnFailures.containsKey(id) || value < 0
+        out.append(String.valueOf(unreadable ? -1 : value)).append("\">")
+        if (unreadable) {
+            out.append("<span class=\"state state-unreadable\">").append(Pc.html(Pc.UNREADABLE)).append("</span>")
+        } else if (words != null) {
+            out.append("<span class=\"muted\">").append(Pc.html(words)).append("</span>")
+        } else {
+            out.append(String.valueOf(value))
+        }
+        out.append("</td>")
         return out.toString()
     }
 
     /* Rendered on the server for the first paint and recomputed in the browser on
      * every keystroke. The two must agree, so the wording lives here and the
      * script below mirrors it; the offline suite checks this one, which is the one
-     * a reader without JavaScript ever sees. */
-    static String countLine(int matching, int total) {
+     * a reader without JavaScript ever sees.
+     *
+     * There is no "showing the first N" tail any more. Every delivered row is on
+     * the page and visible, which is the whole point of the sweep: an
+     * administrator who cannot see all of them cannot analyse all of them. */
+    static String estateCountLine(int matching, int total) {
         if (matching == 0) {
             return "no match out of " + String.valueOf(total) + " spaces"
         }
-        String tail = matching > SPACE_ROWS ? ", showing the first " + String.valueOf(SPACE_ROWS) : ""
         if (matching == total) {
-            return String.valueOf(total) + " spaces" + tail
+            return String.valueOf(total) + " spaces"
         }
-        return String.valueOf(matching) + " of " + String.valueOf(total) + " spaces match" + tail
+        return String.valueOf(matching) + " of " + String.valueOf(total) + " spaces match"
     }
 
-    /* The picker carries its own script rather than the report's: it has no tree
-     * to fold, and shipping the whole thing here would mean two pages sharing code
-     * only one of them can use. */
-    private static String pickerScript() {
+    /* The landing page carries its own script rather than the report's: it has no
+     * tree to fold and the report has no table to sort, so shipping either whole
+     * would mean two pages sharing code only one of them can use.
+     *
+     * Everything below runs on the rows already in the page. Nothing here issues
+     * a request, which is what lets this page keep working after it has been
+     * saved to disk or mailed on. */
+    private static String estateScript() {
         return """<script>
-var SPACE_ROWS = ${SPACE_ROWS};
+var estateSortColumn = -1;
+var estateSortAscending = true;
 
-function spaceCountLine(matching, total) {
+function estateCountLine(matching, total) {
     if (matching === 0) { return 'no match out of ' + total + ' spaces'; }
-    var tail = matching > SPACE_ROWS ? ', showing the first ' + SPACE_ROWS : '';
-    if (matching === total) { return total + ' spaces' + tail; }
-    return matching + ' of ' + total + ' spaces match' + tail;
+    if (matching === total) { return total + ' spaces'; }
+    return matching + ' of ' + total + ' spaces match';
 }
 
-function filterSpaces() {
-    var query = (document.getElementById('spaceQuery').value || '').trim().toLowerCase();
-    var rows = document.querySelectorAll('#spaceResults .export-hit');
+function filterEstate() {
+    var query = (document.getElementById('estateQuery').value || '').trim().toLowerCase();
+    var view = document.getElementById('estateView').value;
+    var rows = document.getElementById('estateBody').rows;
     var matching = 0;
-    var shown = 0;
     for (var i = 0; i < rows.length; i++) {
-        var isHit = query === '' || rows[i].getAttribute('data-find').indexOf(query) >= 0;
-        if (isHit) { matching++; }
-        var show = isHit && shown < SPACE_ROWS;
-        if (show) { shown++; }
-        rows[i].classList.toggle('hidden', !show);
+        var hit = query === '' || rows[i].getAttribute('data-find').indexOf(query) >= 0;
+        if (hit && view !== '') {
+            hit = (' ' + rows[i].getAttribute('data-flags') + ' ').indexOf(' ' + view + ' ') >= 0;
+        }
+        if (hit) { matching++; }
+        rows[i].classList.toggle('hidden', !hit);
     }
-    document.getElementById('spaceCount').textContent = spaceCountLine(matching, rows.length);
-    document.getElementById('spaceEmpty').classList.toggle('hidden', matching !== 0);
+    document.getElementById('estateCount').textContent = estateCountLine(matching, rows.length);
+    document.getElementById('estateEmpty').classList.toggle('hidden', matching !== 0);
 }
 
-/* Enter opens the first hit. Typing a key you already know should not need the
-   mouse for the last step. */
-function pickFirstSpace(event) {
+/* Sorting reorders the rows already delivered. A column that carries data-sort is
+   sorted on that number; every other column is sorted on the text the reader can
+   see, so the order on screen is always explainable by what is on screen. */
+function sortEstate(column) {
+    var body = document.getElementById('estateBody');
+    var rows = [];
+    for (var i = 0; i < body.rows.length; i++) { rows.push(body.rows[i]); }
+    estateSortAscending = estateSortColumn === column ? !estateSortAscending : true;
+    estateSortColumn = column;
+    var direction = estateSortAscending ? 1 : -1;
+    rows.sort(function (left, right) {
+        var a = left.cells[column];
+        var b = right.cells[column];
+        var an = a.getAttribute('data-sort');
+        var bn = b.getAttribute('data-sort');
+        if (an !== null && bn !== null) {
+            return direction * (parseFloat(an) - parseFloat(bn));
+        }
+        return direction * a.textContent.trim().localeCompare(b.textContent.trim());
+    });
+    for (var j = 0; j < rows.length; j++) { body.appendChild(rows[j]); }
+    var headers = document.getElementById('estateTable').tHead.rows[0].cells;
+    for (var k = 0; k < headers.length; k++) {
+        headers[k].classList.remove('sort-asc', 'sort-desc');
+    }
+    headers[column].classList.add(estateSortAscending ? 'sort-asc' : 'sort-desc');
+}
+
+/* Enter opens the first space still visible. Typing a key you already know should
+   not need the mouse for the last step. */
+function openFirstSpace(event) {
     if (event.key !== 'Enter') { return; }
     event.preventDefault();
-    var first = document.querySelector('#spaceResults .export-hit:not(.hidden)');
-    if (first) { window.location.href = first.getAttribute('href'); }
+    var rows = document.getElementById('estateBody').rows;
+    for (var i = 0; i < rows.length; i++) {
+        if (!rows[i].classList.contains('hidden')) {
+            var link = rows[i].querySelector('a');
+            if (link) { window.location.href = link.getAttribute('href'); }
+            return;
+        }
+    }
 }
 </script>
 """
@@ -2245,6 +2649,30 @@ table.flat th { background: var(--surface-subtle); font-weight: 600; position: s
 table.flat tr:nth-child(even) td { background: var(--surface-subtle); }
 .view-table { overflow-x: auto; }
 .project-list { max-height: 460px; overflow-y: auto; margin-top: 10px; }
+/* The estate table. It carries one row per space and every one of them is in the
+   page, so the height is bounded here and the body scrolls inside it rather than
+   pushing the column legend below five thousand rows. The header stays put on the
+   way down: table.flat th is already sticky, and it only works inside a scroll
+   container, which is what this rule provides. */
+.estate-scroll { max-height: 70vh; overflow-y: auto; margin-top: 10px; }
+table.estate td.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.estate td.nowrap, table.estate th { white-space: nowrap; }
+table.estate td.col-key a { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo,
+    Consolas, monospace; font-weight: 600; }
+table.estate th.sortable { cursor: pointer; user-select: none; }
+table.estate th.sortable:hover { color: var(--blue); }
+/* The sort direction is shown next to the heading rather than by colour alone,
+   so a reader who cannot distinguish the colours can still tell which way the
+   column is ordered.
+   The two glyphs are LITERAL characters, not CSS escapes. A CSS escape here is
+   read by Groovy first, where a backslash followed by digits is an OCTAL escape:
+   the same mistake put a raw control byte and the literal text "B8" on the page
+   once already, and a control byte in this file makes every text tool treat it as
+   binary. The rule is one escaping layer, never two. */
+table.estate th.sort-asc::after { content: " ↑"; }
+table.estate th.sort-desc::after { content: " ↓"; }
+.export-note ul { margin: 6px 0 10px; padding-left: 20px; }
+.export-note li { margin: 2px 0; }
 .project-list .export-hit { display: block; }
 .project-list .export-hit strong { display: inline-block; min-width: 90px; font-family: ui-monospace,
     SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
@@ -3917,10 +4345,13 @@ class Db {
 
 class Scan {
 
-    /* Caps. Every one of them is announced in the node it applies to. */
+    /* Caps. Every one of them is announced in the node it applies to, WITH the
+     * ordering it cut by and the route to what it cut. PICKER_CAP used to sit
+     * here at 2000 and cut the landing page down to the first 2000 of 5038 space
+     * names; the estate sweep that replaced the picker carries its own limit,
+     * SWEEP_CAP, set far above any instance this is meant for. */
     static final int PERMISSION_CAP = 2000
     static final int PROPERTY_CAP = 1000
-    static final int PICKER_CAP = 2000
     static final int TEMPLATE_CAP = 500
     static final int CATEGORY_CAP = 200
     static final int VALUE_CLAMP = 200
@@ -4104,7 +4535,9 @@ class Scan {
                 "this space's own configuration. The read succeeded and returned nothing.")
         }
         if (Boolean.TRUE.equals(result.get("truncated"))) {
-            node.cappedAt(PERMISSION_CAP, "grants")
+            node.cappedAt(PERMISSION_CAP, "grants",
+                "permission type, then group name, then user name, then grant id",
+                "The Permissions screen this section links to lists every grant of this space.")
         }
 
         /* Grouped by permission type, which is how the permissions screen is laid
@@ -4328,7 +4761,11 @@ class Scan {
                 "three stores. All three were read successfully.")
         }
         if (capped) {
-            node.cappedAt(PROPERTY_CAP, "properties per store")
+            node.cappedAt(PROPERTY_CAP, "properties per store",
+                "namespace and then key in the two SQL-backed stores; the Bandana store returns " +
+                "its keys in an order this report does not control and cannot state",
+                "No administration screen lists these keys, which is why this section exists. " +
+                "What was cut is reachable only from the stores themselves.")
         }
         if (!failures.isEmpty()) {
             /* Partly read. The keys below are real, and the section says plainly
@@ -4625,7 +5062,10 @@ class Scan {
         int count = 0
         for (Object template : list) {
             if (count >= TEMPLATE_CAP) {
-                parent.cappedAt(TEMPLATE_CAP, "templates")
+                parent.cappedAt(TEMPLATE_CAP, "templates",
+                    "the order PageTemplateManager returned them in, which this report does not " +
+                    "control and must not describe as alphabetical",
+                    "The Templates screen this section links to lists every template.")
                 break
             }
             count++
@@ -4674,7 +5114,10 @@ class Scan {
             int count = 0
             for (Object label : (Collection) list) {
                 if (count >= CATEGORY_CAP) {
-                    node.cappedAt(CATEGORY_CAP, "categories")
+                    node.cappedAt(CATEGORY_CAP, "categories",
+                        "the order SpaceLabelManager returned them in, which this report does not " +
+                        "control and must not describe as alphabetical",
+                        "The Edit space labels screen this section links to lists every category.")
                     break
                 }
                 count++
@@ -4691,6 +5134,324 @@ class Scan {
                 node.absent("No category is set on this space.")
             }
         }
+    }
+
+    /* ---- The estate sweep -------------------------------------------------
+     *
+     * One row per space, ALL of them, in ONE query set. This is what the landing
+     * page renders when no space was named. It replaced a picker that listed the
+     * first 2000 of 5038 space names, which answers no question an administrator
+     * has: a list of names at that scale is a scroll hunt, not a triage.
+     *
+     * Measured on the instance this was built against, 5038 spaces: the core
+     * statement below runs in 46 ms and the four side statements in 0.7 ms
+     * together. Running the per-space report instead, at 103 ms each, would be
+     * about 8.6 minutes. That ratio is the whole argument for the sweep, and it
+     * only holds because nothing here is per space: five statements, never 5038.
+     *
+     * Every column is a STORED fact. Nothing Confluence COMPUTES appears here -
+     * no effective permission with its group expansion, no inherited theme - and
+     * that is a rule rather than an omission. A sweep row says "worth looking at
+     * here". The verdict is the per-space report's job, and every key in the
+     * table links into it.
+     *
+     * No content is counted, no CQL is run and no search is issued, exactly as in
+     * the rest of this file. */
+
+    /* A safety limit, not a product decision. Completeness is the point of this
+     * page, so the number is set far above any instance this is meant for; the
+     * largest measured here is 5038. If it is ever reached the page says so, says
+     * by which ORDER the rows were taken, and says how to reach what was cut. */
+    static final int SWEEP_CAP = 20000
+
+    /* The distinct namespaces of the two enumerable key-value stores. Bounded by
+     * the number of apps rather than by the number of spaces, so this is a much
+     * smaller population than the sweep itself. */
+    static final int STORE_CAP = 5000
+
+    static final List<String> SWEEP_SPACE_COLUMNS = [
+        "spaceid", "spacekey", "spacename", "spacetype", "spacestatus", "spacedescid"]
+
+    static final List<String> SWEEP_PERMISSION_COLUMNS = [
+        "spaceid", "permtype", "permgroupname", "permusername", "permalluserssubject"]
+
+    /* The join on p.spaceid is not decoration and dropping it is the trap this
+     * comment exists to stop. SPACEPERMISSIONS also holds the GLOBAL permissions
+     * of the instance, and those rows carry a NULL spaceid: measured here,
+     * SYSTEMADMINISTRATOR, ADMINISTRATECONFLUENCE, USECONFLUENCE, CREATESPACE,
+     * PERSONALSPACE and BROWSEALLGROUPMEMBERS, ten rows in total. A sweep that
+     * counted rows per permtype without the spaceid join would present the
+     * system-administrator right of the instance as a grant on some space.
+     *
+     * The three counts are one pass over the table rather than three, and they
+     * use SUM(CASE ...) rather than COUNT(...) FILTER because FILTER is not
+     * portable across the databases Confluence supports.
+     *
+     * The permission type is BOUND, not pasted: no value is interpolated into SQL
+     * anywhere in this file and a constant is no exception to that. */
+    static final String SWEEP_SQL =
+        "SELECT s.spacekey, s.spacename, s.spacetype, s.spacestatus, s.spacedescid, " +
+        "COALESCE(g.grants, 0) AS grantcount, " +
+        "COALESCE(g.anongrants, 0) AS anongrants, " +
+        "COALESCE(g.admingrants, 0) AS admingrants " +
+        "FROM spaces s " +
+        "LEFT JOIN (" +
+        "SELECT p.spaceid AS sid, COUNT(*) AS grants, " +
+        "SUM(CASE WHEN p.permgroupname IS NULL AND p.permusername IS NULL " +
+        "AND p.permalluserssubject IS NULL THEN 1 ELSE 0 END) AS anongrants, " +
+        "SUM(CASE WHEN p.permtype = ? THEN 1 ELSE 0 END) AS admingrants " +
+        "FROM spacepermissions p WHERE p.spaceid IS NOT NULL GROUP BY p.spaceid" +
+        ") g ON g.sid = s.spaceid " +
+        "ORDER BY s.spacekey"
+
+    static final List<String> SWEEP_READ = [
+        "spacekey", "spacename", "spacetype", "spacestatus", "spacedescid",
+        "grantcount", "anongrants", "admingrants"]
+
+    /* The ordering the cap announcement has to name. It is the space key because
+     * the key is what the table links on and what an administrator types; it is
+     * also UNIQUE in SPACES, so the order is total and a second run cuts at the
+     * same place rather than at an arbitrary one. */
+    static final String SWEEP_ORDER = "space key"
+
+    /* A space administrator is a SETSPACEPERMISSIONS grant. Verified against the
+     * table on the instance rather than taken on trust: 5006 rows instance-wide,
+     * every one of them carrying a spaceid, across 5005 distinct spaces. */
+    static final String ADMIN_PERMISSION = "SETSPACEPERMISSIONS"
+
+    /* A space CATEGORY is a label in the TEAM namespace on the space description,
+     * and this predicate was read out of the running product rather than guessed.
+     * SpaceLabelManagerImpl.getLabelsOnSpace, which the per-space report calls,
+     * iterates the space description labels and keeps those passing
+     * Namespace.isTeam; the Namespace enum carries the prefix strings "my" for
+     * PERSONAL, "team" for TEAM, "global" for GLOBAL and "system" for SYSTEM, and
+     * LABEL.NAMESPACE stores that prefix.
+     *
+     * Measured here: the only labels on any space description are my/favourite
+     * rows, which are personal favourites and not categories. Counting those
+     * would have reported categories on spaces that have none. */
+    static final String CATEGORY_NAMESPACE = "team"
+
+    static final String SWEEP_CATEGORY_SQL =
+        "SELECT cl.contentid AS labelledcontent, COUNT(*) AS categorycount " +
+        "FROM content_label cl JOIN label l ON l.labelid = cl.labelid " +
+        "WHERE l.namespace = ? GROUP BY cl.contentid"
+
+    /* CUSTOM_STYLESHEET is keyed by namespace, and for a space stylesheet that
+     * namespace IS the space key. Read out of the product: CustomStylesheetEntity
+     * carries the table annotation CUSTOM_STYLESHEET with the columns NAMESPACE
+     * and CSS_CONTENT, and CustomStylesheetStore.getForSpace(String) passes the
+     * space key straight through as the namespace with nothing prepended. The
+     * reserved value _GLOBAL, a constant on that same entity, is the
+     * instance-wide sheet and is skipped here.
+     *
+     * The table holds at most one row per space that has a sheet, so reading all
+     * of it costs nothing. It is a SEPARATE statement rather than a join into the
+     * sweep on purpose: this table arrived in an upgrade - the product still
+     * ships CustomStylesheetBandanaToTableUpgradeTask - so on an older schema it
+     * may be absent, and a join would take every other column down with it.
+     * Separate, its absence costs this one column and says so. */
+    static final String STYLESHEET_GLOBAL_NAMESPACE = "_GLOBAL"
+
+    static final String SWEEP_STYLESHEET_SQL =
+        "SELECT cs.namespace FROM custom_stylesheet cs"
+
+    /* The two enumerable per-space property stores, read as their DISTINCT
+     * namespaces. The per-space report reads three stores; the third, the content
+     * properties on the space description, is deliberately NOT part of this
+     * column, because on this instance it carries PERMISSIONS_LAST_MODIFIED_DATE
+     * on 5007 of 5038 spaces. A column that says yes for almost every space sorts
+     * nothing and triages nothing. The per-space report still reads it. */
+    static final String SWEEP_PLUGIN_SETTING_SQL =
+        "SELECT DISTINCT ps.namespace FROM plugin_setting ps ORDER BY ps.namespace"
+
+    static final String SWEEP_BANDANA_SQL =
+        "SELECT DISTINCT b.bandanacontext FROM bandana b ORDER BY b.bandanacontext"
+
+    /* One side statement, reduced to the set of space keys it names. A failure
+     * travels back rather than being swallowed, so the column it feeds can render
+     * UNREADABLE instead of quietly reading as "no space uses this store". */
+    private static Map<String, Object> storeKeys(Connection connection, String table,
+                                                 List<String> columns, String sql, String label) {
+        Map<String, Object> out = new LinkedHashMap<String, Object>()
+        out.put("keys", new LinkedHashSet<String>())
+        out.put("failure", null)
+        Map<String, Object> shape = Db.shape(connection, table, columns)
+        String problem = Db.shapeProblem(shape)
+        if (problem != null) {
+            out.put("failure", label + ": " + problem)
+            return out
+        }
+        Map<String, Object> result = Db.query(connection, sql, [], [columns.get(0)], STORE_CAP)
+        String failure = Pc.text(result.get("failure"))
+        if (failure != null) {
+            out.put("failure", label + ": " + failure)
+            return out
+        }
+        if (Boolean.TRUE.equals(result.get("truncated"))) {
+            out.put("failure", label + ": more than " + String.valueOf(STORE_CAP) + " namespaces are " +
+                "stored, which is past this report's own cap, so this column would be incomplete " +
+                "for some spaces and is not shown at all rather than shown wrong.")
+            return out
+        }
+        Set<String> keys = (Set<String>) out.get("keys")
+        for (Map<String, String> row : (List<Map<String, String>>) result.get("rows")) {
+            String candidate = Pc.storeSpaceKey(row.get(columns.get(0)))
+            if (candidate != null) {
+                keys.add(candidate)
+            }
+        }
+        return out
+    }
+
+    /* The sweep. Returns the rows, the per-column failures and the cap state.
+     *
+     * A failed side statement costs its own column and NOTHING else: the reason is
+     * carried per column so the cell can render UNREADABLE and say why, rather
+     * than reading as a measured zero. A column that could not be read and a
+     * column that is genuinely zero are different answers and this report has one
+     * job, which is never to merge them. */
+    static Map<String, Object> sweep(Connection connection) {
+        Map<String, Object> out = new LinkedHashMap<String, Object>()
+        List<Map<String, String>> rows = new ArrayList<Map<String, String>>()
+        Map<String, String> columnFailures = new LinkedHashMap<String, String>()
+        out.put("rows", rows)
+        out.put("columnFailures", columnFailures)
+        out.put("failure", null)
+        out.put("truncated", Boolean.FALSE)
+        out.put("cap", Integer.valueOf(SWEEP_CAP))
+        /* The ordering travels WITH the rows. A cap banner that names an ordering
+         * the statement did not use is worse than one that names none, and the
+         * only way to make that impossible is to stop the renderer from having to
+         * know it. */
+        out.put("order", SWEEP_ORDER)
+
+        if (connection == null) {
+            out.put("failure", "No database connection was available, so no space was read. This is " +
+                "a failed read, not an instance without spaces.")
+            return out
+        }
+
+        /* The two tables the sweep cannot do without. If either has moved, there
+         * is no sweep at all and the page says which column is missing. */
+        String problem = Db.shapeProblem(Db.shape(connection, "spaces", SWEEP_SPACE_COLUMNS))
+        if (problem == null) {
+            problem = Db.shapeProblem(Db.shape(connection, "spacepermissions", SWEEP_PERMISSION_COLUMNS))
+        }
+        if (problem != null) {
+            out.put("failure", problem)
+            return out
+        }
+
+        Map<String, Object> core = Db.query(connection, SWEEP_SQL, [ADMIN_PERMISSION], SWEEP_READ, SWEEP_CAP)
+        String failure = Pc.text(core.get("failure"))
+        if (failure != null) {
+            out.put("failure", failure)
+            return out
+        }
+        out.put("truncated", core.get("truncated"))
+
+        /* Side statement 1 - the categories, keyed by the space description id. */
+        Map<String, String> categories = new LinkedHashMap<String, String>()
+        String categoryProblem = Db.shapeProblem(
+            Db.shape(connection, "content_label", ["labelid", "contentid"]))
+        if (categoryProblem == null) {
+            categoryProblem = Db.shapeProblem(Db.shape(connection, "label", ["labelid", "namespace"]))
+        }
+        if (categoryProblem != null) {
+            columnFailures.put("categories", categoryProblem)
+        } else {
+            Map<String, Object> found = Db.query(connection, SWEEP_CATEGORY_SQL, [CATEGORY_NAMESPACE],
+                ["labelledcontent", "categorycount"], SWEEP_CAP)
+            String categoryFailure = Pc.text(found.get("failure"))
+            if (categoryFailure != null) {
+                columnFailures.put("categories", categoryFailure)
+            } else if (Boolean.TRUE.equals(found.get("truncated"))) {
+                columnFailures.put("categories", "More than " + String.valueOf(SWEEP_CAP) + " spaces " +
+                    "carry categories, which is past this report's own cap, so this column would be " +
+                    "wrong for some spaces and is not shown at all.")
+            } else {
+                for (Map<String, String> row : (List<Map<String, String>>) found.get("rows")) {
+                    String content = Pc.text(row.get("labelledcontent"))
+                    if (content != null) {
+                        categories.put(content, Pc.orNa(row.get("categorycount")))
+                    }
+                }
+            }
+        }
+
+        /* Side statement 2 - the custom stylesheets, keyed by space key. */
+        Set<String> stylesheets = new LinkedHashSet<String>()
+        String stylesheetProblem = Db.shapeProblem(
+            Db.shape(connection, "custom_stylesheet", ["namespace", "css_content"]))
+        if (stylesheetProblem != null) {
+            columnFailures.put("stylesheet", stylesheetProblem)
+        } else {
+            Map<String, Object> found = Db.query(connection, SWEEP_STYLESHEET_SQL, [],
+                ["namespace"], SWEEP_CAP)
+            String stylesheetFailure = Pc.text(found.get("failure"))
+            if (stylesheetFailure != null) {
+                columnFailures.put("stylesheet", stylesheetFailure)
+            } else if (Boolean.TRUE.equals(found.get("truncated"))) {
+                columnFailures.put("stylesheet", "More than " + String.valueOf(SWEEP_CAP) + " custom " +
+                    "stylesheets are stored, which is past this report's own cap, so this column " +
+                    "would be wrong for some spaces and is not shown at all.")
+            } else {
+                for (Map<String, String> row : (List<Map<String, String>>) found.get("rows")) {
+                    String namespace = Pc.text(row.get("namespace"))
+                    if (namespace != null && !STYLESHEET_GLOBAL_NAMESPACE.equals(namespace)) {
+                        stylesheets.add(namespace)
+                    }
+                }
+            }
+        }
+
+        /* Side statements 3 and 4 - the two enumerable property stores. Either one
+         * failing costs the whole column, because "one store said no and the other
+         * was not read" is not an answer about a space. */
+        Map<String, Object> pluginStore = storeKeys(connection, "plugin_setting",
+            ["namespace", "setting_key"], SWEEP_PLUGIN_SETTING_SQL, "Plugin settings")
+        Map<String, Object> bandanaStore = storeKeys(connection, "bandana",
+            ["bandanacontext", "bandanakey"], SWEEP_BANDANA_SQL, "Bandana")
+        String pluginFailure = Pc.text(pluginStore.get("failure"))
+        String bandanaFailure = Pc.text(bandanaStore.get("failure"))
+        if (pluginFailure != null || bandanaFailure != null) {
+            columnFailures.put("appconfig",
+                (pluginFailure == null ? "" : pluginFailure + " ") +
+                (bandanaFailure == null ? "" : bandanaFailure))
+        }
+        Set<String> pluginKeys = (Set<String>) pluginStore.get("keys")
+        Set<String> bandanaKeys = (Set<String>) bandanaStore.get("keys")
+
+        for (Map<String, String> row : (List<Map<String, String>>) core.get("rows")) {
+            String key = Pc.text(row.get("spacekey"))
+            Map<String, String> entry = new LinkedHashMap<String, String>()
+            entry.put("key", key)
+            entry.put("name", row.get("spacename"))
+            entry.put("type", row.get("spacetype"))
+            entry.put("status", row.get("spacestatus"))
+            entry.put("grants", Pc.orNa(row.get("grantcount")))
+            entry.put("anon", Pc.orNa(row.get("anongrants")))
+            entry.put("admins", Pc.orNa(row.get("admingrants")))
+            String descid = Pc.text(row.get("spacedescid"))
+            /* A space with no space description row cannot carry a category, and
+             * that is a measured absence rather than an unread one: the join key
+             * itself does not exist. */
+            String categoryCount = descid == null ? null : Pc.text(categories.get(descid))
+            entry.put("categories", categoryCount == null ? "0" : categoryCount)
+            entry.put("stylesheet", key != null && stylesheets.contains(key) ? "1" : "0")
+            List<String> stores = new ArrayList<String>()
+            if (key != null && pluginKeys.contains(key)) {
+                stores.add("plugin settings")
+            }
+            if (key != null && bandanaKeys.contains(key)) {
+                stores.add("Bandana")
+            }
+            entry.put("appconfig", stores.join(", "))
+            entry.put("appconfigCount", String.valueOf(stores.size()))
+            rows.add(entry)
+        }
+        return out
     }
 }
 
@@ -4782,66 +5543,42 @@ spaceConfig(
     Object executorFactory = executor.get("factory")
     String executorFailure = Pc.text(executor.get("failure"))
 
-    /* ---- No space named: render the picker -------------------------------- */
+    /* ---- No space named: sweep the whole estate ---------------------------
+     *
+     * Not a picker any more. One row per space, all of them, carrying the stored
+     * facts an administrator triages on, with every key linking into the report
+     * for that space. Five statements in one read-only connection - measured at
+     * 47 ms for 5038 spaces - and not one of them per space. */
 
     if (spaceKey == null) {
-        List<Map<String, String>> rows = new ArrayList<Map<String, String>>()
-        int total = 0
+        Map<String, Object> estate = null
         if (executorFactory == null) {
-            /* An empty space list and a failed read must not look alike. The
-             * picker says which of the two happened. */
-            report.globalDiagnostics.add("The space list could not be read: " + executorFailure)
+            /* An estate that could not be read and an instance without spaces
+             * must not look alike, so the failure travels into the page as a
+             * failure rather than as an empty table. */
+            estate = Scan.sweep(null)
+            estate.put("failure", executorFailure)
         } else {
             try {
-                Db.withConnection(executorFactory) { Connection connection ->
-                    Map<String, Object> shape = Db.shape(connection, "spaces",
-                        ["spacekey", "spacename", "spacetype", "spacestatus"])
-                    String problem = Db.shapeProblem(shape)
-                    if (problem != null) {
-                        report.globalDiagnostics.add("The space list could not be read. " + problem)
-                        return null
-                    }
-                    Map<String, Object> counted = Db.query(connection,
-                        "SELECT COUNT(*) AS total FROM spaces", [], ["total"], 1)
-                    List<Map<String, String>> countRows =
-                        (List<Map<String, String>>) counted.get("rows")
-                    if (!countRows.isEmpty()) {
-                        try {
-                            total = Integer.parseInt(Pc.orNa(countRows.get(0).get("total")))
-                        } catch (NumberFormatException ignored) {
-                            total = 0
-                        }
-                    }
-                    Map<String, Object> listed = Db.query(connection,
-                        "SELECT s.spacekey, s.spacename, s.spacetype, s.spacestatus FROM spaces s " +
-                        "ORDER BY s.spacename, s.spacekey",
-                        [], ["spacekey", "spacename", "spacetype", "spacestatus"], Scan.PICKER_CAP)
-                    String failure = Pc.text(listed.get("failure"))
-                    if (failure != null) {
-                        report.globalDiagnostics.add("The space list could not be read. " + failure)
-                        return null
-                    }
-                    for (Map<String, String> row : (List<Map<String, String>>) listed.get("rows")) {
-                        Map<String, String> entry = new LinkedHashMap<String, String>()
-                        entry.put("key", row.get("spacekey"))
-                        entry.put("name", row.get("spacename"))
-                        entry.put("type", row.get("spacetype"))
-                        entry.put("status", row.get("spacestatus"))
-                        rows.add(entry)
-                    }
-                    return null
+                estate = (Map<String, Object>) Db.withConnection(executorFactory) { Connection connection ->
+                    return Scan.sweep(connection)
                 }
             } catch (Throwable error) {
-                report.globalDiagnostics.add("The space list could not be read: " + Db.why(error) +
+                estate = Scan.sweep(null)
+                estate.put("failure", "The estate could not be read: " + Db.why(error) +
                     ". This is a failed read, not an instance without spaces.")
             }
-        }
-        if (total < rows.size()) {
-            total = rows.size()
+            if (estate == null) {
+                /* The executor returned without handing back a result. That is
+                 * not an empty estate either, and saying so is the difference
+                 * between a report and a guess. */
+                estate = Scan.sweep(null)
+                estate.put("failure", "The read-only executor returned no result at all, so no " +
+                    "space was read. This is a failed read, not an instance without spaces.")
+            }
         }
         report.executionMs = System.currentTimeMillis() - started
-        String page = Render.picker(report, rows, "", total)
-        return Http.ok(responseClass, page, Http.HTML)
+        return Http.ok(responseClass, Render.estate(report, estate, ""), Http.HTML)
     }
 
     /* ---- Components ------------------------------------------------------- */
