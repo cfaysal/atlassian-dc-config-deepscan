@@ -154,27 +154,48 @@
 
 /* Every import below is a type MEASURED on the instance, either acquirable as a
  * component or proven by the reachability probe that preceded this file. Nothing
- * else is named statically anywhere in this file. */
-import com.atlassian.bandana.BandanaManager
-
+ * else is named statically anywhere in this file.
+ *
+ * Three deprecated members were dropped from this list and each replacement is
+ * one this instance already runs. The Bandana manager, deprecated since 9.3 and
+ * MARKED FOR REMOVAL IN 11.0, gave way to the plugin settings factory below: the
+ * reachability probe acquired it and got ConfluencePluginSettingsFactory back,
+ * and its settings for a space key answer a key that physically lives in the
+ * BANDANA table, so the view is a superset of the old one rather than a
+ * substitute. The space manager's single-space getter, deprecated since 7.3.0,
+ * gave way to the persistence SpaceService, whose locator the export path at the
+ * foot of this file has been calling on this instance since it shipped.
+ *
+ * The API service package is otherwise unusable from here - it is a Spring proxy
+ * the ScriptRunner chaining classloader cannot follow, which is why the content
+ * property store below has no API route at all. The plugin settings factory is
+ * the measured exception to that, not a reason to doubt it. */
+import com.atlassian.confluence.api.service.settings.ExtendedPluginSettings
+import com.atlassian.confluence.api.service.settings.ExtendedPluginSettingsFactory
+import com.atlassian.confluence.content.service.SpaceService
 import com.atlassian.confluence.labels.SpaceLabelManager
 import com.atlassian.confluence.pages.templates.PageTemplateManager
-import com.atlassian.confluence.setup.bandana.ConfluenceBandanaContext
-import com.atlassian.confluence.spaces.SpaceManager
 import com.atlassian.confluence.themes.ThemeManager
 
-/* The export write path. Every type below is named statically because the
- * Confluence sibling of this endpoint - the App Footprint report - runs this
- * exact set on this instance line, so they are measured rather than assumed. */
-import com.atlassian.confluence.api.model.Expansion
-import com.atlassian.confluence.api.model.content.Space as ApiSpace
-import com.atlassian.confluence.api.model.content.SpaceStatus as ApiSpaceStatus
-import com.atlassian.confluence.api.model.pagination.PageResponse
-import com.atlassian.confluence.api.model.pagination.SimplePageRequest
-import com.atlassian.confluence.api.service.content.SpaceService as ApiSpaceService
-import com.atlassian.confluence.api.service.content.SpaceService.SpaceFinder
+/* The export write path. Every type below is named statically because it is
+ * measured acquirable from a ScriptRunner endpoint on THIS instance line.
+ *
+ * Seven types out of api.model and api.service.content stood here and were
+ * removed on OP-1005. The space picker they served resolved
+ * com.atlassian.confluence.api.service.content.SpaceService, and that type is a
+ * Spring AOP proxy: the resolution throws on two independent Confluence 10.2.14
+ * instances, saying that org.springframework.aop.SpringProxy is not visible from
+ * the ScriptRunner chaining classloader. The set was carried over from the App
+ * Footprint sibling because it runs THERE, which is a different measurement from
+ * running here, and this file already records the same failure for
+ * SpacePropertyService and for EffectiveSpacePermissionsCalculator. The picker
+ * reads the SPACES table instead.
+ *
+ * com.atlassian.confluence.content.service is the OLD content service layer and a
+ * different thing altogether: it is not proxied, it is measured working here, and
+ * PageService below is one of its types. Nothing about the proxied API layer says
+ * anything about it. */
 import com.atlassian.confluence.content.service.PageService
-import com.atlassian.confluence.content.service.SpaceService
 import com.atlassian.confluence.core.BodyContent
 import com.atlassian.confluence.core.BodyType
 import com.atlassian.confluence.core.DefaultSaveContext
@@ -2915,8 +2936,17 @@ function openExport() {
             return;
         }
         exportSpaceList = body.spaces || [];
-        say('muted', String(exportSpaceList.length) + ' current space(s). Type at least ' +
-            '${Cx.MIN_SEARCH_CHARS} characters to search by name or key.');
+        var spaceNote = String(exportSpaceList.length) + ' current space(s). Type at least ' +
+            '${Cx.MIN_SEARCH_CHARS} characters to search by name or key.';
+        /* A cut announces the ordering it cut by and the route past it. The picker
+           this replaced cut 5038 spaces down to 2000 and said nothing at all. */
+        if (body.truncated === true) {
+            spaceNote = spaceNote + ' This list is NOT complete: it carries the first ' +
+                String(body.cap) + ' spaces ordered by ' + String(body.order) +
+                ', which is the cap of this tool and not the number that exists. A space past ' +
+                'the cut is still reached by putting its key in the space parameter of the report URL.';
+        }
+        say('muted', spaceNote);
     }).catch(function (error) {
         el('exportSettings').classList.add('hidden');
         el('exportOpen').disabled = false;
@@ -3113,6 +3143,26 @@ function exportToPage() {
  *   fails for any reason NOTHING is written. A remark that cannot be read is a
  *   remark that must not be overwritten.
  *
+ * Each MEMBER of the report - a section - gets a heading of its own and its own
+ * table underneath it, which is what the table view of the report does. The
+ * member's name is on that heading and nowhere else: a first column reading
+ * "Details" on all eleven rows of the Details table is a column that carries no
+ * information and takes width on a page people read. Below the heading the tree
+ * spreads over one column per level, a container is a column on the rows beneath
+ * it rather than a row of its own, and the breadcrumb that used to sit in one Path
+ * cell on every row is gone: a repeated ancestor down a COLUMN is what a sort, a
+ * filter and a pivot consume, the same repetition inside one text cell was the
+ * defect. An empty level cell means the level does not apply to that record, not
+ * that something could not be read - the State column says that.
+ *
+ * THREE LAYOUTS ARE READ, ONE IS WRITTEN, and the identity is the same string in
+ * all three. The oldest pages carry a Path column holding the whole breadcrumb.
+ * The ones written this morning carry the member as the leading level COLUMN. This
+ * build carries it on the heading, so the reader takes that leading segment off
+ * the heading and prepends it. Every remark an administrator ever typed is keyed
+ * on that identity; one that came out differently would orphan the lot, which is
+ * the one outcome this export must never produce.
+ *
  * Everything here is a pure function of its input, so the whole export is
  * exercised by the offline suite without a page ever being written.
  * ========================================================================== */
@@ -3123,12 +3173,53 @@ class Cx {
      * written by an older, differently shaped export is not silently adopted. */
     static final String MARKER = "cfcon-space-config-export/1"
 
+    /* WHICH of the two level layouts the page in front of the reader is in. The
+     * two are structurally identical - one column per level, then Value, State,
+     * In Confluence, Remark - and differ only in whether the leading level sits in
+     * a cell of the row or on the heading above the table. Nothing else in the
+     * markup tells them apart, and a guess that came out wrong would orphan every
+     * remark on the page, so the writer states it and the reader reads it.
+     *
+     * It CONTAINS the marker rather than replacing it. Adoption still turns on the
+     * marker, so a page written by either older build is still updated and its
+     * remarks are still carried over - which is the exact opposite of bumping the
+     * marker, and deliberate: a bump would strand every page written so far. */
+    static final String LAYOUT_MARKER = MARKER + "/headings"
+
+    /* COL_PATH is no longer written into a data table. It stays because it is
+     * still READ - a page from the OLDEST build is keyed on it - and because the
+     * orphan table below still writes it: that table has no tree to spread over
+     * columns, it carries identities. */
     static final String COL_PATH = "Path"
+    /* Written nowhere any more: it stood beside Path in the oldest layout and its
+     * job - naming the record - is what the deepest level column does now. It
+     * stays because the offline suite builds an old-layout page out of these
+     * constants, and a fixture spelling its columns by hand is a fixture that
+     * stops matching the thing it stands for. */
     static final String COL_ITEM = "Item"
     static final String COL_VALUE = "Value"
     static final String COL_STATE = "State"
     static final String COL_LINK = "In Confluence"
     static final String COL_REMARK = "Remark"
+
+    /* The header a level whose kind says nothing usable gets, and the header a
+     * level gets when its nodes do not agree on a kind. Same word the table view
+     * uses for the same case. */
+    static final String COL_ASPECT = "Aspect"
+
+    /* Between two levels of the identity. It is the separator the old Path column
+     * was built with, so joining the level cells of a row reproduces the key a
+     * remark was written under. */
+    static final String PATH_SEPARATOR = " > "
+
+    /* A level header may not collide with one of this table's own column names:
+     * the reader finds the level block by locating Value and Remark, and it tells
+     * the two layouts apart by whether a Path column is present. A colliding
+     * header would make the row unreadable, so it becomes COL_ASPECT instead.
+     * COL_ITEM is not reserved - it is humanKind's own fallback and names no
+     * column of this table. */
+    static final List<String> RESERVED_HEADERS =
+        [COL_PATH, COL_VALUE, COL_STATE, COL_LINK, COL_REMARK]
 
     static final String DEFAULT_TITLE_PREFIX = "Confluence space configuration - "
 
@@ -3141,6 +3232,19 @@ class Cx {
      * failing to save, so the table is cut - and the cut is stated on the page,
      * because a shortened table that looks complete is worse than no table. */
     static final int MAX_ROWS = 5000
+
+    /* How many leading levels of a row the member heading accounts for, and are
+     * therefore not columns. It is one because the table view drops exactly one at
+     * this point: sectionTable hands subTable the member's CHILDREN, and the
+     * member's own name is on the heading it just printed. Mirroring that rule is
+     * the whole of this layout; inventing a different number would be a variant of
+     * it, not the thing itself.
+     *
+     * It is also NOT a knob. The reader half is hard-coded to one: `identityOfRow`
+     * prepends exactly one lead and `memberLabelOf` recovers exactly one label.
+     * Raising this constant would silently shorten every identity by a segment
+     * without either of them noticing. Change all three or none. */
+    static final int LEAD_LEVELS = 1
 
     /* Search stages. The space search shows at most this many matches and ignores
      * a shorter term, so a single keystroke never renders the whole instance. */
@@ -3436,6 +3540,158 @@ class Cx {
         return -1
     }
 
+    /* ---- The identity a remark is keyed on ---------------------------------- */
+
+    /* One label, in the form it has after a round trip through the page. The
+     * writer keys a remark on this and the reader recovers it with plainText, so
+     * the two have to normalise whitespace the same way or a label carrying a
+     * double space is orphaned on every single run - which is what the old build
+     * did, silently. Entities are NOT touched here: the writer holds raw text and
+     * esc() plus plainText() already round-trips them. */
+    static String normLabel(String value) {
+        if (value == null) {
+            return ""
+        }
+        return value.replace("\u00A0", " ").replaceAll("\\s+", " ").trim()
+    }
+
+    /* The identity of one record, out of the labels down its chain. The writer
+     * builds it from the tree, the reader rebuilds it from the level cells of a
+     * row, and both land on the string the old Path column carried for the same
+     * item. That is what lets a page written by the old build keep every remark.
+     *
+     * Trailing empty levels are levels that do not apply to this record and add
+     * nothing. A level that is empty with a named level BELOW it is not something
+     * this export writes; it is joined as an empty segment rather than dropped,
+     * so such a row keys on something that matches no other row instead of
+     * quietly colliding with one. */
+    static String pathOf(List<String> labels) {
+        int last = -1
+        for (int i = 0; labels != null && i < labels.size(); i++) {
+            if (!normLabel(labels.get(i)).isEmpty()) {
+                last = i
+            }
+        }
+        StringBuilder out = new StringBuilder()
+        for (int i = 0; i <= last; i++) {
+            if (i > 0) {
+                out.append(PATH_SEPARATOR)
+            }
+            out.append(normLabel(labels.get(i)))
+        }
+        return out.toString()
+    }
+
+    /* How many leading columns of a table are level columns, or -1 when the table
+     * is not in the level layout at all.
+     *
+     * The tail is what identifies it: Value, then anything, then Remark, with at
+     * least one column in front of Value. Value is taken as the LAST one before
+     * Remark, so a level header that happens to read "Value" cannot displace the
+     * real column - and RESERVED_HEADERS keeps this export from writing one. */
+    static int levelColumnCount(List<String> header) {
+        int remarkIndex = headerIndex(header, COL_REMARK)
+        if (remarkIndex < 1) {
+            return -1
+        }
+        int valueIndex = -1
+        for (int i = 0; i < remarkIndex; i++) {
+            if (plainText(header.get(i)).equalsIgnoreCase(COL_VALUE)) {
+                valueIndex = i
+            }
+        }
+        return valueIndex < 1 ? -1 : valueIndex
+    }
+
+    /* The identity of one row of a level layout, joined back out of its cells.
+     *
+     * The lead is the leading segment the table's HEADING carries and the row does
+     * not. It is null for a page whose rows still hold every level in a cell of
+     * their own, which is what the build before this one wrote. Either way the same
+     * item comes out as the same string, and that is the whole of the carry-over. */
+    static String identityOfRow(List<String> cells, int levelCount, String lead) {
+        List<String> labels = new ArrayList<String>()
+        if (lead != null) {
+            labels.add(lead)
+        }
+        for (int i = 0; i < levelCount && i < cells.size(); i++) {
+            labels.add(plainText(cells.get(i)))
+        }
+        return pathOf(labels)
+    }
+
+    /* The heading of one member, and the label read back out of it. They are one
+     * pair on purpose: the writer puts the member's name here INSTEAD of into a
+     * column, and the reader takes the leading segment of every identity in the
+     * table below from this string. Any drift between the two orphans every remark
+     * in that table, so neither is written without the other in view.
+     *
+     * The detail is always parenthesised and always last, so the label is whatever
+     * stands in front of the LAST " (" of a string that ends in ")". Cutting at the
+     * first one instead would halve a label carrying a parenthesis of its own. */
+    static String memberHeading(String label, String detail) {
+        return label + " (" + detail + ")"
+    }
+
+    static String memberLabelOf(String heading) {
+        if (heading == null) {
+            return null
+        }
+        String value = normLabel(plainText(heading))
+        if (!value.endsWith(")")) {
+            return null
+        }
+        int cut = value.lastIndexOf(" (")
+        return cut < 1 ? null : value.substring(0, cut)
+    }
+
+    /* Every heading this export writes, with the offset it starts at, in document
+     * order.
+     *
+     * The macro NAME is part of the pattern and has to be. The remark seed is a
+     * status macro carrying an ac:parameter called "title" of its own, inside a
+     * table cell, so a search for the parameter alone would take the last seed of
+     * one table for the heading of the next one. Counted on the exported page of
+     * ~cfaysal: 113 title parameters, of which 7 are headings and 106 are seeds. */
+    static final java.util.regex.Pattern EXPAND_TITLE = java.util.regex.Pattern.compile(
+        "(?s)<ac:structured-macro[^>]*ac:name=\"expand\"[^>]*>\\s*" +
+        "<ac:parameter[^>]*ac:name=\"title\"[^>]*>(.*?)</ac:parameter>")
+
+    static Map<Integer, String> expandHeadings(String storage) {
+        Map<Integer, String> found = new LinkedHashMap<Integer, String>()
+        java.util.regex.Matcher matcher = EXPAND_TITLE.matcher(storage)
+        while (matcher.find()) {
+            found.put(Integer.valueOf(matcher.start()), matcher.group(1))
+        }
+        return found
+    }
+
+    /* The heading a table sits under: the last one that starts after the END of the
+     * previous table body and before this one. Collected once and walked, rather
+     * than scanned again per table - this page can reach four million characters.
+     *
+     * The lower bound is what keeps an administrator's own macro out of the job.
+     * The seed is defended by matching on the macro NAME, but an expand macro
+     * pasted into a Remark cell is an expand with a title like any other: its
+     * offset sits inside a table, so without a bound it is a candidate for the
+     * heading of every table after it. Every genuine member heading lies between
+     * the end of the previous table and the start of its own, so the bound is
+     * exact and costs nothing. What it turns into a null was a wrong lead, and a
+     * wrong lead orphans every remark in that table without saying so. */
+    static String headingAbove(Map<Integer, String> headings, int after, int at) {
+        String found = null
+        for (Map.Entry<Integer, String> entry : headings.entrySet()) {
+            int offset = entry.getKey().intValue()
+            if (offset >= at) {
+                break
+            }
+            if (offset >= after) {
+                found = entry.getValue()
+            }
+        }
+        return found
+    }
+
     /* Exception class plus message. Both the remark read and the write path
      * report a failure in exactly this wording. */
     static String errorDetail(Throwable error) {
@@ -3445,6 +3701,52 @@ class Cx {
             detail = detail + ": " + message.trim()
         }
         return detail
+    }
+
+    /* The one write failure that is not a fault of this export or of the page it
+     * writes. Confluence refuses to save a page that Synchrony holds a revision for
+     * which the database does not have - the same principle as this export's own
+     * remark rule, applied one layer down - and the state clears itself the moment
+     * somebody opens the page in the editor. It is temporary and recoverable, so it
+     * earns the 409 every other fail-closed path here gets rather than a 500 with a
+     * class name in it, which tells an administrator nothing they can act on.
+     *
+     * Measured on the instance: "Unable to save changes to unreconciled page
+     * ContentId{id=74973191}", reported as a 500.
+     *
+     * The type is Confluence-internal and is NOT imported: it is recognised by
+     * class NAME down the cause chain, the way this file resolves every such type.
+     * The chain is walked because the throw may arrive wrapped, and it is bounded
+     * because a self-referencing cause is a hang, not a diagnosis. */
+    static final String UNRECONCILED_TYPE = "ExternalChangesException"
+
+    static boolean unreconciled(Throwable error) {
+        Throwable at = error
+        for (int depth = 0; at != null && depth < 20; depth++) {
+            if (UNRECONCILED_TYPE.equals(at.getClass().getSimpleName())) {
+                return true
+            }
+            Throwable next = at.getCause()
+            at = next == at ? null : next
+        }
+        return false
+    }
+
+    /* The status and the wording one failed write earns. Both branches live here
+     * rather than at the call site, so the mapping can be measured off the instance:
+     * the write path itself needs a running Confluence and is therefore the one
+     * place an offline suite can never reach. */
+    static Map<String, Object> writeRefusal(Throwable error) {
+        Map<String, Object> refusal = new LinkedHashMap<String, Object>()
+        boolean stale = unreconciled(error)
+        refusal.put("status", Integer.valueOf(stale ? 409 : 500))
+        refusal.put("message", stale
+            ? "The page carries unreconciled collaborative-editing changes: Confluence is holding a " +
+              "revision of it that the database does not have, and it refuses to save over that. " +
+              "Nothing was written and no remark can be lost. Open the page once in the editor and " +
+              "let Confluence reconcile it, then run this export again and it will take the page."
+            : "The page could not be written: " + errorDetail(error))
+        return refusal
     }
 
     /* The read is a set of regular expressions over the page markup, and a regular
@@ -3495,10 +3797,38 @@ class Cx {
                     "nothing is written. Take the nested table out of the Remark cell and export again.")
             }
 
+            /* THREE LAYOUTS, and two questions tell them apart. The Path column
+             * below says whether the identity is one cell or a row of level cells.
+             * This token says whether the leading level of that row sits in a cell
+             * of its own or on the heading above the table - the two layouts are
+             * otherwise the same shape.
+             *
+             * A token is a guess dressed as a fact: lose that one footer paragraph
+             * off a heading-layout page and this read does not become uncertain, it
+             * becomes confidently wrong - every identity short by its leading
+             * segment, every remark off its row, nothing said. So the token is
+             * cross-checked against the tables themselves, which carry the answer
+             * structurally: the layout before this one repeats the member's own
+             * label down the first level column of every table, and this one never
+             * does. The check does not overrule the token, it only refuses to let
+             * the two disagree in silence - see below the loop. */
+            boolean headingLayout = storage.contains(LAYOUT_MARKER)
+            Map<Integer, String> headings = expandHeadings(storage)
+            int levelTables = 0
+            int repeatingTables = 0
+
             int tablesMatched = 0
+            int previousBodyEnd = 0
             java.util.regex.Matcher bodyMatcher = TBODY.matcher(storage)
 
             while (bodyMatcher.find()) {
+                /* Taken before anything can skip the rest of this iteration: the
+                 * floor for the heading lookup is where the PREVIOUS table body
+                 * ended, whether or not that table turned out to be readable. */
+                int bodyStart = bodyMatcher.start()
+                int headingFloor = previousBodyEnd
+                previousBodyEnd = bodyMatcher.end()
+
                 List<String> rows = new ArrayList<String>()
                 java.util.regex.Matcher rowMatcher = ROW.matcher(bodyMatcher.group(1))
                 while (rowMatcher.find()) {
@@ -3509,14 +3839,52 @@ class Cx {
                 }
 
                 List<String> header = cellsOf(rows.get(0))
-                int keyIndex = headerIndex(header, COL_PATH)
                 int remarkIndex = headerIndex(header, COL_REMARK)
-                if (keyIndex < 0 || remarkIndex < 0) {
+                if (remarkIndex < 0) {
+                    continue
+                }
+                /* TWO LAYOUTS, and the Path column is what decides between them.
+                 * A page written by the older build carries the whole breadcrumb
+                 * in one Path cell; this build spreads it over one column per
+                 * level. Path is tested FIRST and wins, because the old table also
+                 * ends in Value, State, In Confluence, Remark and would otherwise
+                 * be read as the new one - with its Path and Item cells taken for
+                 * levels, which would key every remark on a string no row of the
+                 * new page carries. */
+                int keyIndex = headerIndex(header, COL_PATH)
+                int levelCount = keyIndex < 0 ? levelColumnCount(header) : -1
+                if (keyIndex < 0 && levelCount < 0) {
                     continue
                 }
                 tablesMatched++
 
-                int required = Math.max(keyIndex, remarkIndex) + 1
+                /* The member this table sits under. In the heading layout it is the
+                 * leading segment of every identity below; in the layout before it
+                 * the same name is the first level COLUMN, and comparing the two is
+                 * what cross-checks the token. So it is read either way, and only
+                 * when there IS a row: the table a report with no section at all
+                 * writes has a header and nothing else, and it must stay readable
+                 * or the export bricks itself on an empty report. */
+                String member = keyIndex < 0 && rows.size() > 1
+                    ? memberLabelOf(headingAbove(headings, headingFloor, bodyStart))
+                    : null
+                boolean repeatsMember = member != null
+
+                /* A table that carries rows and sits under no heading this read can
+                 * name has identities that cannot be rebuilt, and an identity that
+                 * comes out different is an orphaned remark - so it fails rather
+                 * than guesses. */
+                String lead = null
+                if (keyIndex < 0 && headingLayout && rows.size() > 1) {
+                    if (member == null) {
+                        return read.fail("A table on the existing page carries rows but sits under no " +
+                            "section heading this read can name. The identity of a row is that heading " +
+                            "followed by its level cells, so it cannot be rebuilt; nothing is written.")
+                    }
+                    lead = member
+                }
+
+                int required = Math.max(keyIndex < 0 ? levelCount - 1 : keyIndex, remarkIndex) + 1
                 for (int i = 1; i < rows.size(); i++) {
                     List<String> cells = cellsOf(rows.get(i))
                     if (cells.isEmpty()) {
@@ -3527,21 +3895,71 @@ class Cx {
                             " cell(s) where " + String.valueOf(required) + " are needed. The table structure was changed; nothing is written.")
                     }
 
-                    String key = plainText(cells.get(keyIndex))
+                    /* The structural half of the layout question, off the cells this
+                     * loop reads anyway. One row whose first level cell is not the
+                     * member's own label is enough to say this table does not repeat
+                     * its heading - which includes the member-only row whose single
+                     * level cell is empty, and that is correct: the older layout
+                     * wrote the member's name into that cell. */
+                    if (repeatsMember && !member.equals(plainText(cells.get(0)))) {
+                        repeatsMember = false
+                    }
+
+                    /* Whichever of the three layouts this row is in, the identity
+                     * comes out the same string. That is what carries a remark
+                     * across a change of layout, and it is the only reason an
+                     * administrator's text survives one. */
+                    String key = keyIndex < 0
+                        ? identityOfRow(cells, levelCount, lead)
+                        : plainText(cells.get(keyIndex))
                     String remarkHtml = cells.get(remarkIndex).trim()
                     if (key.isEmpty() || isEmptyCell(remarkHtml) || isRemarkSeed(remarkHtml)) {
                         continue
                     }
                     if (read.remarks.containsKey(key)) {
-                        return read.fail("Path \"" + key + "\" carries more than one remark on the existing page. That is ambiguous; nothing is written.")
+                        return read.fail("The item \"" + key + "\" carries more than one remark on the existing page. That is ambiguous; nothing is written.")
                     }
                     read.remarks.put(key, remarkHtml)
                 }
+
+                /* A table with no row, and one under no heading this read can name,
+                 * say nothing about the layout and are not counted. Neither is a
+                 * disagreement. */
+                if (member != null) {
+                    levelTables++
+                    if (repeatsMember) {
+                        repeatingTables++
+                    }
+                }
+            }
+
+            /* The token against the tables. Every table of the older layout repeats
+             * its member's label down the first level column, so one table that does
+             * not is proof the page is not in that layout, and a page where they all
+             * do is not in this one. Where that verdict and the token disagree, the
+             * layout of the page is not known - and reading it under the wrong one is
+             * the silent failure the token exists to prevent, so no winner is picked
+             * here. Nothing is written, and the reason names the two things that
+             * contradicted each other. */
+            boolean tablesSayHeading = repeatingTables < levelTables
+            if (levelTables > 0 && tablesSayHeading != headingLayout) {
+                return read.fail("The layout of the existing page could not be determined, so nothing " +
+                    "is written. The page " + (headingLayout ? "carries" : "does not carry") +
+                    " the marker \"" + LAYOUT_MARKER + "\", which says the leading level of every row " +
+                    "sits " + (headingLayout ? "on the heading above its table" : "in a column of its own") +
+                    ", but its tables say the opposite: " + String.valueOf(repeatingTables) + " of " +
+                    String.valueOf(levelTables) + " of them repeat the heading's own label down the " +
+                    "first column. Reading the page under the wrong layout keys every remark on the " +
+                    "wrong item and takes it off its row without reporting anything, so it is refused " +
+                    "rather than guessed. Restore the marker paragraph at the foot of the page, or let " +
+                    "this export write a fresh page under a title it has not used.")
             }
 
             if (tablesMatched == 0) {
-                return read.fail("No table with the columns \"" + COL_PATH + "\" and \"" + COL_REMARK +
-                    "\" was found on the existing page. The read is inconclusive; nothing is written.")
+                return read.fail("No remark table was found on the existing page: neither one with a \"" +
+                    COL_PATH + "\" and a \"" + COL_REMARK + "\" column, which is what the oldest build wrote, " +
+                    "nor one that ends in \"" + COL_VALUE + "\" and \"" + COL_REMARK +
+                    "\" with a level column in front of it. The read is inconclusive; nothing is written.")
             }
 
             read.outcome = RemarkRead.PARSED
@@ -3708,6 +4126,18 @@ class Cx {
               "and their stores are listed, the values are not read.")
         out.append("</p>")
 
+        /* The shape of the table is stated on the page, because a reader who
+         * finds a level cell empty has to be able to tell that apart from a read
+         * that failed - and because the first thing anyone does with this page is
+         * paste it into a spreadsheet. */
+        out.append("<p>Each section has a heading of its own and its own table. ")
+        out.append("The name on the heading is not repeated in the table below it. ")
+        out.append("Every level under it is a column of its own, and a container is not a row: ")
+        out.append("its name is the column on the rows below it, so the table sorts, filters ")
+        out.append("and pivots. An empty level cell means that level does not apply to the row, ")
+        out.append("not that something could not be read - ")
+        out.append("the <strong>").append(esc(COL_STATE)).append("</strong> column says that.</p>")
+
         out.append("<p>The <strong>").append(esc(COL_REMARK)).append("</strong> column belongs to you. ")
         out.append("It is read back and carried over on every later run of this export. ")
         out.append("Everything else on this page is overwritten each time.</p>")
@@ -3724,7 +4154,7 @@ class Cx {
         List<Map<String, Object>> kept = new ArrayList<Map<String, Object>>()
         for (Map<String, Object> section : sections) {
             List<Map<String, Object>> sectionRows = new ArrayList<Map<String, Object>>()
-            flatten(section, "", "", sectionRows)
+            flatten(section, new ArrayList<Map<String, Object>>(), "", sectionRows)
             if (sectionRows.isEmpty()) {
                 continue
             }
@@ -3745,7 +4175,7 @@ class Cx {
         List<String> cutSections = new ArrayList<String>()
         for (int i = 0; i < grouped.size(); i++) {
             if (grouped.get(i).size() > allowance.get(i).intValue()) {
-                cutSections.add(str(grouped.get(i).get(0), "label", "Section"))
+                cutSections.add(str(kept.get(i), "label", "Section"))
             }
         }
         if (!cutSections.isEmpty()) {
@@ -3768,15 +4198,41 @@ class Cx {
                 ? sectionRows.subList(0, allowed) : sectionRows
             boolean sectionCut = visible.size() < sectionRows.size()
 
-            /* The first row of a section is the section node itself, so its label is
-             * the heading an administrator recognises from the report. It is taken
-             * from the full list rather than from the visible one, because a section
-             * that was cut to nothing still has to carry its own name. */
-            String heading = str(sectionRows.get(0), "label", "Section")
+            /* The heading comes from the section NODE and no longer from the
+             * first row of the section: a container contributes no row of its own
+             * now, and a section cut to nothing still has to carry its own name.
+             *
+             * It is also the ONLY place that name appears. The member is no longer
+             * a column, so the reader takes the leading segment of every identity
+             * in the table below off this string - which is why it is built by
+             * memberHeading and taken apart by memberLabelOf rather than by two
+             * pieces of string handling that can drift apart.
+             *
+             * The count is the ROWS this table carries. The table view counts the
+             * member and everything under it instead, so the same section can read
+             * one higher there; the cut notice under this heading counts rows, and
+             * two numbers that disagree on one heading are worse than one number
+             * that is only nearly the other view's. */
+            Map<String, Object> member = kept.get(i)
+            /* NO fallback label here, deliberately. The heading IS the leading
+             * segment of every identity in the table under it, and `flatten` builds
+             * that same segment with an empty-string fallback. A different fallback
+             * on the two sides means a member with no label is written under one key
+             * and read back under another, and every remark in it detaches on the
+             * next run. An empty label instead yields a heading `memberLabelOf`
+             * refuses, so the read fails closed with 409 rather than mis-keying. */
+            String heading = str(member, "label", "")
             out.append(expandOpen(sectionCut
-                ? heading + " (" + String.valueOf(visible.size()) + " of " +
-                    Pc.plural(sectionRows.size(), "item") + ", the rest is cut)"
-                : heading + " (" + Pc.plural(visible.size(), "item") + ")"))
+                ? memberHeading(heading, String.valueOf(visible.size()) + " of " +
+                    Pc.plural(sectionRows.size(), "item") + ", the rest is cut")
+                : memberHeading(heading, Pc.plural(visible.size(), "item"))))
+            /* The link belongs on the heading, the way the table view puts it
+             * there: it is a property of the member, not of any one row. */
+            String memberLink = str(member, "deepLink", null)
+            if (memberLink != null) {
+                out.append("<p><a href=\"").append(esc(memberLink))
+                out.append("\">open in Confluence</a></p>")
+            }
             if (sectionCut) {
                 out.append("<p><strong>This section is not complete.</strong> It carries ")
                 out.append(String.valueOf(visible.size())).append(" of ")
@@ -3787,7 +4243,7 @@ class Cx {
              * see that the section is coupled to a schema which is not a public
              * API, because that is what explains an UNREADABLE section after an
              * upgrade. */
-            for (String note : textsOf(kept.get(i), "notes")) {
+            for (String note : textsOf(member, "notes")) {
                 out.append("<p><em>").append(esc(note)).append("</em></p>")
             }
             out.append(rowTable(visible, read, used, outcome, valuesRequested))
@@ -3816,7 +4272,11 @@ class Cx {
             outcome.orphanKeys.addAll(orphans)
             out.append("<h2>Remarks without a matching item</h2>")
             out.append("<p>These remarks were carried over from the previous version of this page, ")
-            out.append("but the configuration item they belong to is no longer in the space. ")
+            out.append("but no row above carries the configuration item they belong to. Either that ")
+            out.append("item is no longer in the space, or it was a container: a container's name is ")
+            out.append("a column now rather than a row of its own, and a section's name is a heading, ")
+            out.append("so a remark written on one before this page changed shape has no row left to ")
+            out.append("sit on. ")
             out.append("They are kept here rather than dropped. Delete a row to be rid of it.</p>")
             out.append(expandOpen("Remarks without a matching item (" +
                 Pc.plural(orphans.size(), "remark") + ")"))
@@ -3857,37 +4317,63 @@ class Cx {
             out.append(expandClose())
         }
 
-        out.append("<p><em>").append(esc(MARKER)).append("</em></p>")
+        /* One line, both facts. LAYOUT_MARKER contains MARKER, so a build that
+         * looks only for the marker still adopts this page. */
+        out.append("<p><em>").append(esc(LAYOUT_MARKER)).append("</em></p>")
 
         outcome.storage = out.toString()
         return outcome
     }
 
-    /* The path is the carry-over key, so it has to be stable across runs. It is
-     * built from labels rather than from ids because an administrator who renames
-     * a template or a permission subject expects the remark to follow the name
-     * they see, and because the same report has to work on an instance where ids
-     * differ. The owner - the label of the node above - travels with the row as
-     * well, because the property value gate needs the property key. */
-    static void flatten(Map<String, Object> node, String parentPath, String owner,
-                        List<Map<String, Object>> rows) {
+    /* One row per configuration value, carrying the labels and the kinds of every
+     * level above it. The labels become the level columns; the kinds decide what
+     * each column is called. Their join is the carry-over key, so it has to be
+     * stable across runs: it is built from labels rather than from ids because an
+     * administrator who renames a template or a permission subject expects the
+     * remark to follow the name they see, and because the same report has to work
+     * on an instance where ids differ. The owner - the label of the node above -
+     * travels with the row as well, because the property value gate needs the
+     * property key.
+     *
+     * A CONTAINER CONTRIBUTES NO ROW OF ITS OWN. Its label becomes a column on the
+     * rows beneath it, and a summary value such as "12 grants" is an aggregate a
+     * table computes rather than stores. The exception is not negotiable: a node
+     * that could not be read stays a row even when it has children, because a
+     * failure that vanishes because it happened to sit on a branch is precisely
+     * the absence-that-was-never-measured this report exists to prevent. This is
+     * collectRows of the table view, applied to the payload instead of the tree. */
+    static void flatten(Map<String, Object> node, List<Map<String, Object>> trail,
+                        String owner, List<Map<String, Object>> rows) {
         if (node == null) {
             return
         }
         String label = str(node, "label", "")
-        String path = parentPath.isEmpty() ? label : parentPath + " > " + label
-        Map<String, Object> row = new LinkedHashMap<String, Object>()
-        row.put("path", path)
-        row.put("label", label)
-        row.put("kind", str(node, "kind", ""))
-        row.put("owner", owner)
-        row.put("value", str(node, "value", ""))
-        row.put("state", str(node, "state", "read"))
-        row.put("deepLink", str(node, "deepLink", null))
-        row.put("linkNote", str(node, "linkNote", null))
-        rows.add(row)
-        for (Map<String, Object> child : rowsOf(node, "children")) {
-            flatten(child, path, label, rows)
+        List<Map<String, Object>> here = new ArrayList<Map<String, Object>>(trail)
+        here.add(node)
+        String state = str(node, "state", Pc.READ)
+        List<Map<String, Object>> children = rowsOf(node, "children")
+        if (children.isEmpty() || !Pc.READ.equals(state)) {
+            List<String> levels = new ArrayList<String>()
+            List<String> kinds = new ArrayList<String>()
+            for (Map<String, Object> step : here) {
+                levels.add(str(step, "label", ""))
+                kinds.add(str(step, "kind", ""))
+            }
+            Map<String, Object> row = new LinkedHashMap<String, Object>()
+            row.put("levels", levels)
+            row.put("levelKinds", kinds)
+            row.put("path", pathOf(levels))
+            row.put("label", label)
+            row.put("kind", str(node, "kind", ""))
+            row.put("owner", owner)
+            row.put("value", str(node, "value", ""))
+            row.put("state", state)
+            row.put("deepLink", str(node, "deepLink", null))
+            row.put("linkNote", str(node, "linkNote", null))
+            rows.add(row)
+        }
+        for (Map<String, Object> child : children) {
+            flatten(child, here, label, rows)
         }
     }
 
@@ -3898,7 +4384,24 @@ class Cx {
      * the parser found the same path twice with text in both and refused to write
      * anything ever again. Fail-closed, so no text was lost, but the export bricked
      * itself two runs after the first remark. A repeated path therefore gets an
-     * ordinal, which is stable as long as the configuration is. */
+     * ordinal, which is stable as long as the configuration is.
+     *
+     * The ordinal travels on the LAST level label as well. The reader joins the
+     * level cells back into the key, so an ordinal that lived only in this map would
+     * produce a page whose rows no longer carry the key their remarks were written
+     * under - the same self-inflicted orphaning, one layer down.
+     *
+     * One row cannot carry it: the one whose only level is the member itself, which
+     * a member that could not be read or that holds nothing produces. That label is
+     * on the heading, and the heading is shared by every row of the table, so an
+     * ordinal put there would move the key of all of them. Reaching that case needs
+     * two members with the same label; the sections of this report are a fixed set
+     * of distinct names, so it is unreachable today. The consequence if it ever WERE
+     * reached is worse than an orphan: both tables would derive the same identity,
+     * and a remark on each makes the read find one key twice, which is refused as
+     * ambiguous. Every later run then answers 409 and writes nothing - the export
+     * bricking itself, which is the exact failure this method exists to prevent,
+     * reintroduced one layer up. */
     static void makePathsUnique(List<Map<String, Object>> rows) {
         Map<String, Integer> seen = new LinkedHashMap<String, Integer>()
         for (Map<String, Object> row : rows) {
@@ -3910,7 +4413,13 @@ class Cx {
             }
             int next = count.intValue() + 1
             seen.put(path, Integer.valueOf(next))
-            row.put("path", path + " #" + String.valueOf(next))
+            String suffix = " #" + String.valueOf(next)
+            row.put("path", path + suffix)
+            List<String> levels = textsOf(row, "levels")
+            if (!levels.isEmpty()) {
+                levels.set(levels.size() - 1, levels.get(levels.size() - 1) + suffix)
+                row.put("levels", levels)
+            }
         }
     }
 
@@ -3982,20 +4491,89 @@ class Cx {
         return allowance
     }
 
-    /* One table per section, so each of them can sit inside its own collapsed
-     * macro. The remark carry-over is unaffected by the split: the read scans every
-     * table on the page and keys on the path, which is unique page-wide.
+    /* The header of one level, the same rule the table view applies to the same
+     * data. Level zero is the section node itself and has no ancestor among these
+     * rows, so it has nothing to strip against and its own kind is the honest
+     * header for it. A level whose nodes do not agree on a kind is a mixed level:
+     * COL_ASPECT is what such a level IS, and inventing a more specific word for
+     * it would be a guess. */
+    static String exportLevelHeader(List<Map<String, Object>> rows, int level) {
+        String kind = null
+        String parent = null
+        boolean mixed = false
+        boolean parentMixed = false
+        for (Map<String, Object> row : rows) {
+            List<String> kinds = textsOf(row, "levelKinds")
+            if (kinds.size() <= level) {
+                continue
+            }
+            String here = kinds.get(level)
+            if (kind == null) {
+                kind = here
+            } else if (!kind.equals(here)) {
+                mixed = true
+            }
+            if (level > 0) {
+                String above = kinds.get(level - 1)
+                if (parent == null) {
+                    parent = above
+                } else if (!parent.equals(above)) {
+                    parentMixed = true
+                }
+            }
+        }
+        if (kind == null || mixed) {
+            return COL_ASPECT
+        }
+        String header = Pc.humanKind(kind, parentMixed ? null : parent)
+        for (String reserved : RESERVED_HEADERS) {
+            if (reserved.equalsIgnoreCase(header)) {
+                return COL_ASPECT
+            }
+        }
+        return header
+    }
+
+    /* One table per member, each inside its own collapsed macro under its own
+     * heading. The remark carry-over is unaffected by the split: the read scans
+     * every table on the page and keys on the identity, which is unique page-wide.
      *
-     * NOTE: this is the flat form - one row per node, containment carried in a path
-     * string, an Item column - and the HTML report's table view no longer works that
-     * way. It is deliberately kept as the Jira sibling has it, because the path is
-     * the carry-over key and changing its shape reshapes every remark an
-     * administrator has already written. Bringing the two into line is blocked on
-     * proving the carry-over against a live instance first. */
+     * The member is NOT among the columns. Its name is on the heading this table
+     * sits under, and writing it again into the first cell of every row is the dead
+     * width this change removes. LEAD_LEVELS is how many leading levels that
+     * heading accounts for.
+     *
+     * Then one column per remaining level, then Value, State, In Confluence and
+     * Remark. THE REMARK COLUMN IS WHERE THE TWO VIEWS GENUINELY PART: the table
+     * view of the report is rendered from a payload and thrown away with the page,
+     * so it has nothing to carry over and no such column. This table is read back
+     * on the next run, so it has one, and the header block is deliberately one
+     * column wider than the view it otherwise mirrors.
+     *
+     * The level block is what the reader counts off to rebuild the identity, so it
+     * is never empty: a member with nothing under it still gets one level column,
+     * empty on every row, or its own parser would refuse the table and the export
+     * would brick itself on a section that holds a single value. */
     static String rowTable(List<Map<String, Object>> rows, RemarkRead read,
                            Set<String> used, ExportOutcome outcome, boolean valuesRequested) {
+        int depth = 1
+        for (Map<String, Object> row : rows) {
+            int size = textsOf(row, "levels").size() - LEAD_LEVELS
+            if (size > depth) {
+                depth = size
+            }
+        }
+        List<String> header = new ArrayList<String>()
+        for (int level = 0; level < depth; level++) {
+            header.add(exportLevelHeader(rows, level + LEAD_LEVELS))
+        }
+        header.add(COL_VALUE)
+        header.add(COL_STATE)
+        header.add(COL_LINK)
+        header.add(COL_REMARK)
+
         StringBuilder out = new StringBuilder("<table><tbody>")
-        out.append(headerRow([COL_PATH, COL_ITEM, COL_VALUE, COL_STATE, COL_LINK, COL_REMARK]))
+        out.append(headerRow(header))
         for (Map<String, Object> row : rows) {
             String path = str(row, "path", "")
             String remark = read == null ? null : read.remarks.get(path)
@@ -4003,9 +4581,21 @@ class Cx {
                 used.add(path)
                 outcome.remarksCarried++
             }
+            List<String> levels = textsOf(row, "levels")
             out.append("<tr>")
-            out.append(cell(esc(path)))
-            out.append(cell(esc(str(row, "label", ""))))
+            for (int level = 0; level < depth; level++) {
+                /* Written out on every row on purpose. A repeated ancestor down a
+                 * column is what a sort, a filter and a pivot consume; the same
+                 * repetition inside one text cell was the defect. An empty cell here
+                 * means the level does not apply to this record, not that something
+                 * was not read - the State column says that.
+                 *
+                 * The leading levels are skipped, not dropped: they are still in the
+                 * row's levels and still in its identity, they are simply written on
+                 * the heading instead of into a cell on every row. */
+                int at = level + LEAD_LEVELS
+                out.append(cell(at < levels.size() ? esc(levels.get(at)) : ""))
+            }
             out.append(cell(esc(valueText(str(row, "kind", ""), str(row, "label", ""),
                 str(row, "owner", ""), str(row, "value", ""), valuesRequested))))
             out.append(cell(esc(stateText(str(row, "state", Pc.READ)))))
@@ -4615,6 +5205,21 @@ class Scan {
         "SELECT ps.namespace, ps.setting_key, ps.setting_value FROM plugin_setting ps " +
         "WHERE ps.namespace = ? OR ps.namespace LIKE ? ORDER BY ps.namespace, ps.setting_key"
 
+    /* The Bandana table, in this space's context. Read for the LOCATION of a key
+     * and nothing else: the stored value is an XStream document, and describe()
+     * on the object the plugin settings API hands back is the readable form of
+     * the same thing, arriving on the same namespace-plus-key entry. */
+    static final String BANDANA_KEYS_SQL =
+        "SELECT b.bandanakey FROM bandana b WHERE b.bandanacontext = ? ORDER BY b.bandanakey"
+
+    /* A key the plugin settings API named that no table row matched. On a healthy
+     * read this label is never used, because everything that API sees sits in one
+     * of the two tables. It exists for the read where a table was missing,
+     * unreadable or cut at the cap: an empty "Stored in" cell would then read as a
+     * measured "nowhere", which is the one thing it must never say. */
+    static final String STORE_UNLOCATED =
+        "named by the plugin settings API, not located in a table"
+
     static final String CONTENT_PROPERTY_KEYS_SQL =
         "SELECT cp.propertyname FROM contentproperties cp " +
         "JOIN spaces s ON s.spacedescid = cp.contentid WHERE s.spacekey = ? ORDER BY cp.propertyname"
@@ -4628,14 +5233,25 @@ class Scan {
      * back from Bandana and from the plugin settings for the same space, because
      * the plugin settings delegate to Bandana while the migration flag is false.
      * Concatenating the lists would report one setting twice and make a reader
-     * believe an app had written two. */
-    Nd properties(Connection connection, BandanaManager bandana, boolean withValues) {
+     * believe an app had written two.
+     *
+     * The work is split. SQL reads the three tables and is the only thing that
+     * says WHICH store holds a key, because a table read is the only answer to
+     * that question. The plugin settings API supplies the names and the values,
+     * because it sees across the delegation and renders a stored object rather
+     * than the XStream document behind it - and for the same reason it cannot
+     * name a store, and is not asked to. */
+    Nd properties(Connection connection, ExtendedPluginSettingsFactory settingsFactory,
+                  boolean withValues) {
         Nd node = Nd.of("spaceProperties", "Space properties")
         node.link(null, Dl.propertyStoreUnavailableNote())
         node.note(SCHEMA_COUPLED)
         node.note("Three stores are read and deduplicated on namespace plus key. They overlap: " +
             "the plugin settings delegate to Bandana until the migration flag is set, so one " +
-            "setting can legitimately appear in both and is listed once, naming both stores.")
+            "setting can legitimately appear in both and is listed once, naming both stores. " +
+            "Which store holds a key is read from the tables themselves. The names and the " +
+            "values come from the plugin settings API, which sees across both stores and " +
+            "therefore cannot tell them apart.")
         if (!withValues) {
             node.note("Keys only. Values are read only when the values parameter is set, because " +
                 "they are serialised objects that apps put credentials into.")
@@ -4650,8 +5266,8 @@ class Scan {
          * ENG and HR carry com.atlassian.confluence.blueprints.plugin-module-state:<KEY>
          * while createSettingsForKey returns empty for both. */
         if (connection == null) {
-            failures.add("No database connection was available, so neither the plugin settings " +
-                "nor the content properties of this space were read.")
+            failures.add("No database connection was available, so none of the three property " +
+                "tables of this space were read: plugin settings, bandana, content properties.")
         } else {
             Map<String, Object> shape = Db.shape(connection, "plugin_setting",
                 withValues ? ["namespace", "setting_key", "setting_value"] : ["namespace", "setting_key"])
@@ -4674,6 +5290,39 @@ class Scan {
                     for (Map<String, String> row : (List<Map<String, String>>) result.get("rows")) {
                         record(found, Pc.orNa(row.get("namespace")), Pc.orNa(row.get("setting_key")),
                             "plugin settings", withValues ? row.get("setting_value") : null, withValues)
+                    }
+                }
+            }
+
+            /* Store 2 - the Bandana table, in this space's context. The API route
+             * into this store was BandanaManager, deprecated since 9.3 and marked
+             * for removal in 11.0. The plugin settings API below sees these keys
+             * anyway, because the plugin settings delegate to Bandana while the
+             * migration flag is unset - but it answers one merged view and cannot
+             * say which table a key came from. That attribution is a column of
+             * this report, so it is read here, from the table that holds it.
+             *
+             * The context column takes the space key as it stands, the same key
+             * the settings factory below is given. Global keys carry a different
+             * context and do not come back. */
+            Map<String, Object> bandanaShape = Db.shape(connection, "bandana",
+                ["bandanacontext", "bandanakey"])
+            String bandanaProblem = Db.shapeProblem(bandanaShape)
+            if (bandanaProblem != null) {
+                failures.add(bandanaProblem)
+            } else {
+                Map<String, Object> result = Db.query(connection, BANDANA_KEYS_SQL,
+                    [spaceKey], ["bandanakey"], PROPERTY_CAP)
+                String failure = Pc.text(result.get("failure"))
+                if (failure != null) {
+                    failures.add("Bandana: " + failure)
+                } else {
+                    if (Boolean.TRUE.equals(result.get("truncated"))) {
+                        capped = true
+                    }
+                    for (Map<String, String> row : (List<Map<String, String>>) result.get("rows")) {
+                        record(found, spaceKey, Pc.orNa(row.get("bandanakey")), "Bandana",
+                            null, withValues)
                     }
                 }
             }
@@ -4712,24 +5361,29 @@ class Scan {
             }
         }
 
-        /* Store 2 - Bandana, in the space context. The context takes the space key
-         * as a String and needs no Space object; that constructor was read out of
-         * the bytecode rather than assumed. getKeys does NOT inherit the global
-         * keys on this version, confirmed against a positive global control, so
-         * what comes back belongs to this space.
+        /* The names and the values, through the plugin settings API. Measured on
+         * this instance: the settings for the space key DEV answer
+         * trash.date.migration.time, a key that physically lives in the BANDANA
+         * table. The plugin settings delegate to Bandana while the migration flag
+         * is unset, so this is a SUPERSET view of the two tables above and not an
+         * alternative to them.
          *
-         * BandanaManager is deprecated since Confluence 9.3 and marked for removal
-         * in 11.0. It is used anyway because it is the only enumeration route into
-         * this store that exists today, and this comment is here so the next
-         * reader knows it was a decision rather than an oversight. */
-        if (bandana == null) {
-            failures.add("BandanaManager was not available, so the Bandana store of this space " +
-                "was not read. This is a failed read, not an empty store.")
+         * It runs LAST on purpose. record keeps the first value it is given, so a
+         * value a table already yielded stands and this pass fills in the rest -
+         * which is every key the Bandana read located, since that read takes no
+         * values at all.
+         *
+         * It locates nothing and therefore names no store; that argument is null
+         * here, and the attribution above is what fills the column. */
+        if (settingsFactory == null) {
+            failures.add("The plugin settings factory was not available, so the names and values " +
+                "this space carries were not read through the API. This is a failed read, not an " +
+                "empty store.")
         } else {
             try {
-                ConfluenceBandanaContext context = new ConfluenceBandanaContext(spaceKey)
+                ExtendedPluginSettings settings = settingsFactory.createSettingsForKey(spaceKey)
                 int read = 0
-                for (String key : bandana.getKeys(context)) {
+                for (String key : settings.getKeys()) {
                     if (read >= PROPERTY_CAP) {
                         capped = true
                         break
@@ -4737,12 +5391,23 @@ class Scan {
                     read++
                     String value = null
                     if (withValues && !Pc.sensitive(key)) {
-                        value = describe(bandana.getValue(context, key))
+                        value = describe(settings.get(key))
                     }
-                    record(found, spaceKey, Pc.orNa(key), "Bandana", value, withValues)
+                    record(found, spaceKey, Pc.orNa(key), null, value, withValues)
                 }
             } catch (Throwable error) {
-                failures.add("Bandana: " + Db.why(error))
+                failures.add("Plugin settings API: " + Db.why(error))
+            }
+        }
+
+        /* Anything the API named that no table row matched. This loop does nothing
+         * on a healthy read. It fires when a table was missing, unreadable or cut
+         * at the cap, and it is the difference between saying so and shipping an
+         * empty cell that a reader takes for a measurement. */
+        for (Map<String, Object> entry : found.values()) {
+            Set<String> stores = (Set<String>) entry.get("stores")
+            if (stores.isEmpty()) {
+                stores.add(STORE_UNLOCATED)
             }
         }
 
@@ -4762,8 +5427,9 @@ class Scan {
         }
         if (capped) {
             node.cappedAt(PROPERTY_CAP, "properties per store",
-                "namespace and then key in the two SQL-backed stores; the Bandana store returns " +
-                "its keys in an order this report does not control and cannot state",
+                "namespace and then key in the plugin settings table, key alone in the bandana " +
+                "and content property tables; the plugin settings API returns its keys in an " +
+                "order this report does not control and cannot state",
                 "No administration screen lists these keys, which is why this section exists. " +
                 "What was cut is reachable only from the stores themselves.")
         }
@@ -4803,7 +5469,13 @@ class Scan {
             entry.put("value", null)
             found.put(id, entry)
         }
-        ((Set<String>) entry.get("stores")).add(store)
+        /* Null when the caller located nothing. The plugin settings API names a
+         * key and hands over its value without saying which table holds it, and
+         * inventing a store for it there would be the one lie this column cannot
+         * afford. */
+        if (store != null) {
+            ((Set<String>) entry.get("stores")).add(store)
+        }
         if (withValues && entry.get("value") == null && value != null) {
             entry.put("value", value)
         }
@@ -4821,7 +5493,13 @@ class Scan {
         }
         Nd value = Nd.of("spacePropertyDetail", "Value")
         if (!withValues) {
-            value.absent("Not read. Pass values=true to read property values.")
+            /* REDACTED, not ABSENT, for the same reason the deny-list branch below
+             * is: the value is there and the read would have worked. This report is
+             * choosing not to make it. Calling that "absent" tells the reader the
+             * app stores nothing under the key, which is a measurement this report
+             * never took. Seen on ENG, where the only property rendered its value
+             * as "not configured" while the text beside it said "not read". */
+            value.redacted("Not read. Pass values=true to read property values.")
         } else if (Pc.sensitive(key)) {
             /* Neither absent nor unreadable. The value is there, the read would
              * have worked, and this report is choosing not to print it. */
@@ -5585,21 +6263,22 @@ spaceConfig(
 
     /* Each one is acquired on its own. A component that is missing costs the
      * sections that need it and nothing else, and the report says which. */
-    SpaceManager spaceManager = null
-    BandanaManager bandanaManager = null
+    SpaceService spaceService = null
+    ExtendedPluginSettingsFactory settingsFactory = null
     PageTemplateManager pageTemplateManager = null
     ThemeManager themeManager = null
     SpaceLabelManager spaceLabelManager = null
 
     try {
-        spaceManager = ComponentLocator.getComponent(SpaceManager.class)
+        spaceService = ComponentLocator.getComponent(SpaceService.class)
     } catch (Throwable error) {
-        report.globalDiagnostics.add("SpaceManager could not be obtained: " + Db.why(error))
+        report.globalDiagnostics.add("SpaceService could not be obtained: " + Db.why(error))
     }
     try {
-        bandanaManager = ComponentLocator.getComponent(BandanaManager.class)
+        settingsFactory = ComponentLocator.getComponent(ExtendedPluginSettingsFactory.class)
     } catch (Throwable error) {
-        report.globalDiagnostics.add("BandanaManager could not be obtained: " + Db.why(error))
+        report.globalDiagnostics.add(
+            "ExtendedPluginSettingsFactory could not be obtained: " + Db.why(error))
     }
     try {
         pageTemplateManager = ComponentLocator.getComponent(PageTemplateManager.class)
@@ -5617,9 +6296,14 @@ spaceConfig(
         report.globalDiagnostics.add("SpaceLabelManager could not be obtained: " + Db.why(error))
     }
 
+    /* The space manager's single-space getter has been deprecated since 7.3.0.
+     * The locator below is the same route the export path at the foot of this file
+     * already runs on this instance, and it is the identity fallback only: the
+     * database row above is what the report prefers, and either one missing while
+     * the other answers is handled where the two are compared. */
     Object space = null
     try {
-        space = spaceManager == null ? null : spaceManager.getSpace(spaceKey)
+        space = spaceService == null ? null : spaceService.getKeySpaceLocator(spaceKey).getSpace()
     } catch (Throwable error) {
         report.globalDiagnostics.add("The space object could not be read: " + Db.why(error))
     }
@@ -5642,7 +6326,7 @@ spaceConfig(
                 fromSql.put("details", scan.details(row, failure))
                 fromSql.put("permissions",
                     scan.permissions(connection, row == null ? null : row.get("spaceid")))
-                fromSql.put("properties", scan.properties(connection, bandanaManager, withValues))
+                fromSql.put("properties", scan.properties(connection, settingsFactory, withValues))
                 return null
             }
         } catch (Throwable error) {
@@ -5700,7 +6384,7 @@ spaceConfig(
         : (Nd) fromSql.get("permissions"))
 
     report.sections.add(fromSql.get("properties") == null
-        ? scan.properties(null, bandanaManager, withValues)
+        ? scan.properties(null, settingsFactory, withValues)
         : (Nd) fromSql.get("properties"))
 
     report.sections.add(scan.lookAndFeel(themeManager, space))
@@ -5798,56 +6482,117 @@ class Cw {
         return prefix + "/pages/viewpage.action?pageId=" + Pc.urlQuery(pageId.trim())
     }
 
-    /* Every current space of this instance, paginated to the end. A response that
-     * claims more results without advancing is a failed inventory and is raised as
-     * one: an inventory that silently stops short is indistinguishable from an
-     * instance with fewer spaces. */
-    static Map<String, Object> spaceRows(ApiSpaceService apiSpaceService) {
+    /* ---- The space picker ------------------------------------------------
+     *
+     * Read by SQL, and the reason is measured rather than stylistic. The route
+     * this replaced went through
+     * com.atlassian.confluence.api.service.content.SpaceService, which is a Spring
+     * AOP proxy. Resolving it inside a ScriptRunner endpoint throws
+     * IllegalArgumentException on two independent Confluence 10.2.14 instances,
+     * saying that org.springframework.aop.SpringProxy is not visible from the
+     * chaining classloader, and the picker then reported a failed read every time
+     * it was opened. It is the same failure this file already records for
+     * SpacePropertyService and for EffectiveSpacePermissionsCalculator: the API
+     * service layer is a Spring proxy the chaining classloader cannot use.
+     *
+     * The columns the shape check has to verify. The status is on the list because
+     * the statement RESTRICTS on it: a column that vanished in an upgrade must
+     * surface as a failed read naming the column, never as a list of every space
+     * including the archived ones, and never as no list at all. */
+    static final List<String> PICKER_COLUMNS = ["spacekey", "spacename", "spacestatus"]
+
+    /* The stored spelling of SpaceStatus.CURRENT. It is BOUND, not pasted: no
+     * value is interpolated into SQL anywhere in this file and a constant is no
+     * exception to that. Measured on the reference instance: 5037 of the 5038 rows
+     * carry CURRENT and the remaining one carries ARCHIVED. */
+    static final String PICKER_STATUS = "CURRENT"
+
+    /* The ordering is done in SQL rather than in Groovy afterwards, so that the cap
+     * below cuts by the same order the browser shows. A cap that announces an
+     * ordering the statement did not use is worse than one that announces none.
+     *
+     * The name-to-key fallback is done in Groovy, NOT in SQL. An earlier spelling
+     * ordered by COALESCE(NULLIF(s.spacename, ''), s.spacekey) and called that the
+     * portable form. It is not: Confluence stores text as NVARCHAR2 on Oracle, the
+     * literal '' is CHAR, and NULLIF and COALESCE require one character set across
+     * their arguments. Measured on a customer instance 2026-08-28:
+     * ORA-12704 character set mismatch. The statement ran on PostgreSQL, which is
+     * why the claim survived review - it was written, not tested.
+     *
+     * NEVER put a string literal inside COALESCE, NULLIF, DECODE or || against a
+     * text column. A nameless space therefore sorts under NULL, which both Oracle
+     * and PostgreSQL place last on an ascending sort, and is still LABELLED with
+     * its key by the row builder below. */
+    static final String PICKER_SQL =
+        "SELECT s.spacekey, s.spacename FROM spaces s WHERE s.spacestatus = ? " +
+        "ORDER BY LOWER(s.spacename), LOWER(s.spacekey)"
+
+    static final List<String> PICKER_READ = ["spacekey", "spacename"]
+
+    /* The ordering the cap announcement has to name. */
+    static final String PICKER_ORDER = "space name, then space key"
+
+    /* A safety limit, not a product decision. The picker this replaces capped at
+     * 2000 and cut a 5038-space instance down to the first 2000 names without
+     * saying so anywhere. This number is set far above any instance this is meant
+     * for - the statement returns 5037 rows in 29 ms there - and if it is ever
+     * reached the browser says so, says which ordering the rows were taken by, and
+     * says how to reach a space past the cut. */
+    static final int PICKER_CAP = 20000
+
+    /* Every current space of this instance, in one statement.
+     *
+     * A read that failed and an instance that owns no space are different answers
+     * and are never merged: the failure travels back in "error" with ok false, and
+     * the caller turns that into a refusal rather than into an empty list. */
+    static Map<String, Object> spaceRows(Connection connection) {
         Map<String, Object> result = new LinkedHashMap<String, Object>()
         List<Map<String, Object>> rows = new ArrayList<Map<String, Object>>()
         result.put("ok", Boolean.FALSE)
         result.put("error", null)
         result.put("spaces", rows)
+        result.put("truncated", Boolean.FALSE)
+        result.put("cap", Integer.valueOf(PICKER_CAP))
+        result.put("order", PICKER_ORDER)
 
-        try {
-            int start = 0
-            final int pageSize = 100
-            SpaceFinder finder = apiSpaceService.find(new Expansion[0])
-            finder = finder.withStatus(ApiSpaceStatus.CURRENT)
-            while (true) {
-                PageResponse<ApiSpace> page = finder.fetchMany(new SimplePageRequest(start, pageSize))
-                for (ApiSpace space : page.getResults()) {
-                    String key = space == null ? null : space.getKey()
-                    if (key == null) {
-                        continue
-                    }
-                    String name = space.getName()
-                    Map<String, Object> row = new LinkedHashMap<String, Object>()
-                    row.put("key", key)
-                    row.put("name", name == null || name.trim().isEmpty() ? key : name)
-                    rows.add(row)
-                }
-                if (!page.hasMore()) {
-                    break
-                }
-                int returned = page.size()
-                if (returned <= 0) {
-                    throw new IllegalStateException("Space pagination did not advance")
-                }
-                start += returned
-            }
-        } catch (Exception error) {
-            result.put("error", "The space list could not be read (" + Cx.errorDetail(error) +
-                "). That is a failed read, not an instance without spaces.")
+        if (connection == null) {
+            result.put("error", "No database connection was available, so the space list could not " +
+                "be read. That is a failed read, not an instance without spaces.")
             return result
         }
 
-        rows.sort { Map<String, Object> a, Map<String, Object> b ->
-            int byName = Cx.str(a, "name", "").compareToIgnoreCase(Cx.str(b, "name", ""))
-            if (byName != 0) {
-                return byName
+        /* The Confluence schema is not a public API and an upgrade can change it.
+         * Verified through the catalogue before the statement runs, so a moved
+         * column produces a sentence naming it instead of an empty picker. */
+        String problem = Db.shapeProblem(Db.shape(connection, "spaces", PICKER_COLUMNS))
+        if (problem != null) {
+            result.put("error", "The space list could not be read. " + problem +
+                " That is a failed read, not an instance without spaces.")
+            return result
+        }
+
+        Map<String, Object> found = Db.query(connection, PICKER_SQL, [PICKER_STATUS],
+            PICKER_READ, PICKER_CAP)
+        String failure = Pc.text(found.get("failure"))
+        if (failure != null) {
+            result.put("error", "The space list could not be read (" + failure +
+                "). That is a failed read, not an instance without spaces.")
+            return result
+        }
+        result.put("truncated", found.get("truncated"))
+
+        for (Map<String, String> row : (List<Map<String, String>>) found.get("rows")) {
+            String key = Pc.text(row.get("spacekey"))
+            if (key == null) {
+                /* A row with no key names nothing that can be picked. It costs
+                 * itself and never the list. */
+                continue
             }
-            return Cx.str(a, "key", "").compareToIgnoreCase(Cx.str(b, "key", ""))
+            String name = Pc.text(row.get("spacename"))
+            Map<String, Object> space = new LinkedHashMap<String, Object>()
+            space.put("key", key)
+            space.put("name", name == null ? key : name)
+            rows.add(space)
         }
         result.put("ok", Boolean.TRUE)
         return result
@@ -6079,20 +6824,35 @@ spaceConfig(
     String requestedAction = Cx.str(request, "action", "write").toLowerCase(Locale.ROOT)
 
     if (requestedAction == "spaces") {
-        ApiSpaceService apiSpaceService = null
-        try {
-            apiSpaceService = ComponentLocator.getComponent(ApiSpaceService.class)
-        } catch (Throwable error) {
-            return refuse(500, "spaces", "The Confluence SpaceService could not be obtained (" +
-                Db.why(error) + "), so the space list could not be read. That is a failed read, " +
-                "not an instance without spaces.")
-        }
-        if (apiSpaceService == null) {
-            return refuse(500, "spaces", "The Confluence SpaceService could not be resolved, so the " +
-                "space list could not be read. That is a failed read, not an instance without spaces.")
+        /* The same read-only executor the report path takes, acquired the same
+         * way. No Confluence service is resolved here at all: the one this used to
+         * resolve is a Spring proxy the ScriptRunner classloader cannot see, which
+         * is what made this stage fail on every instance it was opened on. */
+        Map<String, Object> executor = Db.factory()
+        Object executorFactory = executor.get("factory")
+        if (executorFactory == null) {
+            /* Db.factory never hands back nothing without naming a reason, which
+             * is why the reason is printed rather than replaced by a marker. */
+            return refuse(500, "spaces", String.valueOf(executor.get("failure")) +
+                " That is a failed read, not an instance without spaces.")
         }
 
-        Map<String, Object> listed = Cw.spaceRows(apiSpaceService)
+        Map<String, Object> listed = null
+        try {
+            listed = (Map<String, Object>) Db.withConnection(executorFactory) { Connection connection ->
+                return Cw.spaceRows(connection)
+            }
+        } catch (Throwable error) {
+            return refuse(500, "spaces", "The space list could not be read: " + Db.why(error) +
+                ". That is a failed read, not an instance without spaces.")
+        }
+        if (listed == null) {
+            /* The executor returned without handing back a result. That is not an
+             * empty instance either, and saying so is the difference between an
+             * answer and a guess. */
+            return refuse(500, "spaces", "The read-only executor returned no result at all, so no " +
+                "space was read. That is a failed read, not an instance without spaces.")
+        }
         if (listed.get("ok") != Boolean.TRUE) {
             return refuse(500, "spaces", String.valueOf(listed.get("error")))
         }
@@ -6106,6 +6866,11 @@ spaceConfig(
         spacePayload.put("ok", Boolean.TRUE)
         spacePayload.put("action", "spaces")
         spacePayload.put("spaces", spaceRows)
+        /* The cap travels WITH the rows, together with the ordering it would cut
+         * by, so the browser can announce a cut without knowing either. */
+        spacePayload.put("truncated", listed.get("truncated"))
+        spacePayload.put("cap", listed.get("cap"))
+        spacePayload.put("order", listed.get("order"))
         return answer(spacePayload)
     }
 
@@ -6449,7 +7214,12 @@ spaceConfig(
             actualParentId = null
         }
     } catch (Exception error) {
-        return refuse(500, "write", "The page could not be written: " + Cx.errorDetail(error))
+        /* Nothing was written on this path, whichever failure it was: the save threw
+         * and the read-back below it never ran. What differs is what the caller is
+         * told, and one of them is not a fault at all. */
+        Map<String, Object> refusal = Cx.writeRefusal(error)
+        return refuse(((Integer) refusal.get("status")).intValue(), "write",
+            String.valueOf(refusal.get("message")))
     }
 
     String writtenUrl = Cw.pageUrl(identity.get("baseUrl"), pageId)

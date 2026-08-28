@@ -40,3 +40,7 @@ desktop.ini
 # Agent-run workspaces and local tool state. The agent runtime places its
 # worktrees under .claude/, which .worktrees/ above does not cover.
 .claude/
+
+# Internal working notes. Instance names, pod names and customer context; this
+# repository is public. The file stays on disk, it is simply not published.
+confluence/SESSION-HANDOFF.md
