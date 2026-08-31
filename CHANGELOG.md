@@ -4,6 +4,16 @@ All notable changes to this project are documented here. Each endpoint carries i
 version, declared once in its helper class and printed by every output channel, so the
 sections below are grouped by endpoint rather than by a single repository version.
 
+## userMacroDeepScan 3.6.0 - unreleased
+
+### Added
+
+- The documented template header is checked against the configuration instead of being
+  printed as fact. A field still holding the placeholder text of Atlassian's own template
+  is named, and so is a `Macro has a body` value that is neither yes nor no or that
+  contradicts `UserMacroConfig`. Seen on a real macro: a header answering that question
+  with a body-processing value.
+
 ## userMacroDeepScan 3.5.0 - unreleased
 
 First version in this repository. The endpoint inventories Confluence Data Center user

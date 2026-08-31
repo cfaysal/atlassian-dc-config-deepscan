@@ -153,7 +153,7 @@ import java.util.regex.Pattern
 
 class Uma {
 
-    static final String VERSION = "3.5.0"
+    static final String VERSION = "3.6.0"
 
     /* SCOPE, stated once and repeated in every output channel.
      * UserMacroLibrary javadoc, verbatim: "this UserMacroLibrary is now aware of
@@ -735,6 +735,62 @@ class Uma {
         discovered.notes = notes
         return discovered
     }
+    /* ---- what the header claims, checked against what it is -----------------
+     * The documented header is the author's own account and nothing enforces it.
+     * Two failure modes show up constantly and both mislead a reader who takes
+     * the header at face value: fields left on Atlassian's placeholder text
+     * because the template was copied and only half filled in, and a "Macro has
+     * a body" answer that answers a different question than the one asked.
+     *
+     * This never overrides the configuration. UserMacroConfig is the fact; the
+     * header is a claim, and a claim that contradicts the fact is worth naming. */
+
+    /* Verbatim from the Atlassian guidance the header pattern comes from. A value
+     * still equal to one of these was never filled in. */
+    static final List<String> HEADER_PLACEHOLDERS = [
+        "My macro name", "Y or N", "Selected body processing option",
+        "Selected output option", "My Name", "dd/mm/yyyy",
+        "Version it was developed for",
+    ]
+
+    static final List<String> YES_VALUES = ["y", "yes", "true"]
+    static final List<String> NO_VALUES = ["n", "no", "false"]
+
+    static List<String> headerWarnings(Map row) {
+        List<String> warnings = new ArrayList<String>()
+        Map documented = mapOf(mapOf(row, "analysis"), "documentedHeader")
+        if (documented.isEmpty()) {
+            return warnings
+        }
+
+        for (Object entryKey : documented.keySet()) {
+            String value = documented.get(entryKey) == null ? "" : documented.get(entryKey).toString()
+            if (HEADER_PLACEHOLDERS.contains(value)) {
+                warnings.add(entryKey.toString() + " still holds the placeholder from the Atlassian template")
+            }
+        }
+
+        Object rawBodyClaim = documented.get("Macro has a body")
+        if (rawBodyClaim != null) {
+            String claim = rawBodyClaim.toString().trim()
+            String normalised = claim.toLowerCase()
+            boolean saysYes = YES_VALUES.contains(normalised)
+            boolean saysNo = NO_VALUES.contains(normalised)
+            if (!saysYes && !saysNo && !HEADER_PLACEHOLDERS.contains(claim)) {
+                warnings.add("\"Macro has a body\" reads \"" + claim +
+                    "\", which is neither yes nor no - the field takes Y or N")
+            }
+            boolean actual = boolOf(row, "hasBody")
+            if (saysYes && !actual) {
+                warnings.add("the header says the macro has a body, the configuration says it does not")
+            }
+            if (saysNo && actual) {
+                warnings.add("the header says the macro has no body, the configuration says it does")
+            }
+        }
+        return warnings
+    }
+
     static Map describeParameter(MacroParameter parameter) {
         Map out = [:] as LinkedHashMap
         out.name = str(parameter.getName())
@@ -937,6 +993,14 @@ class Uma {
                     .append(esc(documented.get(entryKey))).append("</dd>")
             }
             cell.append("</dl>")
+            List<String> claims = headerWarnings(row)
+            if (!claims.isEmpty()) {
+                cell.append("<ul class=\"claims\">")
+                for (String claim : claims) {
+                    cell.append("<li>").append(esc(claim)).append("</li>")
+                }
+                cell.append("</ul>")
+            }
         }
 
         String reason = strOf(row, "suggestedReason")
@@ -1076,6 +1140,7 @@ td.name .key{display:block;margin-top:2px;font-weight:400;font-size:12px;color:#
 .documented{margin:8px 0 0;font-size:12px;color:#5e6c84;display:grid;grid-template-columns:auto 1fr;gap:0 8px}
 .documented dt{font-weight:600}
 .documented dd{margin:0;word-break:break-word}
+.claims{margin:6px 0 0;padding-left:18px;font-size:12px;color:#bf2600}
 .reason{margin-top:8px;font-size:12px;color:#5e6c84}
 .calls{margin-top:4px;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#5e6c84;word-break:break-all}
 pre{margin:0;max-height:420px;overflow:auto;padding:10px;background:#f4f5f7;border-radius:3px;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
@@ -1092,6 +1157,7 @@ pre{background:#22272b}
 .chip.ok{background:#164b35;color:#7ee2b8}
 .chip.warn{background:#5d1f1a;color:#ffd5d2}
 .chip.muted{border-color:#454f59;color:#8c9bab}
+.claims{color:#ff9c8f}
 }
 ''')
         out.append("</style>\n</head>\n<body>\n")
@@ -1465,6 +1531,14 @@ one-to-one port is ruled out.
                             .append(" | ").append(mdCell(documented.get(entryKey))).append(" |\n")
                     }
                     out.append("\n")
+                    List<String> claims = headerWarnings(row)
+                    if (!claims.isEmpty()) {
+                        out.append("The header does not hold up. Treat it as a claim, not as configuration:\n\n")
+                        for (String claim : claims) {
+                            out.append("- ").append(claim).append("\n")
+                        }
+                        out.append("\n")
+                    }
                 }
 
                 out.append("**Detected dependencies** (text analysis of the CODE half, comments excluded, nothing executed)\n\n")

@@ -11,7 +11,7 @@ link to the exact administration screen where it is maintained.
 | Script | Platform | Version |
 | --- | --- | --- |
 | [`jira/jiraDCprojectConfig.groovy`](jira/jiraDCprojectConfig.groovy) | Jira Data Center | 0.1 |
-| [`confluence/userMacroDeepScan.groovy`](confluence/userMacroDeepScan.groovy) | Confluence Data Center | 3.5.0 |
+| [`confluence/userMacroDeepScan.groovy`](confluence/userMacroDeepScan.groovy) | Confluence Data Center | 3.6.0 |
 
 Typical uses: handing a project over to a new administrator, documenting a project before a
 migration, finding out why two projects behave differently, or producing the configuration
@@ -284,6 +284,15 @@ a commented-out example as live HTML, and pushes the macro towards `FORGE_REQUIR
 reason. Every runtime signal here is computed on the code half only. What the comments hold
 is reported separately, including the header fields as their own table.
 
+**A header is a claim, not configuration.** Those same headers are written by hand and
+nothing enforces them. Two failure modes turn up constantly: fields left on the placeholder
+text of Atlassian's own template because it was copied and half filled in, and a
+`Macro has a body` answer that answers a different question. Seen on a real macro:
+`Macro has a body: Nicht gerendert`, which is a body-processing value, not a yes or a no.
+The report names the mismatch instead of printing the header as if it were fact, and the
+configuration always wins: `UserMacroConfig` is what the macro is, the header is what
+somebody once wrote about it.
+
 **A link is not a call.** A host is only a runtime dependency when the browser fetches from
 it: `src=`, a stylesheet link, a CSS `url()`, an `@import`. An `<a href>` is something a
 reader clicks. The two are separate signals and only the first affects the assessment.
@@ -352,7 +361,7 @@ global context.
 
 ### Status
 
-Version 3.5.0. Measured on an instance with 60 user macros: the completeness check reported
+Version 3.6.0. Measured on an instance with 60 user macros: the completeness check reported
 60 stored and 60 visible, so on that instance the library-visible list is the whole set.
 
 Still unproven, and named here rather than left to be assumed:

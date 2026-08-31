@@ -354,6 +354,57 @@ Map pn = Uma.describeParameter(nulls)
 check("param.null.aliases", pn.aliases, [])
 check("param.null.enumValues", pn.enumValues, [])
 
+/* ---- the header is a claim, not configuration -----------------------------
+ * Seen on a real macro: the author copied the Atlassian template, left two
+ * fields on their placeholder text, and answered "Macro has a body" with a
+ * body-processing value. A reader who takes that header at face value is
+ * misled, so the report names the mismatch instead of printing it silently. */
+
+Map claimRow = [
+    name: "grosser-text", hasBody: true,
+    analysis: [documentedHeader: [
+        "Macro title"      : "Grosser Text",
+        "Macro has a body" : "Nicht gerendert",
+        "Body processing"  : "Selected body processing option",
+        "Output"           : "Selected output option",
+        "Date created"     : "dd/mm/yyyy",
+        "Installed by"     : "A Person",
+    ] as LinkedHashMap] as LinkedHashMap,
+] as LinkedHashMap
+List<String> claims = Uma.headerWarnings(claimRow)
+check("claims.placeholderBodyProcessing", claims.any { it.startsWith("Body processing still holds the placeholder") }, true)
+check("claims.placeholderOutput", claims.any { it.startsWith("Output still holds the placeholder") }, true)
+check("claims.placeholderDate", claims.any { it.startsWith("Date created still holds the placeholder") }, true)
+check("claims.realValueNotFlagged", claims.any { it.startsWith("Macro title") }, false)
+check("claims.installedByNotFlagged", claims.any { it.startsWith("Installed by") }, false)
+check("claims.bodyAnswerIsNeither", claims.any { it.contains("neither yes nor no") }, true)
+
+Map agreeing = [name: "a", hasBody: true,
+    analysis: [documentedHeader: ["Macro has a body": "Y"] as LinkedHashMap] as LinkedHashMap] as LinkedHashMap
+check("claims.agreementIsQuiet", Uma.headerWarnings(agreeing), [])
+
+Map contradictsNo = [name: "a", hasBody: true,
+    analysis: [documentedHeader: ["Macro has a body": "N"] as LinkedHashMap] as LinkedHashMap] as LinkedHashMap
+check("claims.saysNoHasBody", Uma.headerWarnings(contradictsNo).any { it.contains("says the macro has no body") }, true)
+
+Map contradictsYes = [name: "a", hasBody: false,
+    analysis: [documentedHeader: ["Macro has a body": "Yes"] as LinkedHashMap] as LinkedHashMap] as LinkedHashMap
+check("claims.saysYesNoBody", Uma.headerWarnings(contradictsYes).any { it.contains("says the macro has a body") }, true)
+
+check("claims.noHeaderNoNoise", Uma.headerWarnings([name: "a"] as LinkedHashMap), [])
+
+String htmlClaims = Uma.toHtml([claimRow], true, [], [:], "?format=md", null)
+check("html.claimsRendered", htmlClaims.contains("neither yes nor no"), true)
+check("html.claimsEscaped", htmlClaims.contains("&quot;Macro has a body&quot;"), true)
+
+Map claimRowForMd = new LinkedHashMap(claimRow)
+claimRowForMd.macroKey = "grosser-text"
+claimRowForMd.parameters = []
+claimRowForMd.categories = []
+String mdClaims = Uma.toMarkdown([claimRowForMd], true, [], [:])
+check("md.claimsRendered", mdClaims.contains("The header does not hold up"), true)
+check("md.claimsListed", mdClaims.contains("- Output still holds the placeholder"), true)
+
 /* ---- CSV, including spreadsheet formula injection --------------------------
  * A macro title is attacker-controlled text from the instance. Quoting alone
  * does not stop a spreadsheet evaluating a cell that begins with = + - or @. */
