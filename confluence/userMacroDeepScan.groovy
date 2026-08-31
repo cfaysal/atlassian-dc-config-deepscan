@@ -83,8 +83,10 @@
  *   removeMacro, no Bandana write, no outbound network call.
  *
  * Platform
- *   Confluence 10 / ScriptRunner 10+ (jakarta.ws.rs). On older releases switch
- *   the two jakarta imports to javax.ws.rs; nothing else changes.
+ *   javax / jakarta neutral. The JAX-RS Response class is resolved at runtime and
+ *   the query parameters are read through the invoker, so this one file runs on
+ *   ScriptRunner 8.x and 9.x, which use javax.ws.rs.*, and on 10.x and above,
+ *   which use jakarta.ws.rs.*.
  *
  * SCOPE - what this endpoint can and cannot claim
  *   UserMacroLibrary does not return user macros that a plugin macro of the same
@@ -140,8 +142,7 @@ import com.onresolve.scriptrunner.runner.rest.common.CustomEndpointDelegate
 import groovy.json.JsonOutput
 import groovy.transform.BaseScript
 
-import jakarta.ws.rs.core.MultivaluedMap
-import jakarta.ws.rs.core.Response
+import org.codehaus.groovy.runtime.InvokerHelper
 
 import java.lang.reflect.Method
 import java.net.URLEncoder
@@ -1536,22 +1537,101 @@ one-to-one port is ruled out.
         }
     }
 
+    /* ---- HTTP, without naming a JAX-RS namespace ---------------------------
+     * The namespace a ScriptRunner script needs follows the ScriptRunner version,
+     * not the Confluence version: 10.x and above use jakarta.ws.rs.*, 8.x to 9.x
+     * use javax.ws.rs.*. Importing either pins this file to one line. The class
+     * is resolved at runtime and the builder chain driven through the invoker,
+     * the same way the Jira endpoint in this repository does it.
+     *
+     * Keeping it in one place also makes it testable off-instance: a fake
+     * response class proves the chain is built in the right order with the right
+     * arguments. */
+
+    static final String HTML = "text/html; charset=utf-8"
+    static final String MARKDOWN = "text/markdown; charset=utf-8"
+    static final String JSON = "application/json; charset=utf-8"
+    static final String CSV = "text/csv; charset=utf-8"
+
     /* Every response carries macro templates, and this endpoint warns about
      * credentials inside them in its own output. Handing that to a browser or a
-     * proxy cache without saying no is the contradiction Codex found: no-store
-     * keeps it out of the disk cache, private keeps it out of shared ones, and
-     * nosniff stops a text/csv or text/markdown body from being re-interpreted
-     * as HTML and executed. */
-    static Response.ResponseBuilder noStore(Response.ResponseBuilder builder) {
-        return builder
-            .header("Cache-Control", "no-store, private, max-age=0, must-revalidate")
-            .header("Pragma", "no-cache")
-            .header("X-Content-Type-Options", "nosniff")
+     * proxy cache without saying no is a contradiction: no-store keeps it out of
+     * the disk cache, private keeps it out of shared ones, and nosniff stops a
+     * text/csv or text/markdown body from being re-interpreted as HTML and
+     * executed. */
+    static final Map<String, String> NO_STORE = [
+        "Cache-Control"         : "no-store, private, max-age=0, must-revalidate",
+        "Pragma"                : "no-cache",
+        "X-Content-Type-Options": "nosniff",
+    ] as LinkedHashMap
+
+    /* Written against InvokerHelper rather than target."$name"() on purpose. A
+     * dynamic method name is invisible to the static type checker and shows up as
+     * an error in the ScriptRunner editor, which is the one place an
+     * administrator reads this file before running it. */
+    static Object duckAll(Object target, String method, Object[] arguments) {
+        if (target == null) {
+            return null
+        }
+        try {
+            return InvokerHelper.invokeMethod(target, method, arguments)
+        } catch (MissingMethodException ignored) {
+            return null
+        } catch (Exception ignored) {
+            return null
+        }
     }
 
-    static String flag(MultivaluedMap queryParams, String name, String fallback) {
-        Object raw = queryParams.getFirst(name)
+    static Object duck(Object target, String method, Object argument) {
+        return duckAll(target, method, argument == null ? new Object[0] : ([argument] as Object[]))
+    }
+
+    static Class resolveResponseClass() {
+        try {
+            return Class.forName("jakarta.ws.rs.core.Response")
+        } catch (ClassNotFoundException ignored) {
+            return Class.forName("javax.ws.rs.core.Response")
+        }
+    }
+
+    /* Status 200 goes through ok(entity), anything else through
+     * status(code).entity(entity), because that is the shape JAX-RS offers. */
+    static Object build(Class responseClass, int status, String entity, String contentType,
+                        Map<String, String> headers) {
+        Object builder
+        if (status == 200) {
+            builder = duckAll(responseClass, "ok", [entity] as Object[])
+        } else {
+            builder = duckAll(responseClass, "status", [Integer.valueOf(status)] as Object[])
+            builder = duckAll(builder, "entity", [entity] as Object[])
+        }
+        builder = duckAll(builder, "type", [contentType] as Object[])
+        for (Map.Entry<String, String> header : NO_STORE.entrySet()) {
+            builder = duckAll(builder, "header", [header.getKey(), header.getValue()] as Object[])
+        }
+        if (headers != null) {
+            for (Map.Entry<String, String> header : headers.entrySet()) {
+                builder = duckAll(builder, "header", [header.getKey(), header.getValue()] as Object[])
+            }
+        }
+        return duckAll(builder, "build", new Object[0])
+    }
+
+    static Object ok(Class responseClass, String entity, String contentType, Map<String, String> headers) {
+        return build(responseClass, 200, entity, contentType, headers)
+    }
+
+    /* queryParams is the JAX-RS MultivaluedMap, and naming that type would drag
+     * one of the two namespaces back in. The call goes through the invoker, which
+     * is namespace-neutral and still resolvable by the static type checker. */
+    static String flag(Object queryParams, String name, String fallback) {
+        Object raw = duck(queryParams, "getFirst", name)
         return (raw == null ? fallback : raw.toString()).trim().toLowerCase()
+    }
+
+    static String firstParam(Object queryParams, String name) {
+        Object raw = duck(queryParams, "getFirst", name)
+        return raw == null ? null : raw.toString()
     }
 }
 
@@ -1563,24 +1643,28 @@ one-to-one port is ruled out.
  * that can drift.
  *
  * Unlike the sister endpoints this block is not free of product types: Uma names
- * UserMacroConfig, MacroParameter, PluginSettings, PluginSettingsFactory,
- * MultivaluedMap and Response in its signatures. The suite declares a stand-in
- * for each, with the member set and return types read off the Atlassian javadoc,
- * so those methods are genuinely under test rather than cast away.
+ * UserMacroConfig, MacroParameter, PluginSettings and PluginSettingsFactory in
+ * its signatures. The suite declares a stand-in for each, with the member set and
+ * return types read off the Atlassian javadoc, so those methods are genuinely
+ * under test rather than cast away. The JAX-RS side needs no stand-in: it is
+ * resolved at runtime, so a fake response class is enough to prove the builder
+ * chain.
  * =============================================================================
  */
 
 userMacros(
     httpMethod: "GET",
     groups: ["confluence-administrators"]
-) { MultivaluedMap queryParams, String body ->
+) { queryParams, body ->
+
+    /* JAX-RS Response, resolved at runtime (javax / jakarta neutral). */
+    Class responseClass = Uma.resolveResponseClass()
 
     String format = Uma.flag(queryParams, "format", "html")
     boolean withTemplate = Uma.flag(queryParams, "template", "true") != "false"
     boolean withAnalysis = Uma.flag(queryParams, "analyze", "true") != "false"
     boolean withShadowCheck = Uma.flag(queryParams, "shadowCheck", "false") == "true"
-    Object rawName = queryParams.getFirst("name")
-    String nameFilter = rawName == null ? null : rawName.toString()
+    String nameFilter = Uma.firstParam(queryParams, "name")
 
     List<String> diagnostics = new ArrayList<String>()
     boolean readComplete = true
@@ -1594,10 +1678,8 @@ userMacros(
             macros      : new ArrayList<Map>(),
             diagnostics : ["UserMacroLibrary could not be resolved - the result is UNKNOWN, not zero."]
         ] as LinkedHashMap
-        return Uma.noStore(Response.status(503))
-            .type("application/json; charset=utf-8")
-            .entity(JsonOutput.prettyPrint(JsonOutput.toJson(unavailable)))
-            .build()
+        return Uma.build(responseClass, 503,
+            JsonOutput.prettyPrint(JsonOutput.toJson(unavailable)), Uma.JSON, null)
     }
 
     Map<String, UserMacroConfig> configs = null
@@ -1738,23 +1820,18 @@ userMacros(
         /* Offer the check only while it has not run - once it has, its result is
          * on the page and a second button would just invite a re-run. */
         String check = withShadowCheck ? null : Uma.checkHref(withTemplate, withAnalysis, nameFilter)
-        return Uma.noStore(Response.ok(Uma.toHtml(macros, readComplete, diagnostics, shadow, href, check)))
-            .type("text/html; charset=utf-8")
-            .build()
+        return Uma.ok(responseClass,
+            Uma.toHtml(macros, readComplete, diagnostics, shadow, href, check), Uma.HTML, null)
     }
 
     if (format == "md" || format == "markdown") {
-        return Uma.noStore(Response.ok(Uma.toMarkdown(macros, readComplete, diagnostics, shadow)))
-            .type("text/markdown; charset=utf-8")
-            .header("Content-Disposition", "attachment; filename=\"confluence-user-macros.md\"")
-            .build()
+        return Uma.ok(responseClass, Uma.toMarkdown(macros, readComplete, diagnostics, shadow),
+            Uma.MARKDOWN, ["Content-Disposition": "attachment; filename=\"confluence-user-macros.md\""])
     }
 
     if (format == "csv") {
-        return Uma.noStore(Response.ok(Uma.toCsv(macros)))
-            .type("text/csv; charset=utf-8")
-            .header("Content-Disposition", "attachment; filename=\"confluence-user-macros.csv\"")
-            .build()
+        return Uma.ok(responseClass, Uma.toCsv(macros), Uma.CSV,
+            ["Content-Disposition": "attachment; filename=\"confluence-user-macros.csv\""])
     }
 
     Map payload = [:] as LinkedHashMap
@@ -1774,7 +1851,5 @@ userMacros(
     payload.macros = macros
     payload.diagnostics = diagnostics
 
-    return Uma.noStore(Response.ok(JsonOutput.prettyPrint(JsonOutput.toJson(payload))))
-        .type("application/json; charset=utf-8")
-        .build()
+    return Uma.ok(responseClass, JsonOutput.prettyPrint(JsonOutput.toJson(payload)), Uma.JSON, null)
 }

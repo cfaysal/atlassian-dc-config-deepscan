@@ -325,9 +325,10 @@ replacement for this value. Verified with `javap`, `PluginSettings` has `get`, `
 
 - Adaptavist ScriptRunner, licensed and installed.
 - A member of `confluence-administrators`.
-- Confluence 10 and ScriptRunner 10 or above. Unlike the Jira endpoint in this repository
-  this file is **not** javax / jakarta neutral: it imports `jakarta.ws.rs.*`. On an older
-  release switch those two imports to `javax.ws.rs.*`; nothing else changes.
+- Confluence Data Center. Like the Jira endpoint the file is **javax / jakarta neutral**:
+  the JAX-RS `Response` class is resolved at runtime and the query parameters are read
+  through the invoker, so the same file runs on ScriptRunner 8.x and 9.x, which use
+  `javax.ws.rs.*`, and on 10.x and above, which use `jakarta.ws.rs.*`.
 
 Install it the same way as the Jira endpoint, as a file in your script root. ScriptRunner
 registers it under the name `userMacros`.

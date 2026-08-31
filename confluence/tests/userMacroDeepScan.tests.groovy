@@ -34,8 +34,6 @@ interface MacroParameter {
     boolean isHidden()
 }
 
-interface MultivaluedMap { Object getFirst(String key) }
-
 class UserMacroConfig implements Serializable { String name }
 
 class ComponentLocator {
@@ -53,16 +51,26 @@ interface PluginSettingsFactory {
     PluginSettings createGlobalSettings()
 }
 
-class Response {
-    static ResponseBuilder ok(Object entity) { null }
-    static ResponseBuilder status(int status) { null }
-    static class ResponseBuilder {
-        List<String> headers = []
-        ResponseBuilder type(String mediaType) { this }
-        ResponseBuilder entity(Object entity) { this }
-        ResponseBuilder header(String name, Object value) { headers << (name + ": " + value); this }
-        Response build() { null }
-    }
+/* Stands in for a JAX-RS Response class. Uma never names one: it resolves the
+ * class at runtime and drives the builder through the invoker, so any class with
+ * this shape proves the chain. */
+class FakeBuilder {
+    List<String> calls = []
+    FakeBuilder type(String mediaType) { calls << ("type=" + mediaType); this }
+    FakeBuilder entity(Object entity) { calls << "entity"; this }
+    FakeBuilder header(String name, Object value) { calls << (name + ": " + value); this }
+    Object build() { calls }
+}
+
+class FakeResponse {
+    static FakeBuilder last
+    static FakeBuilder ok(Object entity) { last = new FakeBuilder(); last.calls << "ok"; last }
+    static FakeBuilder status(int status) { last = new FakeBuilder(); last.calls << ("status=" + status); last }
+}
+
+class FakeParams {
+    Map<String, String> values = [:]
+    Object getFirst(String key) { values.get(key) }
 }
 
 int fail = 0
@@ -382,10 +390,26 @@ check("csv.emptyRows", Uma.toCsv([]), Uma.CSV_HEADER.join(",") + "\n")
 
 /* ---- response hardening ---------------------------------------------------- */
 
-Response.ResponseBuilder builder = Uma.noStore(new Response.ResponseBuilder())
-check("noStore.cacheControl", builder.headers.any { it.startsWith("Cache-Control: no-store, private") }, true)
-check("noStore.nosniff", builder.headers.contains("X-Content-Type-Options: nosniff"), true)
-check("noStore.pragma", builder.headers.contains("Pragma: no-cache"), true)
+/* The builder chain, proven against a fake class: order, content type and the
+ * no-store headers on every response including the error path. */
+List<String> okCalls = Uma.build(FakeResponse, 200, "body", Uma.HTML, null) as List<String>
+check("http.okFirst", okCalls[0], "ok")
+check("http.typeBeforeHeaders", okCalls[1], "type=" + Uma.HTML)
+check("http.cacheControl", okCalls.any { it.startsWith("Cache-Control: no-store, private") }, true)
+check("http.pragma", okCalls.contains("Pragma: no-cache"), true)
+check("http.nosniff", okCalls.contains("X-Content-Type-Options: nosniff"), true)
+
+List<String> errCalls = Uma.build(FakeResponse, 503, "body", Uma.JSON, null) as List<String>
+check("http.errorUsesStatus", errCalls[0], "status=503")
+check("http.errorCarriesEntity", errCalls[1], "entity")
+check("http.errorStillNoStore", errCalls.contains("X-Content-Type-Options: nosniff"), true)
+
+List<String> extraCalls = Uma.build(FakeResponse, 200, "body", Uma.CSV,
+    ["Content-Disposition": "attachment"]) as List<String>
+check("http.extraHeader", extraCalls.contains("Content-Disposition: attachment"), true)
+
+check("duck.missingMethodIsNull", Uma.duck(new FakeBuilder(), "noSuchMethod", null), null)
+check("duck.nullTargetIsNull", Uma.duck(null, "type", "x"), null)
 
 /* ---- the Save as .md link -------------------------------------------------- */
 
@@ -553,11 +577,12 @@ List<Map> unsorted = [[name: "zebra"], [name: "Alpha"], [name: "mango"]] as List
 unsorted.sort(Uma.byName())
 check("byName", unsorted.collect { it.name }, ["Alpha", "mango", "zebra"])
 
-MultivaluedMap params = new MultivaluedMap() {
-    Object getFirst(String key) { key == "format" ? "  CSV " : null }
-}
+FakeParams params = new FakeParams(values: [format: "  CSV ", name: "info box"])
 check("flag.present", Uma.flag(params, "format", "json"), "csv")
 check("flag.fallback", Uma.flag(params, "analyze", "TRUE"), "true")
+check("flag.nullParams", Uma.flag(null, "format", "html"), "html")
+check("firstParam.present", Uma.firstParam(params, "name"), "info box")
+check("firstParam.absent", Uma.firstParam(params, "nope"), null)
 
 println(fail == 0 ? "ALL TESTS PASS" : ("FAILURES: " + fail))
 System.exit(fail == 0 ? 0 : 1)
