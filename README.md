@@ -11,10 +11,14 @@ link to the exact administration screen where it is maintained.
 | Script | Platform | Version |
 | --- | --- | --- |
 | [`jira/jiraDCprojectConfig.groovy`](jira/jiraDCprojectConfig.groovy) | Jira Data Center | 0.1 |
+| [`confluence/userMacroDeepScan.groovy`](confluence/userMacroDeepScan.groovy) | Confluence Data Center | 3.5.0 |
 
 Typical uses: handing a project over to a new administrator, documenting a project before a
 migration, finding out why two projects behave differently, or producing the configuration
 appendix of an audit.
+
+Everything from here to **Licence** describes the Jira endpoint. The Confluence user macro
+scan is documented under [Confluence user macros](#confluence-user-macros).
 
 ## What it reports
 
@@ -246,6 +250,120 @@ Still unproven, and named here rather than left to be assumed:
 - On a project of that size the exported page hits the row cap: 5000 of 11 671 items. Every
   section keeps its heading and the ones that were cut say so, but more than half of the
   detail reaches the report and not the page.
+
+## Confluence user macros
+
+`confluence/userMacroDeepScan.groovy` answers a different question on the other product:
+**what does each user macro in this instance actually do, and can Confluence Cloud do it?**
+
+A migration assessment cannot work from a list of macro names. A user macro is a Velocity
+template, and two macros with equally harmless names can differ by everything that matters:
+one wraps its body in a styled div, the other reads the logged-in user and decides what to
+show. So the report reads every template and reports what it depends on.
+
+### What it reports
+
+Per macro: key, title, description, body type, categories and every declared parameter with
+its type, default, aliases and enum values. Then the template itself, verbatim, and an
+analysis of it: `$body`, the parameter references, which Velocity context objects it touches,
+the directives, the Java and Confluence method calls, HTML, CSS, JavaScript, the hosts it
+loads from, the macros it embeds, permission logic and content metadata.
+
+Each macro also carries a heuristic pre-sort towards `CLOUD_NATIVE_CANDIDATE`,
+`FORGE_REQUIRED` or `MANUAL_REVIEW`. It is labelled a pre-sort in every output on purpose.
+A machine that hands down `CLOUD_NATIVE` removes exactly the check the exercise is about.
+
+### Two things it gets right that a naive scan does not
+
+**Comments are not code.** Velocity strips them before rendering: a single-line comment
+starts with `##` and runs to the end of the line, a block comment runs from `#*` to `*#`.
+Atlassian's own guidance recommends a header comment in exactly that shape, so most
+templates carry one, and those headers routinely hold a source URL and a ticket key. An
+analyser that scans the raw template reports the documentation link as an outbound call and
+a commented-out example as live HTML, and pushes the macro towards `FORGE_REQUIRED` for no
+reason. Every runtime signal here is computed on the code half only. What the comments hold
+is reported separately, including the header fields as their own table.
+
+**A link is not a call.** A host is only a runtime dependency when the browser fetches from
+it: `src=`, a stylesheet link, a CSS `url()`, an `@import`. An `<a href>` is something a
+reader clicks. The two are separate signals and only the first affects the assessment.
+
+### Output formats
+
+`format=html` is the default report. `format=md` writes one self-contained file for handing
+to an analysis agent: the task, the classification scheme, a Velocity context glossary, every
+macro with its template, and an empty result table to fill in. It opens with an untrusted
+data boundary, because the macro content in that file was written by whoever authored the
+macros and must never be read as instructions. The HTML report offers it as a **Save as .md**
+button. `format=json` and `format=csv` are there for further processing; CSV cells that begin
+with `=`, `+`, `-` or `@` are neutralised so a macro title cannot become a spreadsheet
+formula.
+
+### What it cannot claim, and the switch that narrows it
+
+`UserMacroLibrary` does not return user macros that a plugin macro of the same name hides.
+Its javadoc states this three times. The default answer is therefore the **library-visible**
+set, every output says so, and `readComplete` means only that no read error occurred.
+
+`shadowCheck=true` compares that against the stored configuration and names what the library
+does not show. This matters more than it sounds: a hidden macro is still stored, and it can
+resurface once the shadowing app is gone, which is what a migration does.
+
+The check does not guess the storage key. It reads the named candidate first and, failing
+that, enumerates and recognises the store by the shape of its value, so a key nobody guessed
+still works.
+
+**Known platform limit.** The enumeration needs `BandanaManager`, deprecated since
+Confluence 9.3 and marked for removal in 11.0. It is reached reflectively, so its removal
+costs the completeness check and not the endpoint, which then reports UNKNOWN rather than
+zero. Measured on a live instance: the documented replacement, `PluginSettings.get(String)`,
+returns `null` for the same key that returns the data through Bandana, so it is not a
+replacement for this value. Verified with `javap`, `PluginSettings` has `get`, `put` and
+`remove` and no way to enumerate keys.
+
+### Requirements and installation
+
+- Adaptavist ScriptRunner, licensed and installed.
+- A member of `confluence-administrators`.
+- Confluence 10 and ScriptRunner 10 or above. Unlike the Jira endpoint in this repository
+  this file is **not** javax / jakarta neutral: it imports `jakarta.ws.rs.*`. On an older
+  release switch those two imports to `javax.ws.rs.*`; nothing else changes.
+
+Install it the same way as the Jira endpoint, as a file in your script root. ScriptRunner
+registers it under the name `userMacros`.
+
+### Parameters
+
+| Parameter | Default | Effect |
+| --- | --- | --- |
+| `format` | `html` | `html`, `md`, `json` or `csv` |
+| `template` | `true` | Include the Velocity template |
+| `analyze` | `true` | Analyse dependencies per template |
+| `shadowCheck` | `false` | Compare against the stored configuration for hidden macros |
+| `name` | none | Restrict the report to a single macro |
+
+Read-only throughout: no write to the macro store, no outbound network call. Every response
+carries `Cache-Control: no-store, private` and `X-Content-Type-Options: nosniff`, because the
+templates it returns can hold internal host names and, in the worst case, credentials.
+
+`shadowCheck` is off by default because key discovery deserialises every stored value in the
+global context.
+
+### Status
+
+Version 3.5.0. Measured on an instance with 60 user macros: the completeness check reported
+60 stored and 60 visible, so on that instance the library-visible list is the whole set.
+
+Still unproven, and named here rather than left to be assumed:
+
+- **The difference is untested against a real hidden macro.** Every run so far found an empty
+  difference. That the comparison reports a discrepancy correctly is covered by the offline
+  suite and not by a live instance.
+- **The heuristic pre-sort is a starting point, not a verdict.** It is deliberately biased
+  towards `MANUAL_REVIEW` and never claims `CLOUD_NATIVE`.
+- **The comment split is lexical.** A literal `##` inside a string in a template body is
+  treated as the start of a comment, the same way Velocity itself treats it in most
+  positions.
 
 ## Licence
 

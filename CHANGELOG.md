@@ -1,9 +1,43 @@
 # Changelog
 
-All notable changes to this project are documented here. The version of the endpoint is
-declared once, as `Pc.VERSION`, and printed by every output channel.
+All notable changes to this project are documented here. Each endpoint carries its own
+version, declared once in its helper class and printed by every output channel, so the
+sections below are grouped by endpoint rather than by a single repository version.
 
-## 0.1 - unreleased
+## userMacroDeepScan 3.5.0 - unreleased
+
+First version in this repository. The endpoint inventories Confluence Data Center user
+macros and analyses each Velocity template for what it actually depends on, as input for a
+Cloud migration assessment.
+
+### Added
+
+- User macro inventory at `/rest/scriptrunner/latest/custom/userMacros`, read-only and
+  restricted to `confluence-administrators`. Four output formats: an HTML report, a
+  Markdown handover for an analysis agent, JSON and CSV.
+- Per template, a dependency analysis computed on the CODE half only. Velocity strips
+  comments before rendering, and Atlassian's own recommended macro header is a comment
+  block, so scanning the raw template reported documentation links as outbound calls and
+  commented-out examples as live HTML. Comment findings are reported separately.
+- A distinction between a host a resource is loaded from, which is a runtime dependency,
+  and a host that is merely linked, which is not.
+- Optional completeness check, `shadowCheck=true`. `UserMacroLibrary` does not return user
+  macros hidden by an identically named plugin macro, so the default answer is the
+  library-visible set and says so. The check compares against the stored configuration and
+  names what the library does not show.
+
+### Known limits
+
+- The completeness check reads the stored configuration through `BandanaManager`, which is
+  deprecated since Confluence 9.3 and marked for removal in 11.0. It is reached
+  reflectively, so its removal costs the check and not the endpoint. Measured on a live
+  instance: the documented replacement, `PluginSettings.get(String)`, returns null for the
+  same key, so it is not a replacement for this value. Verified with javap, `PluginSettings`
+  has get, put and remove and no way to enumerate keys.
+- The completeness check has never been measured against an instance that actually has a
+  hidden user macro. Every run so far found an empty difference.
+
+## jiraDCprojectConfig 0.1 - unreleased
 
 First working version.
 

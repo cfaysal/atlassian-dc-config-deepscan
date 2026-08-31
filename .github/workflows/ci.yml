@@ -28,14 +28,22 @@ jobs:
             endpoint: jira/jiraDCprojectConfig.groovy
             tests: jira/tests/jiraDCprojectConfig.tests.groovy
             banner: END OF THE JIRA-FREE BLOCK
+            helperClass: Pc
           - product: confluence
             endpoint: confluence/confluenceDCspaceConfig.groovy
             tests: confluence/tests/confluenceDCspaceConfig.tests.groovy
             banner: END OF THE CONFLUENCE-FREE BLOCK
+            helperClass: Pc
           - product: confluence-probe
             endpoint: confluence/tools/spaceConfigReachabilityProbe.groovy
             tests: ""
             banner: ""
+            helperClass: ""
+          - product: confluence-usermacros
+            endpoint: confluence/userMacroDeepScan.groovy
+            tests: confluence/tests/userMacroDeepScan.tests.groovy
+            banner: END OF THE OFFLINE-TESTABLE BLOCK
+            helperClass: Uma
 
     steps:
       - uses: actions/checkout@v4
@@ -108,7 +116,7 @@ jobs:
             echo "::notice title=Not present::Test suite missing, suite skipped."
             exit 0
           fi
-          START=$(grep -n '^class Pc {' "$F" | cut -d: -f1)
+          START=$(grep -n "^class ${{ matrix.helperClass }} {" "$F" | cut -d: -f1)
           END=$(( $(grep -n "^ \* $BANNER$" "$F" | cut -d: -f1) - 2 ))
           if [ -z "$START" ] || [ "$END" -le "$START" ]; then
             echo "::error title=Cut markers moved::Could not locate the helper class block in $F."
@@ -118,6 +126,12 @@ jobs:
             echo 'import org.codehaus.groovy.runtime.InvokerHelper'
             echo 'import java.time.ZonedDateTime'
             echo 'import java.time.format.DateTimeFormatter'
+            # Groovy auto-imports java.lang, java.util, java.io and java.net, but
+            # not these. A cut block using them would fail to resolve here while
+            # compiling perfectly in the shipped file, which has its own imports.
+            echo 'import java.util.regex.Pattern'
+            echo 'import java.util.regex.Matcher'
+            echo 'import java.lang.reflect.Method'
             sed -n "${START},${END}p" "$F"
             cat "$T"
           } > /tmp/testsuite.groovy
