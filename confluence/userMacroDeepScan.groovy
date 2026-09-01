@@ -114,14 +114,21 @@
  *   repository has a gate against: the browser posts the marks, the server
  *   renders. The POST is a rendering call, not a mutation.
  *
- *   That POST goes through XsrfResourceFilter, which checks every non-GET
- *   request carrying a form-urlencoded body, so the form has to present the
- *   token. It is rendered into the form as a hidden field by the server, with
- *   the field name asked of XsrfTokenValidator rather than written as a literal.
- *   No script is involved and none is wanted: the header exemption is a request
- *   header a form cannot set, and turning the check off is an instance-wide
- *   setting. If the token cannot be resolved the field is omitted and the page
- *   says so - see XSRF_UNAVAILABLE.
+ *   That POST is application/json, sent by fetch with X-Atlassian-Token:
+ *   no-check. MEASURED, and this is what 4.0.1 got wrong: XsrfResourceFilter in
+ *   atlassian-rest-common checks every non-GET request whose media type is in
+ *   XSRFABLE_TYPES, and that list holds application/x-www-form-urlencoded,
+ *   multipart/form-data and text/plain - which are the only three enctypes an
+ *   HTML form can produce. A form POST therefore cannot get past that filter at
+ *   all: the token 4.0.1 rendered into the form did not resolve on the instance
+ *   and the button still came back "XSRF check failed". application/json is not
+ *   in that list, and the no-check header covers the rest. It is the same
+ *   transport the two sister endpoints in this repository have used against the
+ *   same instance for months.
+ *
+ *   The price is one script block on this page. It is paid deliberately, and
+ *   what is assured in place of the old no-script claim is stated under HTML
+ *   output below.
  *
  * Platform
  *   javax / jakarta neutral. The JAX-RS Response class is resolved at runtime and
@@ -147,10 +154,10 @@
  *                                            stored value during key discovery
  *   name=<macroName>          optional filter for a single macro
  *
- *   On POST the same parameters arrive as form fields, together with the marks
- *   (macro.N, needed.N, remark.N). A posted value wins over the query string, so
- *   the form carries the whole request and nothing depends on the URL it was
- *   submitted from.
+ *   On POST the same parameters arrive in a JSON object, together with the
+ *   marks as a "marks" array of {macro, needed, remark}. A posted value wins
+ *   over the query string, so the payload carries the whole request and nothing
+ *   depends on the URL it was submitted from.
  *
  * Every response carries Cache-Control: no-store, private and X-Content-Type-
  * Options: nosniff, on POST exactly as on GET. Templates can hold credentials,
@@ -161,9 +168,25 @@
  *   cell goes through Uma.esc(). A user macro is HTML and frequently JavaScript
  *   by definition; an unescaped report would execute that foreign code in the
  *   browser of the administrator reviewing it. Self-contained page, no external
- *   stylesheet, and NO SCRIPT - the running count of marked macros is a CSS
- *   counter, because a script tag on this page would blunt the one assertion
- *   that keeps macro content from executing here.
+ *   stylesheet.
+ *
+ *   Up to 4.0.1 this page carried NO SCRIPT and said so. Since 4.1.0 it carries
+ *   exactly one, because the export cannot reach its own endpoint without one -
+ *   see Security above. The assurance is not dropped, it is narrowed to
+ *   something that stays true and can be checked:
+ *
+ *     The script block is the constant Uma.EXPORT_SCRIPT, and it NEVER
+ *     interpolates macro data. No macro name, description, template or remark
+ *     is written into it by the server, ever. The marks are read out of the DOM
+ *     at export time, never embedded.
+ *
+ *   Macro content reaches the page through Uma.esc() only, in HTML text nodes
+ *   and attributes, exactly as before. The offline suite renders the same report
+ *   with macro names carrying quotes, angle brackets and a literal </script> and
+ *   asserts the script block comes out identical either way.
+ *
+ *   The running count of marked macros stays a CSS counter: it needs no script,
+ *   which is a different reason from the one that used to forbid one.
  *
  * Markdown output (format=md)
  *   One file to hand to an analysis agent: the task, the classification scheme,
@@ -202,7 +225,7 @@ import java.util.regex.Pattern
 
 class Uma {
 
-    static final String VERSION = "4.0.1"
+    static final String VERSION = "4.1.0"
 
     /* SCOPE, stated once and repeated in every output channel.
      * UserMacroLibrary javadoc, verbatim: "this UserMacroLibrary is now aware of
@@ -935,9 +958,17 @@ class Uma {
         }
     }
 
-    /* application/x-www-form-urlencoded, the body a browser sends for this form.
+    /* application/x-www-form-urlencoded, the body a browser sends for a form.
      * First value wins: every field here is written once, and a duplicate name
-     * is a client doing something unexpected, not an instruction. */
+     * is a client doing something unexpected, not an instruction.
+     *
+     * NO CALLER since 4.1.0, and kept rather than deleted. This is the shape the
+     * export used up to 4.0.1, and it is the shape that cannot get through the
+     * XSRF filter: form-urlencoded is in XSRFABLE_TYPES, so the filter checks it
+     * and refuses it. The decoder itself is correct and stays as the reference
+     * for that shape - and if this endpoint is ever asked to accept a plain form
+     * POST again, this is the function that reads it. postedBody below is the
+     * live path. */
     static Map<String, String> parseForm(String body) {
         Map<String, String> form = new LinkedHashMap<String, String>()
         if (body == null || body.trim().isEmpty()) {
@@ -962,7 +993,11 @@ class Uma {
      * checkbox sends nothing at all, so the tick cannot carry the macro name and
      * a hidden field does. Keying the result by name means a macro that moved
      * between rendering the page and posting it gets its own mark rather than
-     * its neighbour's. */
+     * its neighbour's.
+     *
+     * NO CALLER since 4.1.0, for the same reason as parseForm above: the form
+     * shape it reads is the one the XSRF filter refuses. postedMarks below is
+     * the live path and keeps the keying rule this one established. */
     static Map<String, Map> marksIn(Map form) {
         Map<String, Map> marks = new LinkedHashMap<String, Map>()
         int index = 0
@@ -975,6 +1010,77 @@ class Uma {
                 marks.put(name, mark)
             }
             index++
+        }
+        return marks
+    }
+
+    /* The posted body as a Map, and the reason the export works at all.
+     *
+     * The media type is what gets past XsrfResourceFilter: it checks the types
+     * in XSRFABLE_TYPES, application/json is not one of them, and the page adds
+     * X-Atlassian-Token: no-check on top. An HTML form can produce none of that,
+     * which is why 4.0.1 could not be fixed by rendering a better token.
+     *
+     * JsonSlurper is named in full deliberately. The offline suite is cut out of
+     * this file and compiled with a FIXED import list owned by ci.yml; an import
+     * added at the top here would compile in the shipped file and fail in the
+     * suite. A qualified name compiles in both.
+     *
+     * An absent or blank body is a GET in every respect and yields an empty map.
+     * A body that is PRESENT and is not a JSON object is a different thing and
+     * says so in diagnostics: the caller refuses it rather than falling back to
+     * the defaults, because those defaults render HTML, and the export script
+     * would save that HTML under a .md name - a wrong file that looks right. */
+    static Map postedBody(String body, List<String> diagnostics) {
+        if (body == null || body.trim().isEmpty()) {
+            return [:] as LinkedHashMap
+        }
+        Object parsed = null
+        try {
+            parsed = new groovy.json.JsonSlurper().parseText(body)
+        } catch (Exception error) {
+            diagnostics.add("The request body is not valid JSON: " +
+                error.getClass().getSimpleName() + ". Nothing was rendered.")
+            return [:] as LinkedHashMap
+        }
+        if (!(parsed instanceof Map)) {
+            diagnostics.add("The request body must be a JSON object. Nothing was rendered.")
+            return [:] as LinkedHashMap
+        }
+        return (Map) parsed
+    }
+
+    /* The marks out of the posted body, in the shape applyMarks expects. The
+     * JSON counterpart of marksIn above, and it keeps that function's rule: the
+     * result is keyed by macro NAME, so a macro that moved between rendering the
+     * page and posting it gets its own mark rather than its neighbour's. First
+     * entry wins on a duplicate name, as in parseForm.
+     *
+     * The tick is accepted as a JSON boolean and as the strings the form shape
+     * used. A client that sends "true" means the same thing, and losing a page
+     * of typed remarks to a type mismatch is by far the worse failure. */
+    static Map<String, Map> postedMarks(Map body) {
+        Map<String, Map> marks = new LinkedHashMap<String, Map>()
+        Object posted = body == null ? null : body.get("marks")
+        if (!(posted instanceof Collection)) {
+            return marks
+        }
+        for (Object item : (Collection) posted) {
+            if (!(item instanceof Map)) {
+                continue
+            }
+            Map entry = (Map) item
+            String name = strOf(entry, "macro").trim()
+            if (name.isEmpty() || marks.containsKey(name)) {
+                continue
+            }
+            Object needed = entry.get("needed")
+            Map mark = [:] as LinkedHashMap
+            mark.stillNeeded = needed instanceof Boolean
+                ? ((Boolean) needed).booleanValue()
+                : YES_VALUES.contains(strOf(entry, "needed").trim().toLowerCase())
+            mark.remark = strOf(entry, "remark").trim()
+            marks.put(name, mark)
         }
         return marks
     }
@@ -1287,8 +1393,13 @@ class Uma {
 
     /* Relative on purpose, and without a query string. The report is served from
      * .../custom/userMacros, so this resolves back onto the same endpoint under
-     * any Confluence context path, and every option then comes from the form
-     * rather than half from the URL the page happened to be opened with. */
+     * any Confluence context path.
+     *
+     * NO CALLER since 4.1.0: it was the form action, and the export now posts to
+     * window.location.pathname, which is the same URL without this file having
+     * to know the REST base path at all. Kept because it is the documented name
+     * this endpoint is registered under, and both registrations at the foot of
+     * the file have to match it. */
     static final String ENDPOINT_PATH = "userMacros"
 
     static String hiddenField(String name, String value) {
@@ -1309,7 +1420,10 @@ class Uma {
         return fields.toString()
     }
 
-    /* ---- the XSRF token this endpoint's own POST has to carry ---------------
+    /* ---- the XSRF token a FORM POST would have had to carry -----------------
+     * NO CALLER since 4.1.0. Both methods below are kept, and this is the note
+     * that says why they are here and why nothing calls them.
+     *
      * The report opened, the marks could be set, and the export POST came back
      * "XSRF check failed". The wording is XsrfCheckFailedException, thrown by
      * XsrfResourceFilter in atlassian-rest-common. Read off its source:
@@ -1318,16 +1432,20 @@ class Uma {
      * checks every non-GET method by default while checking GET only where a
      * resource asks for it. That is the asymmetry that was measured, exactly.
      *
-     * None of the escapes apply here. The filter reads its exemption from the
-     * X-Atlassian-Token header, and an HTML form cannot set a header; Atlassian
-     * scopes that route to the command line and to other systems itself.
-     * @XsrfProtectionExcluded needs a JAX-RS method, and a ScriptRunner closure
-     * is not one. The atlassian.rest.xsrf.legacy.enabled dark feature would turn
-     * the protection of EVERY REST resource on the instance into opt-in.
+     * 4.0.1 answered it by rendering the token into the form. MEASURED on the
+     * instance: it did not carry. The page showed the fail-loud line, the token
+     * was not resolvable there, and the button still came back refused. The
+     * remaining escapes are no better - @XsrfProtectionExcluded needs a JAX-RS
+     * method and a ScriptRunner closure is not one, and the
+     * atlassian.rest.xsrf.legacy.enabled dark feature would turn the protection
+     * of EVERY REST resource on the instance into opt-in.
      *
-     * So the token is rendered into the form by the server. The page still
-     * carries NO SCRIPT, which is the point: it renders macro content, and the
-     * assertion that nothing on it executes is worth more than convenience.
+     * What carries is the transport the sister endpoints use: application/json,
+     * which is not in XSRFABLE_TYPES, plus the X-Atlassian-Token: no-check
+     * header, which only a script can set. So the token path is dead code on
+     * purpose, not a mistake - it is the correct implementation of an approach
+     * that cannot work through this filter, and deleting it would invite the
+     * next reader to try it again.
      *
      * The lookup is by class name and every value is Object, because
      * HttpContext.getRequest returns the SERVLET request - javax.servlet on
@@ -1507,6 +1625,103 @@ class Uma {
         return out.toString()
     }
 
+    /* ---- the one script block on this page ----------------------------------
+     * A CONSTANT, and the assurance that replaces the old no-script claim: no
+     * macro name, description, template or remark is ever written in here. The
+     * server appends this string verbatim and interpolates nothing, which is why
+     * it is a triple-quoted PLAIN string - a GString could interpolate, this
+     * cannot. Everything the export needs is read out of the DOM at click time.
+     *
+     * It exists because the export cannot reach its own endpoint without it. A
+     * form POST is form-urlencoded, that type is in XSRFABLE_TYPES, and
+     * XsrfResourceFilter refuses it; 4.0.1 proved on the instance that a
+     * server-rendered token does not save it. application/json is not in that
+     * list, and X-Atlassian-Token: no-check is a header only a script can set.
+     * The two sister endpoints in this repository post exactly this way.
+     *
+     * The response is Markdown, not JSON, so it is read as text and saved
+     * through a Blob. A refusal puts its status and its body on the page: a
+     * silent failure here is the exact defect that cost 4.0.0 and 4.0.1, where
+     * the page looked correct until the button was pressed. */
+    static final String EXPORT_SCRIPT = '''
+(function () {
+    var button = document.getElementById('exportRun');
+    var status = document.getElementById('exportStatus');
+    if (!button || !status) { return; }
+
+    function say(text, bad) {
+        status.textContent = text;
+        status.className = bad ? 'exportnote bad' : 'exportnote';
+    }
+
+    /* Read, never embedded. The options are the hidden fields the server
+       rendered, so this cannot drift away from exportFields: whatever is in that
+       box travels. The marks come from the cells themselves - name, tick and
+       remark of one row are the three controls inside one td.mark. */
+    function collect() {
+        var out = {};
+        var options = document.querySelectorAll('#exportOptions input[type=hidden]');
+        for (var i = 0; i < options.length; i++) {
+            if (options[i].name) { out[options[i].name] = options[i].value; }
+        }
+        var marks = [];
+        var cells = document.querySelectorAll('td.mark');
+        for (var j = 0; j < cells.length; j++) {
+            var named = cells[j].querySelector('input[type=hidden]');
+            var tick = cells[j].querySelector('input[type=checkbox]');
+            var remark = cells[j].querySelector('textarea');
+            if (!named || !named.value) { continue; }
+            marks.push({
+                macro: named.value,
+                needed: tick ? tick.checked : false,
+                remark: remark ? remark.value : ''
+            });
+        }
+        /* Last, so no option field can displace the marks. */
+        out.marks = marks;
+        return out;
+    }
+
+    function save(text) {
+        var blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
+        var href = URL.createObjectURL(blob);
+        var link = document.createElement('a');
+        link.href = href;
+        link.download = 'confluence-user-macros.md';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(href);
+    }
+
+    button.onclick = function () {
+        button.disabled = true;
+        say('Rendering the export...', false);
+        fetch(window.location.pathname, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-Atlassian-Token': 'no-check' },
+            body: JSON.stringify(collect())
+        }).then(function (response) {
+            return response.text().then(function (text) {
+                return { ok: response.ok, status: response.status, text: text };
+            });
+        }).then(function (result) {
+            button.disabled = false;
+            if (!result.ok) {
+                say('The export was refused with HTTP ' + result.status + ': ' + result.text, true);
+                return;
+            }
+            save(result.text);
+            say('Exported. The marks stay on this page until you leave it.', false);
+        }).catch(function (error) {
+            button.disabled = false;
+            say('The export request failed: ' + error, true);
+        });
+    };
+})();
+'''
+
     static String toHtml(List<Map> rows, boolean readComplete, List<String> diagnostics, Map shadow, String exportFields, String checkHref) {
         StringBuilder out = new StringBuilder()
         out.append("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n")
@@ -1551,7 +1766,7 @@ td.name .key{display:block;margin-top:2px;font-weight:400;font-size:12px;color:#
 .signals{margin:8px 0 0;padding-left:18px;font-size:12px;color:#5e6c84}
 .calls{margin-top:4px;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#5e6c84;word-break:break-all}
 .alert.marks ul{columns:2;margin-top:8px}
-form{counter-reset:assessed}
+.sheet{counter-reset:assessed}
 td.mark{background:#fafbfc}
 label.mark{display:block;font-weight:600;margin-bottom:6px}
 label.mark input{margin-right:6px}
@@ -1562,6 +1777,8 @@ td.mark textarea{width:100%;font-family:inherit;font-size:13px;line-height:1.4;p
 .tally{font-weight:600;white-space:nowrap}
 .tally::before{content:counter(assessed)}
 .barnote{flex:1 1 320px;font-size:12px;color:#5e6c84}
+.exportnote{flex:1 1 100%;font-size:12px;color:#5e6c84;word-break:break-word}
+.exportnote.bad{color:#bf2600;font-weight:600}
 pre{margin:0;max-height:420px;overflow:auto;padding:10px;background:#f4f5f7;border-radius:3px;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
 .none{color:#97a0af;font-style:italic}
 @media (prefers-color-scheme:dark){
@@ -1577,6 +1794,7 @@ pre{background:#22272b}
 .chip.warn{background:#5d1f1a;color:#ffd5d2}
 .chip.muted{border-color:#454f59;color:#8c9bab}
 .claims{color:#ff9c8f}
+.exportnote.bad{color:#ff9c8f}
 td.mark{background:#22272b}
 td.mark textarea{background:#1d2125;color:#c7d1db;border-color:#454f59}
 .bar{background:#22272b;border-top-color:#454f59}
@@ -1609,12 +1827,22 @@ td.mark textarea{background:#1d2125;color:#c7d1db;border-color:#454f59}
             out.append("</ul></div>\n")
         }
 
-        /* Everything from here down is one form. The marks and their free text
-         * go back to this same endpoint by POST, and the SERVER renders the
-         * export - a renderer in the browser would be a second copy of the same
-         * output, which is what this repository has a drift gate against. */
-        out.append("<form method=\"post\" action=\"").append(esc(ENDPOINT_PATH)).append("\">\n")
-        out.append(exportFields == null ? "" : exportFields).append("\n")
+        /* Everything from here down is the sheet the export reads. It is NOT a
+         * form: a form can only send the three enctypes XsrfResourceFilter
+         * checks, so a form POST is refused whatever token it carries. The
+         * script posts the same values as JSON instead.
+         *
+         * The marks still go back to this same endpoint and the SERVER still
+         * renders the export - a renderer in the browser would be a second copy
+         * of the same output, which is what this repository has a drift gate
+         * against. Only the transport changed.
+         *
+         * The options keep their own box, and the script reads them out of it.
+         * They stay hidden inputs so that exportFields, the shape the sister
+         * link builds, and the payload cannot come apart. */
+        out.append("<div class=\"sheet\">\n")
+        out.append("<div id=\"exportOptions\">").append(exportFields == null ? "" : exportFields)
+            .append("</div>\n")
 
         out.append("<table>\n<colgroup><col class=\"c1\"><col class=\"c2\"><col class=\"c3\"><col class=\"c4\"></colgroup>\n")
         out.append("<thead><tr><th>Macro</th><th>Function / description</th><th>Content</th>")
@@ -1650,11 +1878,11 @@ td.mark textarea{background:#1d2125;color:#c7d1db;border-color:#454f59}
 
         out.append("</tbody>\n</table>\n")
 
-        /* The running count is a CSS counter over the ticked boxes, because this
-         * page carries no script by design: macro content is rendered here, and
-         * the assertion that nothing on this page executes is worth more than a
-         * live number. It sits BELOW the table because a CSS counter can only be
-         * read after the elements it counts. */
+        /* The running count stays a CSS counter over the ticked boxes. The page
+         * does carry a script since 4.1.0, but this number needs none, and a
+         * counter cannot be wrong the way a hand-maintained one can. It sits
+         * BELOW the table because a CSS counter can only be read after the
+         * elements it counts. */
         out.append("<div class=\"bar\">\n<span class=\"tally\"></span><span> of ")
             .append(rows.size()).append(" assessed</span>\n")
         /* The rule that deletes work sits here, in one sentence, next to the
@@ -1666,9 +1894,19 @@ td.mark textarea{background:#1d2125;color:#c7d1db;border-color:#454f59}
             .append(" These marks are NOT saved in Confluence. ")
             .append("They live in this page only and are lost when you leave it. ")
             .append("The export below is the only thing that carries them.</span>\n")
-        out.append("<button class=\"btn\" type=\"submit\" ")
+        /* type="button", not submit: there is no form to submit. The script
+         * collects the marks, posts them as JSON and saves what comes back. */
+        out.append("<button class=\"btn\" type=\"button\" id=\"exportRun\" ")
             .append("title=\"for postprocessing using your preferred LLM\">Save as .md</button>\n")
-        out.append("</div>\n</form>\n</body>\n</html>\n")
+        /* Empty until something happens, and the only place a refusal is
+         * reported. A failed export that says nothing is the defect this
+         * version exists to end. */
+        out.append("<span class=\"exportnote\" id=\"exportStatus\"></span>\n")
+        out.append("</div>\n</div>\n")
+        /* The one script block, appended verbatim from the constant. Last in the
+         * body so every element it addresses already exists. */
+        out.append("<script>").append(EXPORT_SCRIPT).append("</script>\n")
+        out.append("</body>\n</html>\n")
         return out.toString()
     }
 
@@ -2235,14 +2473,33 @@ Closure report = { queryParams, body ->
     /* JAX-RS Response, resolved at runtime (javax / jakarta neutral). */
     Class responseClass = Uma.resolveResponseClass()
 
-    /* Empty on GET. On POST it holds the options AND the marks. */
-    Map<String, String> form = Uma.parseForm(body instanceof String ? (String) body : null)
+    /* Empty on GET. On POST it is the JSON object the page sent: the options AND
+     * the marks. Read through toString(), the way both sister endpoints read
+     * theirs - ScriptRunner hands the closure a body and the concrete type it
+     * passes is not documented. */
+    List<String> bodyProblems = new ArrayList<String>()
+    Map posted = Uma.postedBody(body == null ? null : body.toString(), bodyProblems)
 
-    String format = Uma.option(queryParams, form, "format", "html")
-    boolean withTemplate = Uma.option(queryParams, form, "template", "true") != "false"
-    boolean withAnalysis = Uma.option(queryParams, form, "analyze", "true") != "false"
-    boolean withShadowCheck = Uma.option(queryParams, form, "shadowCheck", "false") == "true"
-    String nameFilter = Uma.optionText(queryParams, form, "name")
+    /* A body that arrived and could not be read is REFUSED, never ignored.
+     * Falling through to the GET defaults would render the HTML report, and the
+     * export script would save that HTML page under a .md name: a wrong file
+     * that looks like a right one, which is the failure class this version
+     * exists to end. */
+    if (!bodyProblems.isEmpty()) {
+        Map refused = [
+            version: Uma.VERSION,
+            ok     : false,
+            error  : bodyProblems.join(" ")
+        ] as LinkedHashMap
+        return Uma.build(responseClass, 400,
+            JsonOutput.prettyPrint(JsonOutput.toJson(refused)), Uma.JSON, null)
+    }
+
+    String format = Uma.option(queryParams, posted, "format", "html")
+    boolean withTemplate = Uma.option(queryParams, posted, "template", "true") != "false"
+    boolean withAnalysis = Uma.option(queryParams, posted, "analyze", "true") != "false"
+    boolean withShadowCheck = Uma.option(queryParams, posted, "shadowCheck", "false") == "true"
+    String nameFilter = Uma.optionText(queryParams, posted, "name")
 
     List<String> diagnostics = new ArrayList<String>()
     boolean readComplete = true
@@ -2380,10 +2637,10 @@ Closure report = { queryParams, body ->
 
     macros.sort(Uma.byName())
 
-    /* The administrator's marks off the posted form, attached to every row. On a
-     * GET there is no form and every row reads "not assessed", which is the
-     * decision the rule makes, not a missing value. */
-    Uma.applyMarks(macros, Uma.marksIn(form))
+    /* The administrator's marks off the posted payload, attached to every row.
+     * On a GET there is no payload and every row reads "not assessed", which is
+     * the decision the rule makes, not a missing value. */
+    Uma.applyMarks(macros, Uma.postedMarks(posted))
 
     /* Opt-in, because it deserialises every Bandana value in the global context.
      * Never runs implicitly, and its absence is reported as UNKNOWN. */
@@ -2404,24 +2661,19 @@ Closure report = { queryParams, body ->
     }
 
     if (format == "html") {
-        /* The SAL lookup for the XSRF token, and the only part of it that lives
-         * below the banner. It names three SAL types by string, resolves them
-         * reflectively and hands the resolved objects to Uma, which does the
-         * work and is therefore under test with plain stand-ins. Putting the
-         * lookup here rather than in the block is what keeps that possible: the
-         * offline suite cannot satisfy a Class.forName on a product type, so a
-         * resolver inside the block would leave only its failure branch testable.
+        /* NO XSRF token is fetched here any more, and that is the change 4.1.0
+         * is. Up to 4.0.1 this line resolved HttpContext, XsrfTokenAccessor and
+         * XsrfTokenValidator through Uma.salComponent and handed them to
+         * Uma.xsrfField, which rendered a hidden field into the form. MEASURED
+         * on the instance: the token did not resolve, the page printed the
+         * fail-loud line, and the POST was refused all the same. A form POST is
+         * form-urlencoded, that type is in XSRFABLE_TYPES, and no token in the
+         * world takes it past a filter that is doing its job.
          *
-         * An unresolvable token yields no field AND a line in diagnostics, which
-         * the alert above the form renders. Silence here would look exactly like
-         * success until the button is pressed. */
-        String token = Uma.xsrfField(
-            Uma.salComponent("com.atlassian.sal.api.web.context.HttpContext"),
-            Uma.salComponent("com.atlassian.sal.api.xsrf.XsrfTokenAccessor"),
-            Uma.salComponent("com.atlassian.sal.api.xsrf.XsrfTokenValidator"),
-            diagnostics)
-        String fields = token +
-            Uma.exportFields(withTemplate, withAnalysis, withShadowCheck, nameFilter)
+         * Both methods are still in Uma, unused and annotated - see the XSRF
+         * section there. The export now posts application/json with
+         * X-Atlassian-Token: no-check, which needs nothing from this branch. */
+        String fields = Uma.exportFields(withTemplate, withAnalysis, withShadowCheck, nameFilter)
         /* Offer the check only while it has not run - once it has, its result is
          * on the page and a second button would just invite a re-run. */
         String check = withShadowCheck ? null : Uma.checkHref(withTemplate, withAnalysis, nameFilter)

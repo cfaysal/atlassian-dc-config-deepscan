@@ -6754,18 +6754,31 @@ class Cw {
  * runtime, for the same reason the GET branch does it: naming a JAX-RS type
  * statically would tie this file to one ScriptRunner line.
  *
- * CSRF - UNVERIFIED. The Custom REST Endpoint documentation does not say whether
- * these endpoints sit behind the Confluence XSRF filter, so the report page sends
- * X-Atlassian-Token: no-check, which is required if the filter applies and is
- * harmless if it does not. Reading that header back would need the three-argument
- * HttpServletRequest closure form, and the servlet package this ScriptRunner
- * version passes on Confluence 10 (javax or jakarta) is not documented either, so
- * no header check is attempted here. What IS enforced on the server: the
- * confluence-administrators gate, and the rule that only a page carrying the
- * export marker is ever updated - a forged request can neither replace a foreign
- * page nor drop a remark. TO CONFIRM before relying on more than that: whether
- * the XSRF filter covers ScriptRunner endpoints, and which HttpServletRequest
- * type is passed, so an explicit header check can be added.
+ * CSRF - MEASURED 2026-09-01 (OP-1062). This paragraph said UNVERIFIED until
+ * then. The answer is yes: a ScriptRunner Custom REST Endpoint DOES sit behind
+ * the Confluence XSRF filter. The measurement came from the sister endpoint
+ * confluence/userMacroDeepScan.groovy on this same instance, which posted its
+ * export from a plain <form method="post"> and was refused with "XSRF check
+ * failed" - XsrfCheckFailedException out of XsrfResourceFilter in
+ * atlassian-rest-common. Rendering the token into that form as a hidden field
+ * did not save it either; that was version 4.0.1 and it was measured too.
+ *
+ * Why THIS endpoint has never been affected, which is the part worth keeping:
+ * the filter checks only requests whose media type is in XSRFABLE_TYPES, and
+ * that list holds application/x-www-form-urlencoded, multipart/form-data and
+ * text/plain - exactly the three enctypes an HTML form can produce, and no
+ * more. The report page here posts application/json, which is not in that list,
+ * AND sends X-Atlassian-Token: no-check. Either one alone would carry it; both
+ * is deliberate. An HTML form has neither route available, which is why the
+ * sister endpoint had to adopt this transport rather than a better token.
+ *
+ * Unchanged and still open: reading that header back would need the
+ * three-argument HttpServletRequest closure form, and the servlet package this
+ * ScriptRunner version passes on Confluence 10 (javax or jakarta) is not
+ * documented, so no header check is attempted here. What IS enforced on the
+ * server: the confluence-administrators gate, and the rule that only a page
+ * carrying the export marker is ever updated - a forged request can neither
+ * replace a foreign page nor drop a remark.
  * ========================================================================== */
 
 spaceConfig(

@@ -535,7 +535,24 @@ String html = Uma.toHtml([hostileRow], true, [], [:], exportFieldsDefault, "?for
 check("html.noRawScriptOpen", html.contains("<script>alert"), false)
 check("html.scriptEscaped", html.contains("&lt;script&gt;alert(document.cookie)&lt;/script&gt;"), true)
 check("html.nameEscaped", html.contains("evil&lt;macro&gt;"), true)
-check("html.noScriptTagAtAll", html.toLowerCase().contains("<script"), false)
+/* The blanket "no script on this page" claim of 4.0.1 is gone, because the
+ * export cannot reach its own endpoint without one: a form can only send the
+ * three enctypes XsrfResourceFilter checks. It is REPLACED, not dropped. What is
+ * asserted from here on is the narrower claim that still holds: exactly one
+ * script block, it is the constant, and no row datum is ever interpolated into
+ * it. The row rendered above carries a <script> in its template and angle
+ * brackets in its name, so this is a page where an interpolating renderer would
+ * show it. */
+def scriptBlockOf = { String page ->
+    int open = page.indexOf("<script>")
+    int close = page.indexOf("</script>")
+    return open < 0 || close < open ? "" : page.substring(open + "<script>".length(), close)
+}
+check("html.oneScriptOpen", html.count("<script>"), 1)
+check("html.oneScriptClose", html.count("</script>"), 1)
+check("html.scriptIsTheConstant", scriptBlockOf(html), Uma.EXPORT_SCRIPT)
+check("html.macroScriptNeverReachesTheBlock",
+    scriptBlockOf(html).contains("alert(document.cookie)"), false)
 check("html.headers", html.contains("<th>Macro</th><th>Function / description</th><th>Content</th><th>Still needed?</th>"), true)
 check("html.saveButton", html.contains('>Save as .md</button>'), true)
 check("html.buttonHover", html.contains('title="for postprocessing using your preferred LLM"'), true)
@@ -834,8 +851,36 @@ check("brief.classificationSchemeKept",
 check("brief.boundaryKept", Uma.briefText().contains("Untrusted data boundary"), true)
 
 String markedHtml = Uma.toHtml(markedOutput, true, [], [:], exportFieldsDefault, null)
-check("html.postForm", markedHtml.contains('<form method="post" action="userMacros">'), true)
-check("html.exportIsASubmit", markedHtml.contains('<button class="btn" type="submit"'), true)
+/* No form at all since 4.1.0. A form POST is form-urlencoded, that media type
+ * is in XSRFABLE_TYPES, and the filter refuses it whatever token it carries -
+ * measured on the instance with the 4.0.1 token in place. The button collects
+ * the marks and posts them as application/json instead, which is the transport
+ * both sister endpoints in this repository already use. */
+check("html.noFormAtAll", markedHtml.contains("<form"), false)
+check("html.sheetWrapsTheMarks", markedHtml.contains('<div class="sheet">'), true)
+check("html.counterScopeMovedToTheSheet",
+    markedHtml.contains(".sheet{counter-reset:assessed}"), true)
+check("html.optionsHaveTheirOwnBox", markedHtml.contains('<div id="exportOptions">'), true)
+check("html.exportIsAButton",
+    markedHtml.contains('<button class="btn" type="button" id="exportRun"'), true)
+check("html.exportPostsToItself", markedHtml.contains("fetch(window.location.pathname"), true)
+check("html.exportPostsJson", markedHtml.contains("'Content-Type': 'application/json'"), true)
+check("html.exportSendsNoCheck", markedHtml.contains("'X-Atlassian-Token': 'no-check'"), true)
+check("html.exportSendsCredentials", markedHtml.contains("credentials: 'same-origin'"), true)
+/* The answer is Markdown, not JSON: read as text, saved through a Blob. */
+check("html.exportReadsText", markedHtml.contains("response.text()"), true)
+check("html.exportNamesTheFile",
+    markedHtml.contains("link.download = 'confluence-user-macros.md'"), true)
+/* A refusal is put on the page with its status and its body. A silent failure
+ * here is the exact defect that cost 4.0.0 and 4.0.1: the page looked correct
+ * until the button was pressed. */
+check("html.exportHasAStatusLine",
+    markedHtml.contains('<span class="exportnote" id="exportStatus"></span>'), true)
+check("html.exportShowsTheStatusCode",
+    markedHtml.contains("'The export was refused with HTTP ' + result.status"), true)
+check("html.exportShowsTheBody", markedHtml.contains("+ result.text, true)"), true)
+check("html.exportShowsATransportFailure",
+    markedHtml.contains("'The export request failed: ' + error"), true)
 check("html.exportIsNoLongerALink", markedHtml.contains('>Save as .md</a>'), false)
 check("html.fourthColumn", markedHtml.contains("<th>Still needed?</th>"), true)
 check("html.markNameTravelsHidden",
@@ -866,7 +911,8 @@ check("html.runningCount",
 check("html.countIsCss", markedHtml.contains(".tally::before{content:counter(assessed)}"), true)
 check("html.marksAreNotStored", markedHtml.contains("NOT saved in Confluence"), true)
 check("html.marksAreLostOnLeave", markedHtml.contains("lost when you leave"), true)
-check("html.stillNoScript", markedHtml.toLowerCase().contains("<script"), false)
+check("html.stillOneScript", markedHtml.count("<script>"), 1)
+check("html.scriptIdenticalOnADifferentPage", scriptBlockOf(markedHtml), scriptBlockOf(html))
 check("html.stillSelfContained",
     markedHtml.contains("http://") || markedHtml.contains("https://"), false)
 check("html.signalsListed", markedHtml.contains("<li>context objects: body</li>"), true)
@@ -891,7 +937,52 @@ check("html.zeroMarksNoNameList",
 check("html.zeroMarksStillStatesTheRule",
     unmarkedHtml.contains(Uma.strOf(Uma.markSummary(unmarkedOutput), "rule")), true)
 
-/* ---- the POST form carries the same options as the link it replaced -------- */
+/* ---- the script block is a constant, and that IS the assurance -------------
+ * The claim that replaces "this page carries no script" is that no macro datum
+ * is ever interpolated into the block. The row below carries a quote, angle
+ * brackets and a literal </script> in its name, its key, its title, its
+ * description, its template and its remark, and the same string arrives as a
+ * diagnostic line, as the name filter of the option fields and as the
+ * completeness href - every channel the server writes on this page. The block
+ * has to come out identical to the one on a page of plain rows.
+ *
+ * The marks are read out of the DOM at click time, which is why none of this can
+ * reach the script: there is nothing for the server to write into it. */
+String breakOut = '</script><img src=x onerror=alert(1)>'
+String breakOutName = 'a"' + breakOut
+Map breakOutRow = [
+    name       : breakOutName,
+    macroKey   : breakOutName,
+    title      : breakOut,
+    description: breakOut,
+    bodyType   : "RAW",
+    template   : breakOut + '\n$body',
+    parameters : [],
+    categories : [],
+    analysis   : Uma.analyze(breakOut)
+] as LinkedHashMap
+breakOutRow.signals = Uma.signalsOf(Uma.mapOf(breakOutRow, "analysis"))
+Map breakOutMark = [stillNeeded: true, remark: breakOut] as LinkedHashMap
+Map<String, Map> breakOutMarks = new LinkedHashMap<String, Map>()
+breakOutMarks.put(breakOutName, breakOutMark)
+List<Map> breakOutRows = [breakOutRow] as List<Map>
+Uma.applyMarks(breakOutRows, breakOutMarks)
+String breakOutHtml = Uma.toHtml(breakOutRows, true, [breakOut], [:],
+    Uma.exportFields(true, true, false, breakOut), breakOut)
+
+check("script.oneBlockUnderAttack", breakOutHtml.count("<script>"), 1)
+check("script.oneCloseUnderAttack", breakOutHtml.count("</script>"), 1)
+check("script.blockIsTheConstant", scriptBlockOf(breakOutHtml), Uma.EXPORT_SCRIPT)
+check("script.blockIsIdenticalToThePlainPage",
+    scriptBlockOf(breakOutHtml), scriptBlockOf(markedHtml))
+check("script.blockCarriesNoRowData", scriptBlockOf(breakOutHtml).contains("onerror"), false)
+/* And the other half of the same claim: the row data IS on the page, escaped,
+ * in text nodes and attributes. Nothing was dropped to make the block constant. */
+check("script.rowDataNeverRaw", breakOutHtml.contains(breakOut), false)
+check("script.rowDataIsEscapedOnThePage", breakOutHtml.contains(Uma.esc(breakOutName)), true)
+check("script.remarkIsEscaped", breakOutHtml.contains(Uma.esc(breakOut)), true)
+
+/* ---- the POST options carry the same values as the link they replaced ----- */
 
 String postFields = Uma.exportFields(false, false, true, "a b&c")
 check("exportFields.format", postFields.contains('name="format" value="md"'), true)
@@ -915,20 +1006,97 @@ check("optionText.formWins", Uma.optionText(postedQuery, postedOptions, "name"),
 check("optionText.queryOnGet", Uma.optionText(postedQuery, [:], "name"), "from-url")
 check("optionText.absent", Uma.optionText(postedQuery, [:], "nope"), null)
 
-/* ---- the XSRF token this endpoint's own POST has to carry ------------------
- * The report opened, the marks could be set, and the export POST came back
- * "XSRF check failed" on the instance. XsrfResourceFilter checks every non-GET
- * request whose media type is in XSRFABLE_TYPES, and
- * application/x-www-form-urlencoded - what a browser sends for
- * <form method="post"> - is one of them. GET is checked only when a resource
+/* ---- the JSON body that replaced the form ---------------------------------
+ * postedBody is the live path. parseForm and marksIn above are kept and tested,
+ * and nothing calls them: they read the shape the XSRF filter refuses. */
+
+List<String> bodyNotes = new ArrayList<String>()
+Map postedJson = Uma.postedBody(
+    '{"format":"md","template":"false","analyze":"false","shadowCheck":"true","name":"a b&c",' +
+    '"marks":[{"macro":"info-box","needed":true,"remark":" owner <HR> "},' +
+    '{"macro":"old-box","needed":false,"remark":""}]}', bodyNotes)
+check("posted.parses", bodyNotes, [])
+check("posted.carriesTheOptions", Uma.strOf(postedJson, "shadowCheck"), "true")
+check("posted.optionWins", Uma.option(postedQuery, postedJson, "format", "html"), "md")
+check("posted.optionTextWins", Uma.optionText(postedQuery, postedJson, "name"), "a b&c")
+
+/* An absent or blank body is a GET in every respect, and says nothing. */
+List<String> emptyBodyNotes = new ArrayList<String>()
+check("posted.absentBodyIsAGet", Uma.postedBody(null, emptyBodyNotes), [:])
+check("posted.blankBodyIsAGet", Uma.postedBody("   ", emptyBodyNotes), [:])
+check("posted.emptyBodyIsSilent", emptyBodyNotes, [])
+
+/* A body that ARRIVED and cannot be read is refused, never ignored: the caller
+ * turns this line into a 400. Falling through to the GET defaults would render
+ * the HTML report, and the export script would save that page under a .md name -
+ * a wrong file that looks like a right one. */
+List<String> brokenBodyNotes = new ArrayList<String>()
+check("posted.brokenBodyIsEmpty", Uma.postedBody("{not json", brokenBodyNotes), [:])
+check("posted.brokenBodyIsDiagnosed", brokenBodyNotes.size(), 1)
+check("posted.brokenBodyNamesTheCause", brokenBodyNotes[0].contains("not valid JSON"), true)
+check("posted.brokenBodySaysNothingWasRendered",
+    brokenBodyNotes[0].contains("Nothing was rendered"), true)
+
+List<String> arrayBodyNotes = new ArrayList<String>()
+check("posted.arrayBodyIsEmpty", Uma.postedBody("[1,2]", arrayBodyNotes), [:])
+check("posted.arrayBodyIsDiagnosed", arrayBodyNotes[0].contains("must be a JSON object"), true)
+
+/* The marks, in the shape applyMarks already expects, keyed by NAME so a macro
+ * that moved between rendering and posting gets its own mark. */
+Map<String, Map> postedMarksOut = Uma.postedMarks(postedJson)
+check("postedMarks.keyedByName",
+    new ArrayList<String>(postedMarksOut.keySet()), ["info-box", "old-box"])
+check("postedMarks.tickIsRead", Uma.boolOf(Uma.mapOf(postedMarksOut, "info-box"), "stillNeeded"), true)
+check("postedMarks.untickedIsFalse", Uma.boolOf(Uma.mapOf(postedMarksOut, "old-box"), "stillNeeded"), false)
+check("postedMarks.remarkTrimmed", Uma.strOf(Uma.mapOf(postedMarksOut, "info-box"), "remark"), "owner <HR>")
+
+/* A client that sends the tick as a string means the same thing. Losing a page
+ * of typed remarks to a type mismatch is by far the worse failure. */
+List<String> tickNotes = new ArrayList<String>()
+Map<String, Map> tickMarks = Uma.postedMarks(Uma.postedBody(
+    '{"marks":[{"macro":"a","needed":"true"},{"macro":"b","needed":"yes"},' +
+    '{"macro":"c","needed":"no"},{"macro":"d"}]}', tickNotes))
+check("postedMarks.stringTrue", Uma.boolOf(Uma.mapOf(tickMarks, "a"), "stillNeeded"), true)
+check("postedMarks.stringYes", Uma.boolOf(Uma.mapOf(tickMarks, "b"), "stillNeeded"), true)
+check("postedMarks.stringNo", Uma.boolOf(Uma.mapOf(tickMarks, "c"), "stillNeeded"), false)
+check("postedMarks.absentTickIsUnmarked", Uma.boolOf(Uma.mapOf(tickMarks, "d"), "stillNeeded"), false)
+
+List<String> oddNotes = new ArrayList<String>()
+Map<String, Map> oddMarks = Uma.postedMarks(Uma.postedBody(
+    '{"marks":[{"macro":" "},"nope",{"macro":"dup","needed":true},' +
+    '{"macro":"dup","needed":false}]}', oddNotes))
+check("postedMarks.skipsNamelessAndNonObjects", oddMarks.size(), 1)
+check("postedMarks.firstDuplicateWins", Uma.boolOf(Uma.mapOf(oddMarks, "dup"), "stillNeeded"), true)
+check("postedMarks.noMarksKeyIsEmpty", Uma.postedMarks([:]), [:])
+check("postedMarks.nullBodyIsEmpty", Uma.postedMarks(null), [:])
+check("postedMarks.nonListIsEmpty", Uma.postedMarks([marks: "all of them"]), [:])
+
+/* The whole point of the shape: applyMarks takes it unchanged. */
+List<Map> jsonRows = [[name: "info-box"] as LinkedHashMap,
+                      [name: "old-box"] as LinkedHashMap] as List<Map>
+Uma.applyMarks(jsonRows, postedMarksOut)
+check("postedMarks.decisionOnTheMarkedRow", Uma.strOf(jsonRows[0], "decision"), Uma.DECISION_NEEDED)
+check("postedMarks.ruleOnTheUnmarkedRow", Uma.strOf(jsonRows[1], "decision"), Uma.DECISION_UNMARKED)
+check("postedMarks.remarkTravels", Uma.strOf(jsonRows[0], "remark"), "owner <HR>")
+
+/* ---- the XSRF token a FORM POST would have had to carry --------------------
+ * NOTHING CALLS xsrfField since 4.1.0, and it is kept rather than deleted, so
+ * these assertions are kept with it. The report opened, the marks could be set,
+ * and the export POST came back "XSRF check failed" on the instance.
+ * XsrfResourceFilter checks every non-GET request whose media type is in
+ * XSRFABLE_TYPES, and application/x-www-form-urlencoded - what a browser sends
+ * for <form method="post"> - is one of them. GET is checked only when a resource
  * asks for it, which is exactly the asymmetry that was measured.
  *
- * A form cannot set the X-Atlassian-Token header, so the no-check route is not
- * open to a browser, and this page carries NO SCRIPT by design. What is left is
- * the hidden field, rendered by the server. These assertions cover the half that
- * can be wrong here: the field name is asked for rather than assumed, the value
- * is escaped, nothing is minted, and every way the token can fail to arrive
- * leaves a line on the page instead of a form that looks fine and is not. */
+ * 4.0.1 answered that by rendering the token into the form. MEASURED on the
+ * instance: the token did not resolve, the page showed its fail-loud line, and
+ * the POST was refused anyway. A form can produce only the three enctypes that
+ * filter checks, so the form route is closed whatever token it carries. The
+ * export posts application/json with X-Atlassian-Token: no-check instead.
+ *
+ * The function below is therefore correct code for an approach that cannot work
+ * through this filter. It stays under test because it stays in the file: a
+ * broken kept function is worse than a deleted one. */
 
 FakeHttpContext xsrfContext = new FakeHttpContext()
 FakeXsrfAccessor xsrfAccessor = new FakeXsrfAccessor()
@@ -1018,14 +1186,17 @@ check("xsrf.throwingCarriesTheReason", throwingNotes[0].contains("no session"), 
 check("xsrf.absentComponentIsNull", Uma.salComponent("com.atlassian.nothing.Here"), null)
 check("xsrf.nullClassNameIsNull", Uma.salComponent(null), null)
 
-/* On the page: inside the form, above the button, and a failure shows up as a
- * line the reader sees before pressing anything. */
-String tokenHtml = Uma.toHtml([], true, [], [:], xsrfInput + exportFieldsDefault, null)
-check("xsrf.fieldIsInTheForm",
-    tokenHtml.indexOf('name="atl_token"') > tokenHtml.indexOf("<form method=\"post\""), true)
-check("xsrf.fieldIsBeforeTheButton",
-    tokenHtml.indexOf('name="atl_token"') < tokenHtml.indexOf("Save as .md"), true)
-check("xsrf.pageStillHasNoScript", tokenHtml.toLowerCase().contains("<script"), false)
+/* On the page: nothing. The endpoint stopped asking for a token in 4.1.0, so the
+ * report renders the export options and no token field at all, and the header
+ * the script sets does the work the field could not do. */
+String tokenHtml = Uma.toHtml([], true, [], [:], exportFieldsDefault, null)
+check("xsrf.pageCarriesNoTokenField", tokenHtml.contains('name="atl_token"'), false)
+check("xsrf.pageCarriesNoForm", tokenHtml.contains("<form"), false)
+check("xsrf.headerReplacesTheField",
+    tokenHtml.contains("'X-Atlassian-Token': 'no-check'"), true)
+check("xsrf.pageHasExactlyOneScript", tokenHtml.count("<script>"), 1)
+check("xsrf.thatScriptIsTheConstant", scriptBlockOf(tokenHtml), Uma.EXPORT_SCRIPT)
+check("xsrf.noTokenReachesTheScript", scriptBlockOf(tokenHtml).contains("atl_token"), false)
 
 String brokenTokenHtml = Uma.toHtml([], true, [Uma.XSRF_UNAVAILABLE + "HttpContext"], [:],
     exportFieldsDefault, null)
@@ -1036,9 +1207,9 @@ String brokenNote = Uma.esc(Uma.XSRF_UNAVAILABLE)
 check("xsrf.failureIsOnThePage", brokenTokenHtml.contains(brokenNote), true)
 check("xsrf.failureIsEscaped", brokenTokenHtml.contains(Uma.XSRF_UNAVAILABLE), false)
 check("xsrf.failureLeavesNoField", brokenTokenHtml.contains('name="atl_token"'), false)
-check("xsrf.failureIsAboveTheForm",
+check("xsrf.failureIsAboveTheSheet",
     brokenTokenHtml.indexOf(brokenNote) >= 0 &&
-    brokenTokenHtml.indexOf(brokenNote) < brokenTokenHtml.indexOf("<form method=\"post\""), true)
+    brokenTokenHtml.indexOf(brokenNote) < brokenTokenHtml.indexOf("<div class=\"sheet\">"), true)
 
 println(fail == 0 ? "ALL TESTS PASS" : ("FAILURES: " + fail))
 System.exit(fail == 0 ? 0 : 1)

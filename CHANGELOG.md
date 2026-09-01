@@ -4,6 +4,112 @@ All notable changes to this project are documented here. Each endpoint carries i
 version, declared once in its helper class and printed by every output channel, so the
 sections below are grouped by endpoint rather than by a single repository version.
 
+## userMacroDeepScan 4.1.0
+
+### Changed
+
+- **The export POST is `application/json` sent by `fetch`, not a form submission.** 4.0.1
+  rendered the XSRF token into the form and was still refused on the instance: the page showed
+  its own fail-loud line, so the token had not resolved there, and the button came back
+  `XSRF check failed` all the same. The approach was closed either way, which is the finding
+  that produced this version.
+
+  `XsrfResourceFilter` in `atlassian-rest-common` checks every non-GET request whose media
+  type is in `XSRFABLE_TYPES`. That list holds `application/x-www-form-urlencoded`,
+  `multipart/form-data` and `text/plain` - exactly the three enctypes an HTML form can
+  produce, and no more. A POST without JavaScript therefore cannot get past that filter at
+  all, with or without a token. `application/json` is not in the list, and
+  `X-Atlassian-Token: no-check` is a header only a script can set, so either half alone would
+  carry the request.
+
+  This is not a new idea in this repository. `confluence/confluenceDCspaceConfig.groovy` and
+  `jira/jiraDCprojectConfig.groovy` have posted exactly this way against the same instance for
+  months. The pattern was copied rather than reinvented.
+
+- **The `<form>` is gone.** The checkboxes and remark fields are unchanged; they now sit in a
+  plain section, the options keep their own box of hidden inputs, and the script reads both
+  out of the DOM at click time. The CSS counter that drives the running tally moved its scope
+  from `form` to that section. The button is `type="button"`: there is nothing to submit.
+
+- **The answer is read as Markdown, not JSON.** `response.text()`, a `Blob`, and a temporary
+  `<a download>`. The file name is unchanged.
+
+- **A refusal is put on the page with its status and its body**, next to the button. A silent
+  failure is the failure class that cost both earlier attempts: the page looked correct until
+  the button was pressed.
+
+- **A POST body that arrives and cannot be read as a JSON object is refused with `400`.**
+  Ignoring it would fall through to the GET defaults, which render HTML - and the export
+  script would save that page under a `.md` name, a wrong file that looks like a right one.
+  An absent or blank body is still a GET in every respect and says nothing.
+
+### Added
+
+- `Uma.postedBody(body, diagnostics)` and `Uma.postedMarks(body)`: the JSON body as a map, and
+  the marks out of it in the shape `applyMarks` already expects. Both are pure and both sit
+  inside the offline-testable block. `postedMarks` keeps the rule its form-shaped predecessor
+  established - the result is keyed by macro NAME, so a macro that moved between rendering the
+  page and posting it gets its own mark rather than its neighbour's - and it accepts the tick
+  as a JSON boolean or as the strings the form used, because losing a page of typed remarks to
+  a type mismatch is by far the worse failure.
+- `Uma.EXPORT_SCRIPT`: the whole script block as one constant, appended verbatim.
+
+### Security
+
+- **The no-script promise is replaced, not dropped.** Up to 4.0.1 this page carried no script
+  at all, which mattered because it renders macro content. The narrower promise that takes its
+  place is this one:
+
+  > The script block is a constant and it **never** interpolates macro data. No macro name,
+  > description, template or remark is ever written into it by the server. The marks are read
+  > out of the DOM at export time, never embedded.
+
+  This is enforced structurally rather than by care: the block is a plain triple-quoted string
+  constant, so there is no interpolation to get wrong. The offline suite renders the same
+  report with a macro whose name, key, title, description, template and remark all carry a
+  quote, angle brackets and a literal `</script>`, with the same string arriving as a
+  diagnostic line, as the name filter of the option fields and as the completeness href, and
+  asserts that the block comes out identical to the one on a page of plain rows.
+- Macro content still reaches the page through `esc()` only, in HTML text nodes and
+  attributes. Nothing about that changed.
+- The assertions that claimed "no `<script` anywhere on the page" were replaced by the sharper
+  form rather than deleted: exactly one block, it is the constant, and no row datum is in it.
+
+### Kept, and not called
+
+Golden Rule 1: nothing was deleted. Each of these is annotated in place with why it is there
+and why nothing calls it.
+
+- `parseForm` and `marksIn` read the `application/x-www-form-urlencoded` shape. That is the
+  shape the XSRF filter refuses, which is exactly why they are worth keeping as the reference
+  for it.
+- `xsrfField` and `salComponent` are the 4.0.1 token path. They are correct code for an
+  approach that cannot work through this filter; deleting them would invite the next reader to
+  try it again. Their offline assertions stay with them - a broken kept function is worse than
+  a deleted one.
+- `ENDPOINT_PATH` was the form action. The export now posts to `window.location.pathname`, but
+  the constant is the documented name both registrations use.
+
+### Not verified
+
+- **Nothing here was measured against a running instance.** The offline suite proves the
+  payload shape, the marks round trip, the refusal path and the constancy of the script block.
+  It cannot prove that `XsrfResourceFilter` accepts this request, because the filter is not
+  part of the offline block. What supports the choice is a measurement made elsewhere: the two
+  sister endpoints in this repository post exactly this way against the same instance and have
+  not been refused.
+
+### Also in this release, without a version change
+
+- The registration comment in `confluence/confluenceDCspaceConfig.groovy` and
+  `jira/jiraDCprojectConfig.groovy` said "CSRF - UNVERIFIED. The Custom REST Endpoint
+  documentation does not say whether these endpoints sit behind the XSRF filter". For
+  Confluence that is now measured - the refusal of this endpoint's form POST on that instance
+  is the measurement - and the comment says so. The Jira comment records what was measured on
+  Confluence and states plainly that the same thing was **not** measured on Jira: the filter
+  comes from `atlassian-rest-common`, which both products ship, but probable is not measured.
+  Comment only in both files; no code changed and neither version moved.
+
 ## userMacroDeepScan 4.0.1
 
 ### Fixed

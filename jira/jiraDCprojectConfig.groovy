@@ -7381,19 +7381,37 @@ Map<String, Object> confluenceWritePage(ApplicationLinkRequestFactory factory, S
  * verbs may live in one file, so the report page can POST to its own URL without
  * knowing the REST base path.
  *
- * CSRF - UNVERIFIED. The Custom REST Endpoint documentation does not say whether
- * these endpoints sit behind the Jira XSRF filter, so the report page sends
- * X-Atlassian-Token: no-check, which is required if the filter applies and
- * harmless if it does not. Reading that header back would need the three-argument
- * HttpServletRequest closure form, and the servlet package this ScriptRunner
- * version passes (javax or jakarta) is exactly what this file avoids depending
- * on, so no header check is attempted here. What IS enforced on the server: the
- * jira-administrators gate, the Confluence permissions of the impersonated user
- * on the far side of the application link, and the rule that only a page carrying
- * the export marker is ever updated - a forged request can neither replace a
- * foreign page nor drop a remark. TO CONFIRM before relying on more than that:
- * whether the XSRF filter covers ScriptRunner endpoints, and which
- * HttpServletRequest type is passed, so an explicit header check can be added. */
+ * CSRF - MEASURED on Confluence 2026-09-01 (OP-1062), NOT on Jira. This
+ * paragraph said UNVERIFIED until then, and half of it can now be answered.
+ *
+ * What was measured: a ScriptRunner Custom REST Endpoint on Confluence DOES sit
+ * behind the XSRF filter. The sister endpoint
+ * confluence/userMacroDeepScan.groovy posted its export from a plain
+ * <form method="post"> and was refused with "XSRF check failed" -
+ * XsrfCheckFailedException out of XsrfResourceFilter in atlassian-rest-common.
+ * A token rendered into the form did not save it either. The filter checks only
+ * requests whose media type is in XSRFABLE_TYPES, and that list holds
+ * application/x-www-form-urlencoded, multipart/form-data and text/plain -
+ * exactly the three enctypes an HTML form can produce.
+ *
+ * What was NOT measured: the same thing on a Jira instance. XsrfResourceFilter
+ * comes from atlassian-rest-common, which both products ship, so the mechanism
+ * is very probably identical here - but probable is not measured, and this file
+ * does not get to claim it. Treat the Jira filter as UNVERIFIED until someone
+ * posts a form-urlencoded body to this endpoint and reports what came back.
+ *
+ * Either way the transport below is unaffected and is the one to copy: the
+ * report page posts application/json, which is not in XSRFABLE_TYPES, AND sends
+ * X-Atlassian-Token: no-check. Either one alone would carry it.
+ *
+ * Unchanged and still open: reading that header back would need the
+ * three-argument HttpServletRequest closure form, and the servlet package this
+ * ScriptRunner version passes (javax or jakarta) is exactly what this file
+ * avoids depending on, so no header check is attempted here. What IS enforced
+ * on the server: the jira-administrators gate, the Confluence permissions of the
+ * impersonated user on the far side of the application link, and the rule that
+ * only a page carrying the export marker is ever updated - a forged request can
+ * neither replace a foreign page nor drop a remark. */
 projectConfig(
     httpMethod: "POST",
     groups: ["jira-administrators"]

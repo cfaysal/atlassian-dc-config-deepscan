@@ -11,7 +11,7 @@ link to the exact administration screen where it is maintained.
 | Script | Platform | Version |
 | --- | --- | --- |
 | [`jira/jiraDCprojectConfig.groovy`](jira/jiraDCprojectConfig.groovy) | Jira Data Center | 0.1 |
-| [`confluence/userMacroDeepScan.groovy`](confluence/userMacroDeepScan.groovy) | Confluence Data Center | 4.0.1 |
+| [`confluence/userMacroDeepScan.groovy`](confluence/userMacroDeepScan.groovy) | Confluence Data Center | 4.1.0 |
 
 Typical uses: handing a project over to a new administrator, documenting a project before a
 migration, finding out why two projects behave differently, or producing the configuration
@@ -340,33 +340,50 @@ are neutralised so a macro title or a remark cannot become a spreadsheet formula
 
 **The Save as .md button posts.** The remarks are free text and do not fit in a query string,
 and rendering the export in the browser would mean a second copy of a renderer this
-repository has a drift gate against. So the HTML report is a form, it submits back to the
-same endpoint with `POST`, and the server renders the file.
+repository has a drift gate against. So the button posts the marks back to the same endpoint
+and the server renders the file. The browser only saves what comes back.
 
 **The POST changes nothing in Confluence.** It is a rendering call, not a mutation: the
 endpoint has no write path at all, in either method. It carries a body because a body is the
 only place a page of typed remarks fits. The same `Cache-Control: no-store, private` and
 `X-Content-Type-Options: nosniff` headers are on every response of both methods.
 
-**The form carries an XSRF token, and the page still has no script.** `XsrfResourceFilter`
-checks every non-GET request with a form-urlencoded body, which is what a browser sends for
-`<form method="post">`, and it runs before the endpoint closure - so without a token the
-export was refused with `XSRF check failed` and nothing in the endpoint could say why. The
-server therefore renders the token into the form as a hidden field. The field name is asked
-of `XsrfTokenValidator.getXsrfParameterName()` rather than written as the literal
-`atl_token`, and the value is read from the session or cookie with `create` false, so no
-token is minted and the endpoint stays write-free.
+**The POST is `application/json`, and that is what gets it past the XSRF filter.**
+`XsrfResourceFilter` in `atlassian-rest-common` checks every non-GET request whose media type
+is in `XSRFABLE_TYPES`, and that list holds `application/x-www-form-urlencoded`,
+`multipart/form-data` and `text/plain`. Those are exactly the three enctypes an HTML form can
+produce, and no more - so a form POST cannot get past that filter at all, whatever it carries.
+4.0.0 was refused with `XSRF check failed`; 4.0.1 rendered the token into the form as a
+hidden field and was **still** refused on the instance, because the token did not resolve
+there and the approach was closed either way. 4.1.0 stops trying to fix the form and changes
+the transport instead.
 
-No JavaScript is involved, and that is deliberate rather than incidental: this page renders
-macro content, so the assertion that nothing on it executes is worth more than convenience.
-The alternatives were not open anyway. The `X-Atlassian-Token: no-check` exemption is a
-request header and an HTML form cannot set one; `@XsrfProtectionExcluded` needs a JAX-RS
-method, which a ScriptRunner closure is not; and the `atlassian.rest.xsrf.legacy.enabled`
-dark feature would make CSRF protection opt-in for every REST resource on the instance.
+A small script on the page therefore collects the marks, posts them as JSON with
+`X-Atlassian-Token: no-check`, and saves the Markdown that comes back. `application/json` is
+not in `XSRFABLE_TYPES` and the header exempts the request in any case, so either half would
+carry it. This is the same transport the two sister endpoints in this repository have used
+against the same instance for months.
 
-If the token cannot be resolved - a missing SAL component, no request on the thread, an empty
-value - the field is omitted **and** the page states it in the diagnostics block above the
-form. A form that looks complete and is not is the failure this replaces.
+**The page carries exactly one script block, and what replaces the old no-script promise is
+narrower and checkable.** Up to 4.0.1 this page carried no script at all, which mattered
+because it renders macro content. That promise is not dropped, it is made precise:
+
+> The script block is a constant. It **never** interpolates macro data - no macro name,
+> description, template or remark is ever written into it by the server. The marks are read
+> out of the DOM at export time, never embedded.
+
+Macro content still reaches the page through `esc()` only, in HTML text nodes and attributes,
+exactly as before. The offline suite renders the same report with macro names carrying
+quotes, angle brackets and a literal `</script>` and asserts the block comes out identical to
+the one on a page of plain rows.
+
+A refusal is put on the page with its HTTP status and the response body, next to the button.
+A silent failure is the defect that cost both earlier attempts: the page looked correct until
+the button was pressed.
+
+The old token path - `xsrfField`, `salComponent` and the SAL lookup - is still in the file,
+uncalled and annotated with why. It is correct code for an approach that cannot work through
+this filter, and deleting it would invite the next reader to try it again.
 
 ### What it cannot claim, and the switch that narrows it
 
@@ -412,9 +429,12 @@ registers it under the name `userMacros`.
 | `shadowCheck` | `false` | Compare against the stored configuration for hidden macros |
 | `name` | none | Restrict the report to a single macro |
 
-On `POST` the same parameters arrive as form fields, together with the marks. A posted value
-wins over the query string, so the form carries the whole request and nothing depends on the
-URL it was submitted from.
+On `POST` the same parameters arrive in a JSON object, together with the marks as a `marks`
+array of `{macro, needed, remark}`. A posted value wins over the query string, so the payload
+carries the whole request and nothing depends on the URL it was submitted from. A body that
+arrives and cannot be read as a JSON object is refused with `400` rather than ignored -
+falling back to the GET defaults would render HTML, which the export script would then save
+under a `.md` name.
 
 Read-only throughout, `POST` included: no write to the macro store, no outbound network call.
 Every response carries `Cache-Control: no-store, private` and `X-Content-Type-Options:
@@ -426,7 +446,7 @@ global context.
 
 ### Status
 
-Version 4.0.1. Measured on an instance with 60 user macros: the completeness check reported
+Version 4.1.0. Measured on an instance with 60 user macros: the completeness check reported
 60 stored and 60 visible, so on that instance the library-visible list is the whole set.
 
 Still unproven, and named here rather than left to be assumed:
@@ -437,17 +457,20 @@ Still unproven, and named here rather than left to be assumed:
 - **The comment split is lexical.** A literal `##` inside a string in a template body is
   treated as the start of a comment, the same way Velocity itself treats it in most
   positions.
-- **The running count on the HTML page is a CSS counter, not a measurement.** This page
-  carries no script by design, because it renders macro content and the assertion that
-  nothing on it executes is worth more than a live number. The authoritative count is the one
-  the server states in the export.
-- **The `POST` path was exercised on a live instance and was refused.** Under 4.0.0 the
-  request reached `XsrfResourceFilter` without a token and came back `XSRF check failed`;
-  registering the same endpoint name for both `GET` and `POST` did work. 4.0.1 renders the
-  token into the form, and **that fix is not itself measured against an instance.** The
-  offline suite proves the field is built, named from the validator, escaped, and that every
-  failure path leaves a diagnostic; it cannot prove the filter accepts the token, because the
-  filter is not part of the offline block.
+- **The running count on the HTML page is a CSS counter, not a measurement.** It stays a
+  counter because it needs no script, which since 4.1.0 is a different reason from the one
+  that used to forbid one. The authoritative count is the one the server states in the export.
+- **The `POST` path was exercised on a live instance twice, and refused twice.** Under 4.0.0
+  the request reached `XsrfResourceFilter` without a token and came back `XSRF check failed`;
+  registering the same endpoint name for both `GET` and `POST` did work. Under 4.0.1 the
+  token was rendered into the form and the export was refused again - the page showed its
+  own fail-loud line, so the token had not resolved on that instance. Both are measurements.
+- **The 4.1.0 transport is not itself measured on an instance.** What is measured is that the
+  same JSON-plus-`no-check` transport has worked from the two sister endpoints in this
+  repository against the same instance for months, and that a form POST does not. The offline
+  suite proves the payload shape, the marks round trip, the refusal path and the constancy of
+  the script block; it cannot prove the filter accepts this request, because the filter is
+  not part of the offline block. That remains open until the button is pressed on ScriptRunner.
 
 ## Licence
 
