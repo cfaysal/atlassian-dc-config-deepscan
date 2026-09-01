@@ -73,6 +73,39 @@ class FakeParams {
     Object getFirst(String key) { values.get(key) }
 }
 
+/* Stand-ins for the three SAL objects the XSRF field is built from. Uma reaches
+ * them through the invoker rather than by type, so a plain class with the right
+ * member is the real path and not an approximation. The servlet request cannot
+ * be named in either file: HttpContext.getRequest returns javax.servlet on
+ * Confluence 8 and jakarta.servlet from 9 on, so both sides carry it as Object.
+ * Signatures read off the SAL javadoc: getXsrfToken(request, response, create)
+ * on XsrfTokenAccessor, getXsrfParameterName() on XsrfTokenValidator. */
+class FakeHttpContext {
+    Object request = new Object()
+    Object getRequest() { request }
+    Object getResponse() { null }
+}
+
+class FakeXsrfAccessor {
+    String token = "tok-abc"
+    RuntimeException blowUp = null
+    Object seenRequest = null
+    Object seenResponse = "not-called"
+    Object seenCreate = "not-called"
+    String getXsrfToken(Object request, Object response, boolean create) {
+        seenRequest = request
+        seenResponse = response
+        seenCreate = create
+        if (blowUp != null) { throw blowUp }
+        return token
+    }
+}
+
+class FakeXsrfValidator {
+    String parameterName = "atl_token"
+    String getXsrfParameterName() { parameterName }
+}
+
 int fail = 0
 def check = { String label, Object actual, Object expected ->
     boolean ok = (actual == expected)
@@ -881,6 +914,131 @@ check("option.lowercased", Uma.option(null, Uma.parseForm("format=MD"), "format"
 check("optionText.formWins", Uma.optionText(postedQuery, postedOptions, "name"), "from-form")
 check("optionText.queryOnGet", Uma.optionText(postedQuery, [:], "name"), "from-url")
 check("optionText.absent", Uma.optionText(postedQuery, [:], "nope"), null)
+
+/* ---- the XSRF token this endpoint's own POST has to carry ------------------
+ * The report opened, the marks could be set, and the export POST came back
+ * "XSRF check failed" on the instance. XsrfResourceFilter checks every non-GET
+ * request whose media type is in XSRFABLE_TYPES, and
+ * application/x-www-form-urlencoded - what a browser sends for
+ * <form method="post"> - is one of them. GET is checked only when a resource
+ * asks for it, which is exactly the asymmetry that was measured.
+ *
+ * A form cannot set the X-Atlassian-Token header, so the no-check route is not
+ * open to a browser, and this page carries NO SCRIPT by design. What is left is
+ * the hidden field, rendered by the server. These assertions cover the half that
+ * can be wrong here: the field name is asked for rather than assumed, the value
+ * is escaped, nothing is minted, and every way the token can fail to arrive
+ * leaves a line on the page instead of a form that looks fine and is not. */
+
+FakeHttpContext xsrfContext = new FakeHttpContext()
+FakeXsrfAccessor xsrfAccessor = new FakeXsrfAccessor()
+FakeXsrfValidator xsrfValidator = new FakeXsrfValidator()
+
+List<String> xsrfNotes = new ArrayList<String>()
+String xsrfInput = Uma.xsrfField(xsrfContext, xsrfAccessor, xsrfValidator, xsrfNotes)
+check("xsrf.fieldBuilt", xsrfInput, '<input type="hidden" name="atl_token" value="tok-abc">')
+check("xsrf.silentWhenItWorks", xsrfNotes, [])
+/* create=false and no response: the token is READ from the session or the
+ * cookie. This endpoint mints nothing, and an absent token is reported rather
+ * than manufactured. */
+check("xsrf.mintsNothing", xsrfAccessor.seenCreate, false)
+check("xsrf.needsNoResponse", xsrfAccessor.seenResponse, null)
+check("xsrf.passesTheRequest", xsrfAccessor.seenRequest.is(xsrfContext.request), true)
+
+/* The field name is asked for, never written as the literal "atl_token": the
+ * Atlassian documentation says to retrieve it from the token generator for
+ * long-term compatibility, and a renamed parameter would otherwise fail exactly
+ * the way the bug being fixed here failed. */
+List<String> renamedNotes = new ArrayList<String>()
+String renamedInput = Uma.xsrfField(xsrfContext, new FakeXsrfAccessor(),
+    new FakeXsrfValidator(parameterName: "atl_token_v2"), renamedNotes)
+check("xsrf.nameComesFromTheValidator", renamedInput.contains('name="atl_token_v2"'), true)
+check("xsrf.nameIsNotHardCoded", renamedInput.contains('name="atl_token"'), false)
+
+/* The token is server data, but it lands in the same page that renders macro
+ * content, and this class has exactly one way to put text on the page. */
+List<String> hostileNotes = new ArrayList<String>()
+String hostileInput = Uma.xsrfField(xsrfContext,
+    new FakeXsrfAccessor(token: '"><script>alert(1)</script>'), xsrfValidator, hostileNotes)
+check("xsrf.valueEscaped", hostileInput,
+    '<input type="hidden" name="atl_token" value="&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;">')
+check("xsrf.noBreakOut", hostileInput.toLowerCase().contains("<script"), false)
+
+/* Every failure below renders NO field and leaves a line. A missing token that
+ * looks like a working one is the whole defect: the page is identical until the
+ * administrator presses the button. */
+List<String> noContextNotes = new ArrayList<String>()
+check("xsrf.noContextNoField", Uma.xsrfField(null, xsrfAccessor, xsrfValidator, noContextNotes), "")
+check("xsrf.noContextDiagnosed", noContextNotes.size(), 1)
+check("xsrf.noContextNamesIt", noContextNotes[0].contains("HttpContext"), true)
+check("xsrf.noContextSaysTheConsequence", noContextNotes[0].contains(Uma.XSRF_UNAVAILABLE), true)
+
+List<String> noAccessorNotes = new ArrayList<String>()
+check("xsrf.noAccessorNoField", Uma.xsrfField(xsrfContext, null, xsrfValidator, noAccessorNotes), "")
+check("xsrf.noAccessorNamesIt", noAccessorNotes[0].contains("XsrfTokenAccessor"), true)
+
+List<String> noValidatorNotes = new ArrayList<String>()
+check("xsrf.noValidatorNoField", Uma.xsrfField(xsrfContext, xsrfAccessor, null, noValidatorNotes), "")
+check("xsrf.noValidatorNamesIt", noValidatorNotes[0].contains("XsrfTokenValidator"), true)
+
+List<String> noRequestNotes = new ArrayList<String>()
+check("xsrf.noRequestNoField",
+    Uma.xsrfField(new FakeHttpContext(request: null), xsrfAccessor, xsrfValidator, noRequestNotes), "")
+check("xsrf.noRequestDiagnosed", noRequestNotes.size(), 1)
+check("xsrf.noRequestNamesIt", noRequestNotes[0].contains("request"), true)
+
+List<String> nullTokenNotes = new ArrayList<String>()
+check("xsrf.nullTokenNoField",
+    Uma.xsrfField(xsrfContext, new FakeXsrfAccessor(token: null), xsrfValidator, nullTokenNotes), "")
+check("xsrf.nullTokenDiagnosed", nullTokenNotes.size(), 1)
+
+List<String> blankTokenNotes = new ArrayList<String>()
+check("xsrf.blankTokenNoField",
+    Uma.xsrfField(xsrfContext, new FakeXsrfAccessor(token: "   "), xsrfValidator, blankTokenNotes), "")
+check("xsrf.blankTokenDiagnosed", blankTokenNotes.size(), 1)
+check("xsrf.blankTokenSaysWhy", blankTokenNotes[0].contains("no token"), true)
+
+List<String> blankNameNotes = new ArrayList<String>()
+check("xsrf.blankNameNoField", Uma.xsrfField(xsrfContext, xsrfAccessor,
+    new FakeXsrfValidator(parameterName: "  "), blankNameNotes), "")
+check("xsrf.blankNameDiagnosed", blankNameNotes.size(), 1)
+
+/* A throwing component is not the same as an absent value, and the reason
+ * travels with the result rather than only into a log. */
+List<String> throwingNotes = new ArrayList<String>()
+check("xsrf.throwingNoField", Uma.xsrfField(xsrfContext,
+    new FakeXsrfAccessor(blowUp: new IllegalStateException("no session")),
+    xsrfValidator, throwingNotes), "")
+check("xsrf.throwingDiagnosed", throwingNotes.size(), 1)
+check("xsrf.throwingCarriesTheReason", throwingNotes[0].contains("no session"), true)
+
+/* The SAL lookup is by name because the servlet types it leads to change
+ * namespace between Confluence 8 and 9. An absent class is null, never a throw
+ * that would take the whole report down with it. */
+check("xsrf.absentComponentIsNull", Uma.salComponent("com.atlassian.nothing.Here"), null)
+check("xsrf.nullClassNameIsNull", Uma.salComponent(null), null)
+
+/* On the page: inside the form, above the button, and a failure shows up as a
+ * line the reader sees before pressing anything. */
+String tokenHtml = Uma.toHtml([], true, [], [:], xsrfInput + exportFieldsDefault, null)
+check("xsrf.fieldIsInTheForm",
+    tokenHtml.indexOf('name="atl_token"') > tokenHtml.indexOf("<form method=\"post\""), true)
+check("xsrf.fieldIsBeforeTheButton",
+    tokenHtml.indexOf('name="atl_token"') < tokenHtml.indexOf("Save as .md"), true)
+check("xsrf.pageStillHasNoScript", tokenHtml.toLowerCase().contains("<script"), false)
+
+String brokenTokenHtml = Uma.toHtml([], true, [Uma.XSRF_UNAVAILABLE + "HttpContext"], [:],
+    exportFieldsDefault, null)
+/* Escaped, because the diagnostics list is the same channel that carries a
+ * failed read of a macro name, and this class has one way to put text on the
+ * page. The message quotes the filter's own wording, so it arrives escaped. */
+String brokenNote = Uma.esc(Uma.XSRF_UNAVAILABLE)
+check("xsrf.failureIsOnThePage", brokenTokenHtml.contains(brokenNote), true)
+check("xsrf.failureIsEscaped", brokenTokenHtml.contains(Uma.XSRF_UNAVAILABLE), false)
+check("xsrf.failureLeavesNoField", brokenTokenHtml.contains('name="atl_token"'), false)
+check("xsrf.failureIsAboveTheForm",
+    brokenTokenHtml.indexOf(brokenNote) >= 0 &&
+    brokenTokenHtml.indexOf(brokenNote) < brokenTokenHtml.indexOf("<form method=\"post\""), true)
 
 println(fail == 0 ? "ALL TESTS PASS" : ("FAILURES: " + fail))
 System.exit(fail == 0 ? 0 : 1)

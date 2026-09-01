@@ -11,7 +11,7 @@ link to the exact administration screen where it is maintained.
 | Script | Platform | Version |
 | --- | --- | --- |
 | [`jira/jiraDCprojectConfig.groovy`](jira/jiraDCprojectConfig.groovy) | Jira Data Center | 0.1 |
-| [`confluence/userMacroDeepScan.groovy`](confluence/userMacroDeepScan.groovy) | Confluence Data Center | 4.0.0 |
+| [`confluence/userMacroDeepScan.groovy`](confluence/userMacroDeepScan.groovy) | Confluence Data Center | 4.0.1 |
 
 Typical uses: handing a project over to a new administrator, documenting a project before a
 migration, finding out why two projects behave differently, or producing the configuration
@@ -348,6 +348,26 @@ endpoint has no write path at all, in either method. It carries a body because a
 only place a page of typed remarks fits. The same `Cache-Control: no-store, private` and
 `X-Content-Type-Options: nosniff` headers are on every response of both methods.
 
+**The form carries an XSRF token, and the page still has no script.** `XsrfResourceFilter`
+checks every non-GET request with a form-urlencoded body, which is what a browser sends for
+`<form method="post">`, and it runs before the endpoint closure - so without a token the
+export was refused with `XSRF check failed` and nothing in the endpoint could say why. The
+server therefore renders the token into the form as a hidden field. The field name is asked
+of `XsrfTokenValidator.getXsrfParameterName()` rather than written as the literal
+`atl_token`, and the value is read from the session or cookie with `create` false, so no
+token is minted and the endpoint stays write-free.
+
+No JavaScript is involved, and that is deliberate rather than incidental: this page renders
+macro content, so the assertion that nothing on it executes is worth more than convenience.
+The alternatives were not open anyway. The `X-Atlassian-Token: no-check` exemption is a
+request header and an HTML form cannot set one; `@XsrfProtectionExcluded` needs a JAX-RS
+method, which a ScriptRunner closure is not; and the `atlassian.rest.xsrf.legacy.enabled`
+dark feature would make CSRF protection opt-in for every REST resource on the instance.
+
+If the token cannot be resolved - a missing SAL component, no request on the thread, an empty
+value - the field is omitted **and** the page states it in the diagnostics block above the
+form. A form that looks complete and is not is the failure this replaces.
+
 ### What it cannot claim, and the switch that narrows it
 
 `UserMacroLibrary` does not return user macros that a plugin macro of the same name hides.
@@ -406,7 +426,7 @@ global context.
 
 ### Status
 
-Version 4.0.0. Measured on an instance with 60 user macros: the completeness check reported
+Version 4.0.1. Measured on an instance with 60 user macros: the completeness check reported
 60 stored and 60 visible, so on that instance the library-visible list is the whole set.
 
 Still unproven, and named here rather than left to be assumed:
@@ -421,10 +441,13 @@ Still unproven, and named here rather than left to be assumed:
   carries no script by design, because it renders macro content and the assertion that
   nothing on it executes is worth more than a live number. The authoritative count is the one
   the server states in the export.
-- **The `POST` path has not been exercised on a live ScriptRunner instance.** The renderers,
-  the form parsing and the mark evaluation are covered by the offline suite; that
-  ScriptRunner registers the same endpoint name for both `GET` and `POST` follows the
-  documented pattern and has not been measured here.
+- **The `POST` path was exercised on a live instance and was refused.** Under 4.0.0 the
+  request reached `XsrfResourceFilter` without a token and came back `XSRF check failed`;
+  registering the same endpoint name for both `GET` and `POST` did work. 4.0.1 renders the
+  token into the form, and **that fix is not itself measured against an instance.** The
+  offline suite proves the field is built, named from the validator, escaped, and that every
+  failure path leaves a diagnostic; it cannot prove the filter accepts the token, because the
+  filter is not part of the offline block.
 
 ## Licence
 

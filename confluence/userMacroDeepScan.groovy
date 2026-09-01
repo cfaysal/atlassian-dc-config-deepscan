@@ -114,6 +114,15 @@
  *   repository has a gate against: the browser posts the marks, the server
  *   renders. The POST is a rendering call, not a mutation.
  *
+ *   That POST goes through XsrfResourceFilter, which checks every non-GET
+ *   request carrying a form-urlencoded body, so the form has to present the
+ *   token. It is rendered into the form as a hidden field by the server, with
+ *   the field name asked of XsrfTokenValidator rather than written as a literal.
+ *   No script is involved and none is wanted: the header exemption is a request
+ *   header a form cannot set, and turning the check off is an instance-wide
+ *   setting. If the token cannot be resolved the field is omitted and the page
+ *   says so - see XSRF_UNAVAILABLE.
+ *
  * Platform
  *   javax / jakarta neutral. The JAX-RS Response class is resolved at runtime and
  *   the query parameters are read through the invoker, so this one file runs on
@@ -193,7 +202,7 @@ import java.util.regex.Pattern
 
 class Uma {
 
-    static final String VERSION = "4.0.0"
+    static final String VERSION = "4.0.1"
 
     /* SCOPE, stated once and repeated in every output channel.
      * UserMacroLibrary javadoc, verbatim: "this UserMacroLibrary is now aware of
@@ -1300,6 +1309,106 @@ class Uma {
         return fields.toString()
     }
 
+    /* ---- the XSRF token this endpoint's own POST has to carry ---------------
+     * The report opened, the marks could be set, and the export POST came back
+     * "XSRF check failed". The wording is XsrfCheckFailedException, thrown by
+     * XsrfResourceFilter in atlassian-rest-common. Read off its source:
+     * XSRFABLE_TYPES contains APPLICATION_FORM_URLENCODED, which is what a
+     * browser sends for <form method="post">, and XsrfResourceFilterFactory
+     * checks every non-GET method by default while checking GET only where a
+     * resource asks for it. That is the asymmetry that was measured, exactly.
+     *
+     * None of the escapes apply here. The filter reads its exemption from the
+     * X-Atlassian-Token header, and an HTML form cannot set a header; Atlassian
+     * scopes that route to the command line and to other systems itself.
+     * @XsrfProtectionExcluded needs a JAX-RS method, and a ScriptRunner closure
+     * is not one. The atlassian.rest.xsrf.legacy.enabled dark feature would turn
+     * the protection of EVERY REST resource on the instance into opt-in.
+     *
+     * So the token is rendered into the form by the server. The page still
+     * carries NO SCRIPT, which is the point: it renders macro content, and the
+     * assertion that nothing on it executes is worth more than convenience.
+     *
+     * The lookup is by class name and every value is Object, because
+     * HttpContext.getRequest returns the SERVLET request - javax.servlet on
+     * Confluence 8, jakarta.servlet from 9 on. Naming that type would pin this
+     * file to one line of the platform, which is the defect the CI gate against
+     * javax and jakarta imports exists to prevent. */
+    static Object salComponent(String className) {
+        try {
+            return ComponentLocator.getComponent(Class.forName(className))
+        } catch (Throwable ignored) {
+            /* Absent class, or a class that is not registered as a component.
+             * Which one it was is not worth a second line: the caller names the
+             * role that is missing, and both have the same remedy. */
+            return null
+        }
+    }
+
+    /* Said in full once, so the page, the tests and this file cannot come to
+     * describe the same failure differently. */
+    static final String XSRF_UNAVAILABLE =
+        "No XSRF token could be rendered into the export form, so the REST filter will refuse " +
+        "the Save as .md button with \"XSRF check failed\". Reason: "
+
+    /* The hidden field, or nothing plus a line saying why. Never a field that
+     * looks right and is not - a broken token path is indistinguishable from a
+     * working one until the administrator presses the button, which is how this
+     * shipped in 4.0.0.
+     *
+     * Written against InvokerHelper rather than duckAll on purpose, and this is
+     * the one place in the file that difference matters: duckAll folds a thrown
+     * error into the same null it returns for an absent value, and telling those
+     * two apart is this method's entire job. */
+    static String xsrfField(Object httpContext, Object accessor, Object validator,
+                            List<String> diagnostics) {
+        String absent = httpContext == null ? "HttpContext"
+            : accessor == null ? "XsrfTokenAccessor"
+            : validator == null ? "XsrfTokenValidator" : ""
+        if (!absent.isEmpty()) {
+            diagnostics.add(XSRF_UNAVAILABLE + absent +
+                " is not resolvable as a component on this instance.")
+            return ""
+        }
+        try {
+            Object request = InvokerHelper.invokeMethod(httpContext, "getRequest", new Object[0])
+            if (request == null) {
+                diagnostics.add(XSRF_UNAVAILABLE +
+                    "HttpContext carries no request for this thread.")
+                return ""
+            }
+            /* create=false, and no response, which the accessor documents as
+             * permitted in that case. The persistent token is READ from the
+             * session or the cookie; this endpoint mints nothing, and an absent
+             * token is reported rather than manufactured. */
+            Object token = InvokerHelper.invokeMethod(accessor, "getXsrfToken",
+                [request, null, Boolean.FALSE] as Object[])
+            /* Asked for, never written as the literal "atl_token". The Atlassian
+             * documentation is explicit: retrieve the form parameter name from
+             * the token generator for long-term compatibility. */
+            Object parameter = InvokerHelper.invokeMethod(validator, "getXsrfParameterName",
+                new Object[0])
+            String name = parameter == null ? "" : parameter.toString().trim()
+            String value = token == null ? "" : token.toString().trim()
+            if (name.isEmpty()) {
+                diagnostics.add(XSRF_UNAVAILABLE +
+                    "XsrfTokenValidator returned no form parameter name.")
+                return ""
+            }
+            if (value.isEmpty()) {
+                diagnostics.add(XSRF_UNAVAILABLE +
+                    "this session holds no token yet. Open a Confluence page first, then " +
+                    "reload this report.")
+                return ""
+            }
+            return hiddenField(name, value)
+        } catch (Throwable error) {
+            diagnostics.add(XSRF_UNAVAILABLE +
+                error.getClass().getSimpleName() + ": " + error.getMessage())
+            return ""
+        }
+    }
+
     /* The three fields of one row: the macro name, which travels in a hidden
      * field because an unticked checkbox sends nothing at all, the tick and the
      * remark. Indexed, so the three stay together on the way back. */
@@ -2295,7 +2404,24 @@ Closure report = { queryParams, body ->
     }
 
     if (format == "html") {
-        String fields = Uma.exportFields(withTemplate, withAnalysis, withShadowCheck, nameFilter)
+        /* The SAL lookup for the XSRF token, and the only part of it that lives
+         * below the banner. It names three SAL types by string, resolves them
+         * reflectively and hands the resolved objects to Uma, which does the
+         * work and is therefore under test with plain stand-ins. Putting the
+         * lookup here rather than in the block is what keeps that possible: the
+         * offline suite cannot satisfy a Class.forName on a product type, so a
+         * resolver inside the block would leave only its failure branch testable.
+         *
+         * An unresolvable token yields no field AND a line in diagnostics, which
+         * the alert above the form renders. Silence here would look exactly like
+         * success until the button is pressed. */
+        String token = Uma.xsrfField(
+            Uma.salComponent("com.atlassian.sal.api.web.context.HttpContext"),
+            Uma.salComponent("com.atlassian.sal.api.xsrf.XsrfTokenAccessor"),
+            Uma.salComponent("com.atlassian.sal.api.xsrf.XsrfTokenValidator"),
+            diagnostics)
+        String fields = token +
+            Uma.exportFields(withTemplate, withAnalysis, withShadowCheck, nameFilter)
         /* Offer the check only while it has not run - once it has, its result is
          * on the page and a second button would just invite a re-run. */
         String check = withShadowCheck ? null : Uma.checkHref(withTemplate, withAnalysis, nameFilter)

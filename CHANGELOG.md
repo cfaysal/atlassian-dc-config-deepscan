@@ -4,6 +4,58 @@ All notable changes to this project are documented here. Each endpoint carries i
 version, declared once in its helper class and printed by every output channel, so the
 sections below are grouped by endpoint rather than by a single repository version.
 
+## userMacroDeepScan 4.0.1
+
+### Fixed
+
+- **The export POST was refused with "XSRF check failed", which made the feature the 4.0.0
+  rework was built for unusable on the instance.** The report opened, the marks could be set,
+  and pressing Save as .md produced the error. The wording belongs to
+  `XsrfCheckFailedException`, thrown by `XsrfResourceFilter` in `atlassian-rest-common`:
+  `XSRFABLE_TYPES` contains `APPLICATION_FORM_URLENCODED`, which is exactly what a browser
+  sends for `<form method="post">`, and `XsrfResourceFilterFactory` checks every non-GET
+  method by default while checking `GET` only where a resource asks for it. That is the
+  asymmetry that was observed. The filter runs before the endpoint closure, so the closure
+  never saw the request and nothing in it could have reported the problem.
+
+  The form now carries the token as a hidden field, rendered by the server. The field name is
+  asked of `XsrfTokenValidator.getXsrfParameterName()` rather than written as the literal
+  `atl_token`, which is what the Atlassian documentation asks for. The value is the persistent
+  token from `XsrfTokenAccessor.getXsrfToken(request, response, create)` with `create` false
+  and no response, so the token is READ from the session or the cookie and none is minted:
+  the endpoint stays write-free.
+
+  **The page still carries no script.** That is a security property of a page that renders
+  macro content, not a preference, and none of the alternatives were open. The header
+  exemption `X-Atlassian-Token: no-check` is a request header, and an HTML form cannot set
+  one; Atlassian scopes that route to the command line and to other systems itself.
+  `@XsrfProtectionExcluded` needs a JAX-RS method and a ScriptRunner closure is not one. The
+  `atlassian.rest.xsrf.legacy.enabled` dark feature would turn the CSRF protection of every
+  REST resource on the instance into opt-in, which is not a change to make for one report.
+
+- **A token that cannot be resolved leaves a line on the page.** Missing component, no request
+  on the thread, an empty field name, an empty token, or a throwing component: each renders
+  the form without the field and adds a sentence to the existing diagnostics block above it,
+  naming which of the three SAL objects failed and what the consequence is. Silence would have
+  looked exactly like success until the button was pressed, which is how 4.0.0 shipped.
+
+### Changed
+
+- The SAL objects are resolved by class name and held as `Object`. `HttpContext.getRequest()`
+  returns the servlet request, which is `javax.servlet` on Confluence 8 and `jakarta.servlet`
+  from 9 on, so naming that type would have pinned the file to one platform line - the defect
+  the CI gate against `javax` and `jakarta` imports exists to prevent. No import was added.
+- The token call is written against `InvokerHelper` directly rather than through the file's
+  `duckAll` helper. `duckAll` folds a thrown error into the same `null` it returns for an
+  absent value, and telling those two apart is the whole job of this path.
+
+### Not verified
+
+- **Nothing here was measured against a running instance.** The offline suite proves the field
+  is built, named from the validator, escaped, and that every failure path leaves a diagnostic.
+  It cannot prove that `XsrfResourceFilter` accepts the token, because the filter is not part
+  of the offline block. That remains open until the endpoint is exercised on ScriptRunner.
+
 ## userMacroDeepScan 4.0.0 - unreleased
 
 ### Removed, and the reason it is a major version
