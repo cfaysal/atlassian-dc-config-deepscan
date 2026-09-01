@@ -118,7 +118,7 @@ check("doc.usesBody", documentedAnalysis.usesBody, true)
 check("doc.noJavaScript", documentedAnalysis.hasJavaScript, false)
 check("doc.headerTitle", Uma.mapOf(documentedAnalysis, "documentedHeader").get("Macro title"), "Background image")
 check("doc.headerTicket", Uma.mapOf(documentedAnalysis, "documentedHeader").get("Ticket"), "TOOLS-368")
-check("doc.suggestedNotForge", Uma.suggest(documentedAnalysis).suggestedClass == "FORGE_REQUIRED", false)
+check("doc.noResourceSignal", Uma.signalsOf(documentedAnalysis).any { it.contains("loads a resource") }, false)
 
 String blockCommented = '''#*
 <script src="https://evil.example.com/x.js"></script>
@@ -138,14 +138,14 @@ Map linkOnly = Uma.analyze('''<p>See <a href="https://docs.example.org/guide">th
 check("link.notAResourceLoad", linkOnly.hasExternalResourceLoads, false)
 check("link.recordedAsLink", linkOnly.externalLinkHosts, ["docs.example.org"])
 check("link.resourceHostsEmpty", linkOnly.externalResourceHosts, [])
-check("link.notForge", Uma.suggest(linkOnly).suggestedClass == "FORGE_REQUIRED", false)
-check("link.reasonMentionsReference", Uma.suggest(linkOnly).suggestedReason.contains("reference only"), true)
+check("link.noResourceSignal", Uma.signalsOf(linkOnly).any { it.contains("loads a resource") }, false)
+check("link.signalMentionsReference", Uma.signalsOf(linkOnly).any { it.contains("reference only") }, true)
 
 Map scriptSrc = Uma.analyze('''<script src="https://cdn.example.org/w.js"></script>$body''')
 check("resource.isResourceLoad", scriptSrc.hasExternalResourceLoads, true)
 check("resource.hosts", scriptSrc.externalResourceHosts, ["cdn.example.org"])
 check("resource.noLinkDouble", scriptSrc.externalLinkHosts, [])
-check("resource.isForge", Uma.suggest(scriptSrc).suggestedClass, "FORGE_REQUIRED")
+check("resource.signalled", Uma.signalsOf(scriptSrc).any { it == "browser loads a resource from: cdn.example.org" }, true)
 
 Map cssUrl = Uma.analyze('''<div style="background-image:url(https://img.example.org/a.png)">$body</div>''')
 check("cssUrl.isResourceLoad", cssUrl.hasExternalResourceLoads, true)
@@ -289,17 +289,18 @@ check("infoBox.usesBody", a1.usesBody, true)
 check("infoBox.parameterRefs", a1.parameterRefs, ["title"])
 check("infoBox.contextObjects", a1.contextObjects, ["body"])
 check("infoBox.hasCss", a1.hasCss, true)
-check("infoBox.suggested", Uma.suggest(a1).suggestedClass, "CLOUD_NATIVE_CANDIDATE")
+check("infoBox.signalsAreFactsOnly", Uma.signalsOf(a1), ["context objects: body"])
 
 Map a2 = Uma.analyze(hideIfAnon)
 check("hideIfAnon.hasConditionalLogic", a2.hasConditionalLogic, true)
 check("hideIfAnon.usesPermissionLogic", a2.usesPermissionLogic, true)
 check("hideIfAnon.methodCalls", a2.methodCalls, ['$userAccessor.hasMembership()'])
-check("hideIfAnon.suggested", Uma.suggest(a2).suggestedClass, "FORGE_REQUIRED")
+check("hideIfAnon.permissionSignal", Uma.signalsOf(a2).any { it.startsWith("permission or user logic: ") }, true)
+check("hideIfAnon.methodCallSignal", Uma.signalsOf(a2).any { it == "Java or Confluence method calls: 1" }, true)
 
 Map a4 = Uma.analyze(null)
 check("null.analyzed", a4.analyzed, false)
-check("null.suggested", Uma.suggest(a4).suggestedClass, "MANUAL_REVIEW")
+check("null.noSignals", Uma.signalsOf(a4), [])
 
 /* ---- typed map access ----------------------------------------------------- */
 
@@ -393,7 +394,7 @@ check("claims.saysYesNoBody", Uma.headerWarnings(contradictsYes).any { it.contai
 
 check("claims.noHeaderNoNoise", Uma.headerWarnings([name: "a"] as LinkedHashMap), [])
 
-String htmlClaims = Uma.toHtml([claimRow], true, [], [:], "?format=md", null)
+String htmlClaims = Uma.toHtml([claimRow], true, [], [:], Uma.exportFields(true, true, false, null), null)
 check("html.claimsRendered", htmlClaims.contains("neither yes nor no"), true)
 check("html.claimsEscaped", htmlClaims.contains("&quot;Macro has a body&quot;"), true)
 
@@ -429,7 +430,7 @@ Map row = [
     templateAvailable: true,
     analysis         : a1
 ] as LinkedHashMap
-row.putAll(Uma.suggest(a1))
+row.signals = Uma.signalsOf(a1)
 
 String csv = Uma.toCsv([row])
 List<String> csvLines = csv.split("\n") as List
@@ -472,6 +473,10 @@ check("mdHref.encodesName", Uma.mdHref(true, true, false, "a b&c"), "?format=md&
 
 /* ---- HTML ------------------------------------------------------------------ */
 
+/* The export is a POST form since 4.0.0, so toHtml takes the hidden option
+ * fields where it used to take the Markdown href. */
+String exportFieldsDefault = Uma.exportFields(true, true, false, null)
+
 check("esc.amp", Uma.esc("a & b"), "a &amp; b")
 check("esc.tags", Uma.esc("<b>x</b>"), "&lt;b&gt;x&lt;/b&gt;")
 check("esc.apos", Uma.esc("it" + "'" + "s"), "it&#39;s")
@@ -491,15 +496,15 @@ Map hostileRow = [
     template   : hostile,
     analysis   : hostileAnalysis
 ] as LinkedHashMap
-hostileRow.putAll(Uma.suggest(hostileAnalysis))
+hostileRow.signals = Uma.signalsOf(hostileAnalysis)
 
-String html = Uma.toHtml([hostileRow], true, [], [:], "?format=md", "?format=html&shadowCheck=true")
+String html = Uma.toHtml([hostileRow], true, [], [:], exportFieldsDefault, "?format=html&shadowCheck=true")
 check("html.noRawScriptOpen", html.contains("<script>alert"), false)
 check("html.scriptEscaped", html.contains("&lt;script&gt;alert(document.cookie)&lt;/script&gt;"), true)
 check("html.nameEscaped", html.contains("evil&lt;macro&gt;"), true)
 check("html.noScriptTagAtAll", html.toLowerCase().contains("<script"), false)
-check("html.headers", html.contains("<th>Macro</th><th>Function / description</th><th>Content</th>"), true)
-check("html.saveButton", html.contains('>Save as .md</a>'), true)
+check("html.headers", html.contains("<th>Macro</th><th>Function / description</th><th>Content</th><th>Still needed?</th>"), true)
+check("html.saveButton", html.contains('>Save as .md</button>'), true)
 check("html.buttonHover", html.contains('title="for postprocessing using your preferred LLM"'), true)
 check("html.scopeCaveat", html.contains("library-visible"), true)
 check("html.noStandingBanner", html.contains("Completeness UNKNOWN"), false)
@@ -510,24 +515,24 @@ check("html.selfContained", html.contains("http://") || html.contains("https://"
 
 Map documentedRow = [name: "documented", macroKey: "documented", template: documented,
                      analysis: documentedAnalysis] as LinkedHashMap
-documentedRow.putAll(Uma.suggest(documentedAnalysis))
-String htmlDocumented = Uma.toHtml([documentedRow], true, [], [:], "?format=md", null)
+documentedRow.signals = Uma.signalsOf(documentedAnalysis)
+String htmlDocumented = Uma.toHtml([documentedRow], true, [], [:], exportFieldsDefault, null)
 check("html.commentHostLabelled", htmlDocumented.contains("in comments only: community.atlassian.com"), true)
 check("html.noLoadsChip", htmlDocumented.contains(">loads from: "), false)
 check("html.documentedHeaderShown", htmlDocumented.contains("<dt>Macro title</dt><dd>Background image</dd>"), true)
 
-String htmlShadowFound = Uma.toHtml([], true, [], shadowFound, "?format=md", null)
+String htmlShadowFound = Uma.toHtml([], true, [], shadowFound, exportFieldsDefault, null)
 check("html.shadowNamesHidden", htmlShadowFound.contains("<li>hidden-one</li>"), true)
 check("html.shadowCount", htmlShadowFound.contains("2 stored user macros are hidden"), true)
 
 String htmlShadowClean = Uma.toHtml([], true, [], Uma.shadowScan(["atlassian.confluence.user.macros"],
-    readStore, new LinkedHashSet<String>(["info-box", "hidden-one", "hidden-two"])), "?format=md", null)
+    readStore, new LinkedHashSet<String>(["info-box", "hidden-one", "hidden-two"])), exportFieldsDefault, null)
 check("html.shadowPassed", htmlShadowClean.contains("Shadow check passed"), true)
 /* Which path answered and from which key belongs in the HTML too - it says
  * whether the named key was right or whether discovery had to save it. */
 check("html.passedShowsReadVia", htmlShadowClean.contains("read via"), true)
 check("html.passedShowsKey", htmlShadowClean.contains("atlassian.confluence.user.macros"), true)
-check("html.hiddenShowsReadVia", Uma.toHtml([], true, [], shadowFound, "?format=md", null).contains("read via"), true)
+check("html.hiddenShowsReadVia", Uma.toHtml([], true, [], shadowFound, exportFieldsDefault, null).contains("read via"), true)
 
 /* Why a path answered belongs on the page too. Measured on a live instance:
  * the candidate key was right and PluginSettings still did not return the
@@ -536,13 +541,13 @@ Map annotated = Uma.shadowScan(["atlassian.confluence.user.macros"], readStore,
     new LinkedHashSet<String>(["info-box", "hidden-one", "hidden-two"]))
 annotated.readVia = "BandanaManager (deprecated, removed in 11.0)"
 annotated.notes = ["candidate key(s) atlassian.confluence.user.macros held no user macros - falling back to key discovery."]
-String htmlAnnotated = Uma.toHtml([], true, [], annotated, "?format=md", null)
+String htmlAnnotated = Uma.toHtml([], true, [], annotated, exportFieldsDefault, null)
 check("html.showsFallbackNote", htmlAnnotated.contains("falling back to key discovery"), true)
 check("html.showsDeprecatedPath", htmlAnnotated.contains("removed in 11.0"), true)
 check("html.noCheckButtonAfterRun", htmlShadowClean.contains(">Check completeness</a>"), false)
-check("html.hiddenStillAlerts", Uma.toHtml([], true, [], shadowFound, "?format=md", null).contains("are hidden"), true)
+check("html.hiddenStillAlerts", Uma.toHtml([], true, [], shadowFound, exportFieldsDefault, null).contains("are hidden"), true)
 
-String htmlIncomplete = Uma.toHtml([], false, ["getMacros() failed: <boom>"], [:], "?format=md", null)
+String htmlIncomplete = Uma.toHtml([], false, ["getMacros() failed: <boom>"], [:], exportFieldsDefault, null)
 check("html.incompleteWarning", htmlIncomplete.contains("Incomplete read"), true)
 check("html.diagnosticEscaped", htmlIncomplete.contains("failed: &lt;boom&gt;"), true)
 
@@ -566,7 +571,7 @@ Map fencedRow = [
     template: fenced, parameters: [], categories: []
 ] as LinkedHashMap
 fencedRow.analysis = Uma.analyze(fenced)
-fencedRow.putAll(Uma.suggest(fencedRow.analysis))
+fencedRow.signals = Uma.signalsOf(fencedRow.analysis)
 
 String md = Uma.toMarkdown([fencedRow], true, [], [:])
 check("md.h1", md.startsWith("# Confluence Data Center - User Macro Inventory"), true)
@@ -583,7 +588,7 @@ check("md.resultColumn", md.contains("| Classification | Cloud native Y/N | Evid
 check("md.resultRuleLine", md.contains("Mapping rule used:"), true)
 check("md.resultRow", md.contains("| fenced |  |  |  |  |  |  |"), true)
 check("md.completenessUnknownKept", md.contains("UNKNOWN for this export"), true)
-check("md.heuristicLabelled", md.contains("Heuristic pre-sort, NOT a verdict:"), true)
+check("md.signalsNotAVerdict", md.contains("**Signals** (measured, no assessment attached)"), true)
 check("md.templateIntact", md.contains("\n<b>x</b>\n"), true)
 check("md.fenceWidened", md.contains('````' + "velocity"), true)
 
@@ -606,7 +611,7 @@ Map paramRow = [
                   defaultValue: "blue", aliases: ["color"], enumValues: ["blue", "red"]] as LinkedHashMap]
 ] as LinkedHashMap
 paramRow.analysis = Uma.analyze("x")
-paramRow.putAll(Uma.suggest(paramRow.analysis))
+paramRow.signals = Uma.signalsOf(paramRow.analysis)
 String mdParams = Uma.toMarkdown([paramRow], true, [], [:])
 check("md.paramHeader", mdParams.contains("| Name | Display name | Description | Type | Required | Multiple | Hidden | Default | Aliases | Enum values |"), true)
 check("md.paramRow", mdParams.contains("| colour | Colour | Border colour | enum | true | false | false | blue | color | blue, red |"), true)
@@ -634,6 +639,222 @@ check("flag.fallback", Uma.flag(params, "analyze", "TRUE"), "true")
 check("flag.nullParams", Uma.flag(null, "format", "html"), "html")
 check("firstParam.present", Uma.firstParam(params, "name"), "info box")
 check("firstParam.absent", Uma.firstParam(params, "nope"), null)
+
+/* ---- defect F4: the name filter must not reach the completeness answer -----
+ * CONFIRMED on the shipped endpoint. visibleNames was built from "macros", the
+ * list the name filter had already reduced, so ?name=X&shadowCheck=true reported
+ * every OTHER stored macro as "hidden by a plugin macro" and put
+ * visibleMacroCount at 1. One click away, because the completeness button
+ * carries the name filter with it.
+ *
+ * It sat in the endpoint closure, which the harness does not compile (defect
+ * F6). The two calls below are the ones the closure now makes, in the same
+ * order: collect the name BEFORE the filter, compare against that set. */
+
+List<String> f4LibraryNames = new ArrayList<String>()
+List<Map> f4Rows = new ArrayList<Map>()
+for (String macroName : ["alpha", "beta", "gamma"]) {
+    f4LibraryNames.add(macroName)
+    if (!Uma.matchesNameFilter("ALPHA", macroName)) {
+        continue
+    }
+    f4Rows.add([name: macroName] as LinkedHashMap)
+}
+check("f4.filterStillFilters", f4Rows.collect { Uma.strOf(it, "name") }, ["alpha"])
+check("f4.filterIgnoresCase", Uma.matchesNameFilter("ALPHA", "alpha"), true)
+check("f4.filterTrims", Uma.matchesNameFilter("  alpha  ", "alpha"), true)
+check("f4.noFilterKeepsAll", Uma.matchesNameFilter(null, "alpha"), true)
+check("f4.blankFilterKeepsAll", Uma.matchesNameFilter("   ", "alpha"), true)
+check("f4.filterRejectsOthers", Uma.matchesNameFilter("alpha", "beta"), false)
+
+Map f4Store = storedMacros(["alpha", "beta", "gamma"])
+Map f4Shadow = Uma.shadowScan(["atlassian.confluence.user.macros"],
+    { String key -> f4Store }, Uma.libraryNameSet(f4LibraryNames))
+check("f4.filteredOutAreNotHidden", f4Shadow.hiddenMacroNames, [])
+check("f4.visibleCountIsTheLibrary", f4Shadow.visibleMacroCount, 3)
+
+/* The defect stated as what it produced. Building the set out of the FILTERED
+ * rows is what the endpoint used to do, and this is the answer it gave. */
+Map f4Regression = Uma.shadowScan(["atlassian.confluence.user.macros"],
+    { String key -> f4Store },
+    Uma.libraryNameSet(f4Rows.collect { Uma.strOf(it, "name") }))
+check("f4.filteredSetWasTheDefect", f4Regression.hiddenMacroNames, ["beta", "gamma"])
+
+check("f4.nameSetTrims", Uma.libraryNameSet([" a ", "a", "", null]), new LinkedHashSet<String>(["a"]))
+check("f4.nameSetNull", Uma.libraryNameSet(null), new LinkedHashSet<String>())
+
+/* Nebenbefund of the same defect: the filter compared with equalsIgnoreCase and
+ * this comparison was case-sensitive, so a macro stored under one casing and
+ * returned under another read as hidden. */
+Map casedStore = storedMacros(["Info-Box"])
+Map casedShadow = Uma.shadowScan(["k"], { String key -> casedStore },
+    Uma.libraryNameSet(["info-box"]))
+check("f4.caseFoldedComparison", casedShadow.hiddenMacroNames, [])
+check("f4.foldedNames", Uma.foldedNames([" Info-Box "]), new LinkedHashSet<String>(["info-box"]))
+
+/* ---- the administrator's marks -------------------------------------------
+ * The rule they carry deletes work: an unmarked macro counts as obsolete and is
+ * not researched. Everything here is the evidence that it cannot delete
+ * quietly. */
+
+check("form.nullBody", Uma.parseForm(null), [:])
+check("form.blankBody", Uma.parseForm("   "), [:])
+
+Map postedFields = Uma.parseForm("format=md&macro.0=info-box&needed.0=true" +
+    "&remark.0=owner+%3CHR%3E+%7C+still+used&macro.1=old-box&remark.1=")
+check("form.decodesPlus", Uma.strOf(postedFields, "remark.0"), "owner <HR> | still used")
+check("form.carriesOptions", Uma.strOf(postedFields, "format"), "md")
+check("form.emptyValue", Uma.strOf(postedFields, "remark.1"), "")
+check("form.decodesPercent", Uma.strOf(Uma.parseForm("r=a%20%26%20b"), "r"), "a & b")
+check("form.malformedEscapeKeepsField", Uma.strOf(Uma.parseForm("r=100%"), "r"), "100%")
+check("form.firstValueWins", Uma.strOf(Uma.parseForm("a=1&a=2"), "a"), "1")
+check("form.valuelessField", Uma.strOf(Uma.parseForm("a"), "a"), "")
+
+Map marks = Uma.marksIn(postedFields)
+check("marks.keyedByName", new ArrayList<String>(marks.keySet()), ["info-box", "old-box"])
+check("marks.ticked", Uma.boolOf(Uma.mapOf(marks, "info-box"), "stillNeeded"), true)
+/* An unticked checkbox sends nothing at all, which is why the name travels in a
+ * hidden field of its own. */
+check("marks.untickedSendsNothing", Uma.boolOf(Uma.mapOf(marks, "old-box"), "stillNeeded"), false)
+check("marks.remarkCarried", Uma.strOf(Uma.mapOf(marks, "info-box"), "remark"), "owner <HR> | still used")
+check("marks.stopsAtAGap", Uma.marksIn(Uma.parseForm("macro.0=a&macro.2=c")).size(), 1)
+check("marks.emptyForm", Uma.marksIn([:]), [:])
+
+List<Map> markedRows = [[name: "info-box"], [name: "old-box"], [name: "third"]] as List<Map>
+Uma.applyMarks(markedRows, marks)
+check("marks.decisionNeeded", markedRows[0].decision, Uma.DECISION_NEEDED)
+check("marks.decisionUnmarked", markedRows[1].decision, Uma.DECISION_UNMARKED)
+check("marks.unknownMacroCountsUnmarked", markedRows[2].decision, Uma.DECISION_UNMARKED)
+check("marks.unmarkedSaysObsolete", Uma.DECISION_UNMARKED.contains("obsolete"), true)
+check("marks.rowCarriesAllThree",
+    markedRows[0].keySet().containsAll(["stillNeeded", "decision", "remark"]), true)
+
+Map summary = Uma.markSummary(markedRows)
+check("summary.total", summary.total, 3)
+check("summary.assessed", summary.assessed, 1)
+check("summary.unassessedNamed", summary.unassessedNames, ["old-box", "third"])
+check("summary.line", Uma.unassessedLine(summary),
+    "2 of 3 macros were NOT assessed - they are treated as OBSOLETE and will not be researched.")
+check("summary.allMarked",
+    Uma.unassessedLine(Uma.markSummary([[name: "a", stillNeeded: true]] as List<Map>))
+        .contains("Nothing is dropped as obsolete"), true)
+check("summary.noMacros", Uma.unassessedLine(Uma.markSummary([] as List<Map>)),
+    "No macros in this report.")
+check("summary.statesTheRule", Uma.strOf(summary, "rule").contains("not researched"), true)
+
+/* ---- the marks in all four output formats ---------------------------------
+ * The remark is text a human typed, so it is foreign text in every renderer and
+ * goes through the same gate as macro content: esc() in HTML, mdCell() in
+ * Markdown, csvCell() in CSV. */
+
+Map neededMacro = [name: "info-box", macroKey: "info-box", title: "Info Box",
+    bodyType: "RENDERED", hasBody: true, hidden: false, parameterCount: 0,
+    templateAvailable: true, template: "x", parameters: [], categories: [],
+    analysis: a1] as LinkedHashMap
+neededMacro.signals = Uma.signalsOf(a1)
+Map obsoleteMacro = [name: "old-box", macroKey: "old-box", template: "y",
+    parameters: [], categories: [], analysis: Uma.analyze("y")] as LinkedHashMap
+obsoleteMacro.signals = Uma.signalsOf(obsoleteMacro.analysis)
+
+List<Map> markedOutput = [neededMacro, obsoleteMacro] as List<Map>
+Uma.applyMarks(markedOutput, Uma.marksIn(Uma.parseForm(
+    "macro.0=info-box&needed.0=true&remark.0=owner+%3CHR%3E+%7C+still+used" +
+    "&macro.1=old-box&remark.1=%3Ddrop")))
+
+String markedCsv = Uma.toCsv(markedOutput)
+check("csv.headerHasSignals", Uma.CSV_HEADER.contains("signals"), true)
+check("csv.headerHasDecision", Uma.CSV_HEADER.contains("decision"), true)
+check("csv.headerHasRemark", Uma.CSV_HEADER.contains("remark"), true)
+check("csv.headerDropsVerdict", Uma.CSV_HEADER.contains("suggestedClass"), false)
+check("csv.decisionCell", markedCsv.contains('"' + Uma.DECISION_NEEDED + '"'), true)
+check("csv.unmarkedCell", markedCsv.contains('"' + Uma.DECISION_UNMARKED + '"'), true)
+/* A remark is as dangerous in a spreadsheet as a macro title. */
+check("csv.remarkFormulaNeutralised", markedCsv.contains('"' + "'" + '=drop"'), true)
+
+String markedMd = Uma.toMarkdown(markedOutput, true, [], [:])
+check("md.unassessedStatedUpFront", markedMd.contains("1 of 2 macros were NOT assessed"), true)
+check("md.unassessedNamed", markedMd.contains("> - old-box"), true)
+check("md.unassessedBeforeInventory",
+    markedMd.indexOf("were NOT assessed") < markedMd.indexOf("## Inventory"), true)
+check("md.decisionPerMacro",
+    markedMd.contains("| Administrator decision | " + Uma.DECISION_NEEDED + " |"), true)
+check("md.remarkPipeEscaped", markedMd.contains("owner <HR> \\| still used"), true)
+check("md.resultTableCarriesDecision",
+    markedMd.contains("| Macro | Administrator decision | Functional purpose |"), true)
+check("md.resultRowCarriesDecision",
+    markedMd.contains("| old-box | " + Uma.DECISION_UNMARKED + " - =drop |  |  |  |  |  |  |"), true)
+check("md.signalsSection", markedMd.contains("**Signals** (measured, no assessment attached)"), true)
+check("md.signalListed", markedMd.contains("- context objects: body"), true)
+check("md.noPresort", markedMd.contains("Heuristic pre-sort"), false)
+check("md.noVerdict", markedMd.contains("suggestedClass"), false)
+
+/* The brief no longer warns about a pre-sort, because there is none to warn
+ * about. It does carry the rule that decides what gets researched, and that has
+ * to sit inside the Task section: the same brief tells the reader its
+ * instructions are in that section only. */
+check("brief.presortRuleGone", Uma.briefText().contains("Heuristic pre-sort"), false)
+check("brief.obsoleteRuleInTask", Uma.briefText().contains("record it as OBSOLETE"), true)
+check("brief.obsoleteRuleIsNumbered",
+    Uma.briefText().contains("6. Every macro carries an administrator decision"), true)
+check("brief.classificationSchemeKept",
+    Uma.briefText().contains("| CLOUD_NATIVE | The capability exists"), true)
+check("brief.boundaryKept", Uma.briefText().contains("Untrusted data boundary"), true)
+
+String markedHtml = Uma.toHtml(markedOutput, true, [], [:], exportFieldsDefault, null)
+check("html.postForm", markedHtml.contains('<form method="post" action="userMacros">'), true)
+check("html.exportIsASubmit", markedHtml.contains('<button class="btn" type="submit"'), true)
+check("html.exportIsNoLongerALink", markedHtml.contains('>Save as .md</a>'), false)
+check("html.fourthColumn", markedHtml.contains("<th>Still needed?</th>"), true)
+check("html.markNameTravelsHidden",
+    markedHtml.contains('<input type="hidden" name="macro.0" value="info-box">'), true)
+check("html.checkboxTicked", markedHtml.contains('name="needed.0" value="true" checked>'), true)
+check("html.checkboxUnticked", markedHtml.contains('name="needed.1" value="true">'), true)
+check("html.remarkField", markedHtml.contains('<textarea name="remark.0"'), true)
+check("html.remarkEscaped", markedHtml.contains("owner &lt;HR&gt; | still used"), true)
+check("html.remarkNotRendered", markedHtml.contains("owner <HR>"), false)
+check("html.decisionShown",
+    markedHtml.contains('<div class="decision">' + Uma.DECISION_UNMARKED + '</div>'), true)
+check("html.unassessedBanner", markedHtml.contains("1 of 2 macros were NOT assessed"), true)
+check("html.unassessedNamed", markedHtml.contains("<li>old-box</li>"), true)
+check("html.runningCount",
+    markedHtml.contains('<span class="tally"></span><span> of 2 assessed</span>'), true)
+/* The count is a CSS counter because this page carries no script: macro content
+ * is rendered here, and that assertion is worth more than a live number. */
+check("html.countIsCss", markedHtml.contains(".tally::before{content:counter(assessed)}"), true)
+check("html.marksAreNotStored", markedHtml.contains("NOT saved in Confluence"), true)
+check("html.marksAreLostOnLeave", markedHtml.contains("lost when you leave"), true)
+check("html.stillNoScript", markedHtml.toLowerCase().contains("<script"), false)
+check("html.stillSelfContained",
+    markedHtml.contains("http://") || markedHtml.contains("https://"), false)
+check("html.signalsListed", markedHtml.contains("<li>context objects: body</li>"), true)
+check("html.noVerdictChip", markedHtml.contains("FORGE_REQUIRED"), false)
+check("html.noVerdictAtAll", markedHtml.contains("CLOUD_NATIVE"), false)
+check("html.emptyReportSpansFour", Uma.toHtml([], true, [], [:], exportFieldsDefault, null)
+    .contains('colspan="4"'), true)
+
+/* ---- the POST form carries the same options as the link it replaced -------- */
+
+String postFields = Uma.exportFields(false, false, true, "a b&c")
+check("exportFields.format", postFields.contains('name="format" value="md"'), true)
+check("exportFields.template", postFields.contains('name="template" value="false"'), true)
+check("exportFields.analyze", postFields.contains('name="analyze" value="false"'), true)
+check("exportFields.shadowCheck", postFields.contains('name="shadowCheck" value="true"'), true)
+check("exportFields.nameEscaped", postFields.contains('name="name" value="a b&amp;c"'), true)
+check("exportFields.noNameWhenUnfiltered",
+    Uma.exportFields(true, true, false, null).contains('name="name"'), false)
+check("exportFields.postsToTheEndpoint", Uma.ENDPOINT_PATH, "userMacros")
+
+/* On POST every option is in the form, and the form wins: the page posts without
+ * a query string, so a value left in a URL must not overrule what was submitted. */
+FakeParams postedQuery = new FakeParams(values: [format: "html", name: "from-url"])
+Map postedOptions = Uma.parseForm("format=md&name=from-form")
+check("option.formWins", Uma.option(postedQuery, postedOptions, "format", "html"), "md")
+check("option.queryOnGet", Uma.option(postedQuery, [:], "format", "html"), "html")
+check("option.fallback", Uma.option(null, [:], "analyze", "true"), "true")
+check("option.lowercased", Uma.option(null, Uma.parseForm("format=MD"), "format", "html"), "md")
+check("optionText.formWins", Uma.optionText(postedQuery, postedOptions, "name"), "from-form")
+check("optionText.queryOnGet", Uma.optionText(postedQuery, [:], "name"), "from-url")
+check("optionText.absent", Uma.optionText(postedQuery, [:], "nope"), null)
 
 println(fail == 0 ? "ALL TESTS PASS" : ("FAILURES: " + fail))
 System.exit(fail == 0 ? 0 : 1)

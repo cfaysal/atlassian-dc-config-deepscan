@@ -11,7 +11,7 @@ link to the exact administration screen where it is maintained.
 | Script | Platform | Version |
 | --- | --- | --- |
 | [`jira/jiraDCprojectConfig.groovy`](jira/jiraDCprojectConfig.groovy) | Jira Data Center | 0.1 |
-| [`confluence/userMacroDeepScan.groovy`](confluence/userMacroDeepScan.groovy) | Confluence Data Center | 3.6.0 |
+| [`confluence/userMacroDeepScan.groovy`](confluence/userMacroDeepScan.groovy) | Confluence Data Center | 4.0.0 |
 
 Typical uses: handing a project over to a new administrator, documenting a project before a
 migration, finding out why two projects behave differently, or producing the configuration
@@ -269,9 +269,16 @@ analysis of it: `$body`, the parameter references, which Velocity context object
 the directives, the Java and Confluence method calls, HTML, CSS, JavaScript, the hosts it
 loads from, the macros it embeds, permission logic and content metadata.
 
-Each macro also carries a heuristic pre-sort towards `CLOUD_NATIVE_CANDIDATE`,
-`FORGE_REQUIRED` or `MANUAL_REVIEW`. It is labelled a pre-sort in every output on purpose.
-A machine that hands down `CLOUD_NATIVE` removes exactly the check the exercise is about.
+Each macro carries the **signals** that were measured, as plain lines: permission logic,
+JavaScript, resource loads with their host, the number of method calls, the context objects.
+No classification, no pre-sort, no verdict.
+
+**Why there is no pre-sort any more.** Up to 3.6.0 the report printed a `suggestedClass` per
+macro and set `FORGE_REQUIRED` on four of those signals. Measured against the evidenced
+assessment it was meant to feed: the pre-sort said `FORGE_REQUIRED` 33 times where the
+assessment reached 12. Labelling a verdict "heuristic" does not stop it being read as one,
+and a wrong verdict is worse than none. The signals stayed, the verdict went. This is a
+breaking change to the output contract, which is what the 4.0.0 in the version is for.
 
 ### Two things it gets right that a naive scan does not
 
@@ -280,8 +287,8 @@ starts with `##` and runs to the end of the line, a block comment runs from `#*`
 Atlassian's own guidance recommends a header comment in exactly that shape, so most
 templates carry one, and those headers routinely hold a source URL and a ticket key. An
 analyser that scans the raw template reports the documentation link as an outbound call and
-a commented-out example as live HTML, and pushes the macro towards `FORGE_REQUIRED` for no
-reason. Every runtime signal here is computed on the code half only. What the comments hold
+a commented-out example as live HTML, both of them as measured signals and both of them
+false. Every runtime signal here is computed on the code half only. What the comments hold
 is reported separately, including the header fields as their own table.
 
 **A header is a claim, not configuration.** Those same headers are written by hand and
@@ -295,18 +302,45 @@ somebody once wrote about it.
 
 **A link is not a call.** A host is only a runtime dependency when the browser fetches from
 it: `src=`, a stylesheet link, a CSS `url()`, an `@import`. An `<a href>` is something a
-reader clicks. The two are separate signals and only the first affects the assessment.
+reader clicks. The two are reported as separate signals and never merged into one.
+
+### Which macros are still needed: the administrator marks
+
+Whether a macro is still needed cannot be read off its template. It is knowledge held by the
+people running the instance, so the HTML report asks for it before the export: per macro a
+**still needed** tick and a free text **remark**.
+
+**An unmarked macro counts as obsolete and is not researched.** That is a deliberate rule and
+it removes work, so nothing about it is quiet. Every export states in its own line, above the
+inventory, how many macros went unmarked and names them. The HTML page keeps a running count
+of how many of the macros have been marked, and says plainly that **the marks are not saved
+in Confluence**: they live in the page, they are lost when it is left, and the export is the
+only thing that carries them.
+
+The decision and the remark appear per macro in all four formats, and in the Markdown result
+table as a column of its own. The remark is text a human typed, so every renderer treats it
+exactly like macro content: escaped in HTML, pipe-escaped in Markdown, formula-neutralised in
+CSV.
 
 ### Output formats
 
 `format=html` is the default report. `format=md` writes one self-contained file for handing
 to an analysis agent: the task, the classification scheme, a Velocity context glossary, every
-macro with its template, and an empty result table to fill in. It opens with an untrusted
-data boundary, because the macro content in that file was written by whoever authored the
-macros and must never be read as instructions. The HTML report offers it as a **Save as .md**
-button. `format=json` and `format=csv` are there for further processing; CSV cells that begin
-with `=`, `+`, `-` or `@` are neutralised so a macro title cannot become a spreadsheet
-formula.
+macro with its template and its administrator decision, and an empty result table to fill in.
+It opens with an untrusted data boundary, because the macro content in that file was written
+by whoever authored the macros and must never be read as instructions. `format=json` and
+`format=csv` are there for further processing; CSV cells that begin with `=`, `+`, `-` or `@`
+are neutralised so a macro title or a remark cannot become a spreadsheet formula.
+
+**The Save as .md button posts.** The remarks are free text and do not fit in a query string,
+and rendering the export in the browser would mean a second copy of a renderer this
+repository has a drift gate against. So the HTML report is a form, it submits back to the
+same endpoint with `POST`, and the server renders the file.
+
+**The POST changes nothing in Confluence.** It is a rendering call, not a mutation: the
+endpoint has no write path at all, in either method. It carries a body because a body is the
+only place a page of typed remarks fits. The same `Cache-Control: no-store, private` and
+`X-Content-Type-Options: nosniff` headers are on every response of both methods.
 
 ### What it cannot claim, and the switch that narrows it
 
@@ -352,16 +386,21 @@ registers it under the name `userMacros`.
 | `shadowCheck` | `false` | Compare against the stored configuration for hidden macros |
 | `name` | none | Restrict the report to a single macro |
 
-Read-only throughout: no write to the macro store, no outbound network call. Every response
-carries `Cache-Control: no-store, private` and `X-Content-Type-Options: nosniff`, because the
-templates it returns can hold internal host names and, in the worst case, credentials.
+On `POST` the same parameters arrive as form fields, together with the marks. A posted value
+wins over the query string, so the form carries the whole request and nothing depends on the
+URL it was submitted from.
+
+Read-only throughout, `POST` included: no write to the macro store, no outbound network call.
+Every response carries `Cache-Control: no-store, private` and `X-Content-Type-Options:
+nosniff`, because the templates it returns can hold internal host names and, in the worst
+case, credentials.
 
 `shadowCheck` is off by default because key discovery deserialises every stored value in the
 global context.
 
 ### Status
 
-Version 3.6.0. Measured on an instance with 60 user macros: the completeness check reported
+Version 4.0.0. Measured on an instance with 60 user macros: the completeness check reported
 60 stored and 60 visible, so on that instance the library-visible list is the whole set.
 
 Still unproven, and named here rather than left to be assumed:
@@ -369,11 +408,17 @@ Still unproven, and named here rather than left to be assumed:
 - **The difference is untested against a real hidden macro.** Every run so far found an empty
   difference. That the comparison reports a discrepancy correctly is covered by the offline
   suite and not by a live instance.
-- **The heuristic pre-sort is a starting point, not a verdict.** It is deliberately biased
-  towards `MANUAL_REVIEW` and never claims `CLOUD_NATIVE`.
 - **The comment split is lexical.** A literal `##` inside a string in a template body is
   treated as the start of a comment, the same way Velocity itself treats it in most
   positions.
+- **The running count on the HTML page is a CSS counter, not a measurement.** This page
+  carries no script by design, because it renders macro content and the assertion that
+  nothing on it executes is worth more than a live number. The authoritative count is the one
+  the server states in the export.
+- **The `POST` path has not been exercised on a live ScriptRunner instance.** The renderers,
+  the form parsing and the mark evaluation are covered by the offline suite; that
+  ScriptRunner registers the same endpoint name for both `GET` and `POST` follows the
+  documented pattern and has not been measured here.
 
 ## Licence
 

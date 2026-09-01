@@ -39,10 +39,10 @@
  *   Such a header routinely carries a source URL, a ticket key and an author.
  *   An analyser that scans the raw template therefore reports a documentation
  *   link as an outbound HTTP call, and a commented-out example as live HTML or
- *   CSS. Both are false, and both push the macro towards FORGE_REQUIRED for no
+ *   CSS. Both are false, and both would be reported as measured signals for no
  *   reason. Every render-time signal below is computed on the CODE half of the
- *   template only. What the comments contain is reported separately, clearly
- *   labelled, and never feeds the classification.
+ *   template only. What the comments contain is reported separately and clearly
+ *   labelled.
  *
  *   Known limit: the split is lexical. A literal "##" inside a string in the
  *   template body is treated as the start of a comment, the same way Velocity
@@ -78,9 +78,41 @@
  *   toString(). For Message that is the i18n carrier and not necessarily the
  *   translated text - good enough for an inventory, not for an end-user label.
  *
+ * NO CLASSIFICATION IS ISSUED HERE - removed in 4.0.0
+ *   Up to 3.6.0 this file printed a suggestedClass per macro and set
+ *   FORGE_REQUIRED on four signals. MEASURED against the analysis it was meant
+ *   to pre-sort for: the pre-sort said FORGE_REQUIRED 33 times where the
+ *   evidenced assessment reached 12. A wrong verdict is worse than none,
+ *   because it is read as one however it is labelled. So the verdict is gone.
+ *
+ *   The SIGNALS behind it are measured exactly as before and reported verbatim,
+ *   as plain lines under "signals": permission logic, JavaScript, resource loads
+ *   with their host, the number of method calls, the context objects. What they
+ *   mean is the reader's call, not this script's.
+ *
+ * The administrator's marks
+ *   Which macros are still needed is knowledge nobody can read off a template,
+ *   so the HTML report asks for it: per macro a "still needed" tick and a free
+ *   text remark. Both are carried into the export and appear in all four output
+ *   formats.
+ *
+ *   DIRECTOR DECISION, and it deletes: a macro left unmarked counts as obsolete
+ *   and is not researched. A rule that removes work must not act silently, so
+ *   every export states in its own line how many macros went unmarked and names
+ *   them, and the HTML page keeps a running count while the marks are being set.
+ *
+ *   The marks are NOT written to Confluence. They live in the page and are lost
+ *   when it is left; the only thing that carries them is the export.
+ *
  * Security
  *   Restricted to confluence-administrators. Read-only: no addUpdateMacro, no
  *   removeMacro, no Bandana write, no outbound network call.
+ *
+ *   The endpoint answers POST as well as GET, and POST changes NOTHING in
+ *   Confluence. It exists because free text remarks do not fit in a query string
+ *   and because a second renderer in the browser would be the drift this
+ *   repository has a gate against: the browser posts the marks, the server
+ *   renders. The POST is a rendering call, not a mutation.
  *
  * Platform
  *   javax / jakarta neutral. The JAX-RS Response class is resolved at runtime and
@@ -106,16 +138,23 @@
  *                                            stored value during key discovery
  *   name=<macroName>          optional filter for a single macro
  *
+ *   On POST the same parameters arrive as form fields, together with the marks
+ *   (macro.N, needed.N, remark.N). A posted value wins over the query string, so
+ *   the form carries the whole request and nothing depends on the URL it was
+ *   submitted from.
+ *
  * Every response carries Cache-Control: no-store, private and X-Content-Type-
- * Options: nosniff. Templates can hold credentials, so they must not land in a
- * browser or proxy cache.
+ * Options: nosniff, on POST exactly as on GET. Templates can hold credentials,
+ * so they must not land in a browser or proxy cache.
  *
  * HTML output
- *   Three columns: Macro, Function / Description, Content. Every cell goes
- *   through Uma.esc(). A user macro is HTML and frequently JavaScript by
- *   definition; an unescaped report would execute that foreign code in the
+ *   Four columns: Macro, Function / Description, Content, Still needed. Every
+ *   cell goes through Uma.esc(). A user macro is HTML and frequently JavaScript
+ *   by definition; an unescaped report would execute that foreign code in the
  *   browser of the administrator reviewing it. Self-contained page, no external
- *   stylesheet, no script.
+ *   stylesheet, and NO SCRIPT - the running count of marked macros is a CSS
+ *   counter, because a script tag on this page would blunt the one assertion
+ *   that keeps macro content from executing here.
  *
  * Markdown output (format=md)
  *   One file to hand to an analysis agent: the task, the classification scheme,
@@ -145,6 +184,7 @@ import groovy.transform.BaseScript
 import org.codehaus.groovy.runtime.InvokerHelper
 
 import java.lang.reflect.Method
+import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.regex.Matcher
 import java.util.regex.Pattern
@@ -153,7 +193,7 @@ import java.util.regex.Pattern
 
 class Uma {
 
-    static final String VERSION = "3.6.0"
+    static final String VERSION = "4.0.0"
 
     /* SCOPE, stated once and repeated in every output channel.
      * UserMacroLibrary javadoc, verbatim: "this UserMacroLibrary is now aware of
@@ -185,7 +225,7 @@ class Uma {
     /* A URL is not a call. This pattern matches only the positions where the
      * browser FETCHES the target on its own - src=, a stylesheet link, a CSS
      * url() and @import. Everything else, above all an ordinary <a href>, is a
-     * reference a reader may click and must not by itself force FORGE_REQUIRED. */
+     * reference a reader may click, and the two are reported apart. */
     static final Pattern P_RESOURCE_URL = Pattern.compile(
         '(?is)(?:\\bsrc\\s*=\\s*["\']?|<\\s*link\\b[^>]*?\\bhref\\s*=\\s*["\']?|\\burl\\s*\\(\\s*["\']?|@import\\s+["\']?)https?://([A-Za-z0-9._-]+)')
     static final Pattern P_ACMACRO   = Pattern.compile('(?i)<\\s*ac:structured-macro[^>]*ac:name\\s*=\\s*["\']([^"\']+)["\']')
@@ -227,8 +267,8 @@ class Uma {
         "usesBody", "contextObjects", "parameterRefs", "methodCalls",
         "hasHtml", "hasCss", "hasJavaScript", "externalResourceHosts",
         "externalLinkHosts", "commentOnlyHosts", "embeddedMacroCandidates",
-        "usesPermissionLogic", "usesContentMetadata", "suggestedClass",
-        "suggestedReason"
+        "usesPermissionLogic", "usesContentMetadata", "signals",
+        "stillNeeded", "decision", "remark"
     ]
 
     static String str(Object value) {
@@ -375,7 +415,7 @@ class Uma {
 
     /* Step 3. Text analysis of the template, nothing is executed. Every
      * render-time signal is computed on the code half only; comment findings are
-     * reported apart and never reach the classification. */
+     * reported apart and labelled as such. */
     static Map analyze(String template) {
         Map result = [:] as LinkedHashMap
         if (template == null) {
@@ -436,7 +476,7 @@ class Uma {
         /* Three distinct things, deliberately not one flag. A host the browser
          * loads a resource from is a real runtime dependency. A host that is
          * merely linked is a reference. A host that only appears in a comment is
-         * documentation. Only the first may drive the classification. */
+         * documentation. Only the first is a dependency at render time. */
         List<String> externalHosts = new ArrayList<String>(matchGroup(P_URL, code, 1))
         List<String> resourceHosts = new ArrayList<String>(matchGroup(P_RESOURCE_URL, code, 1))
         List<String> linkHosts = new ArrayList<String>()
@@ -479,65 +519,50 @@ class Uma {
         return result
     }
 
-    /* Step 4, explicitly a pre-sort and nothing more. The default is
-     * MANUAL_REVIEW: a machine claiming CLOUD_NATIVE here would remove exactly
-     * the check the whole exercise is about. */
-    static Map suggest(Map analysis) {
+    /* The measured signals, in plain lines, and nothing beyond them.
+     *
+     * Up to 3.6.0 this method was suggest(): it weighed the same five signals
+     * into a suggestedClass and set FORGE_REQUIRED on four of them. Measured
+     * against the evidenced assessment it fed, the pre-sort said FORGE_REQUIRED
+     * 33 times where that assessment reached 12. Labelling a verdict "heuristic"
+     * does not stop it being read as a verdict, so the verdict was removed and
+     * the signals kept. Every line below is a MEASUREMENT: what was found, and
+     * where. No line says what it is worth. */
+    static List<String> signalsOf(Map analysis) {
+        List<String> signals = new ArrayList<String>()
         if (analysis == null || !boolOf(analysis, "analyzed")) {
-            return [
-                suggestedClass : "MANUAL_REVIEW",
-                suggestedReason: "no template analysed",
-                suggestionNote : "Heuristic, not a verdict. The binding assessment is the manual one."
-            ] as LinkedHashMap
+            return signals
         }
 
-        List<String> reasons = new ArrayList<String>()
-        String verdict = "MANUAL_REVIEW"
-
-        if (boolOf(analysis, "usesPermissionLogic")) {
-            reasons.add("user or permission logic in the template")
-            verdict = "FORGE_REQUIRED"
-        }
-        if (boolOf(analysis, "hasExternalResourceLoads")) {
-            reasons.add("browser loads a resource from: " + joined(analysis, "externalResourceHosts", ", "))
-            verdict = "FORGE_REQUIRED"
+        List<String> permissionSignals = listOf(analysis, "permissionSignals")
+        if (!permissionSignals.isEmpty()) {
+            signals.add("permission or user logic: " + permissionSignals.join(", "))
         }
         if (boolOf(analysis, "hasJavaScript")) {
-            reasons.add("JavaScript in the template")
-            verdict = "FORGE_REQUIRED"
+            signals.add("JavaScript in the template")
+        }
+        if (boolOf(analysis, "hasExternalResourceLoads")) {
+            signals.add("browser loads a resource from: " + joined(analysis, "externalResourceHosts", ", "))
         }
 
         List<String> methodCalls = listOf(analysis, "methodCalls")
-        if (!methodCalls.isEmpty() && verdict == "MANUAL_REVIEW") {
-            reasons.add("Java or Confluence method calls: " + methodCalls.size())
-            verdict = "FORGE_REQUIRED"
+        if (!methodCalls.isEmpty()) {
+            signals.add("Java or Confluence method calls: " + methodCalls.size())
         }
 
         List<String> contextObjects = listOf(analysis, "contextObjects")
-        boolean onlyBodyContext = contextObjects.isEmpty() || contextObjects == ["body"]
-        if (verdict == "MANUAL_REVIEW" &&
-            !boolOf(analysis, "hasConditionalLogic") &&
-            onlyBodyContext &&
-            boolOf(analysis, "hasHtml")) {
-            reasons.add("static HTML around the body, no context object other than body")
-            verdict = "CLOUD_NATIVE_CANDIDATE"
+        if (!contextObjects.isEmpty()) {
+            signals.add("context objects: " + contextObjects.join(", "))
         }
 
-        /* Recorded, never decisive: a hyperlink is something a reader clicks,
-         * not something the macro fetches. */
+        /* A hyperlink is something a reader clicks, not something the macro
+         * fetches. Recorded next to the resource loads so the two are told
+         * apart on sight. */
         List<String> linkHosts = listOf(analysis, "externalLinkHosts")
         if (!linkHosts.isEmpty()) {
-            reasons.add("links to (reference only, not a runtime dependency): " + linkHosts.join(", "))
+            signals.add("links to (reference only, not a runtime dependency): " + linkHosts.join(", "))
         }
-
-        if (reasons.isEmpty()) {
-            reasons.add("no decisive signal, assess by hand")
-        }
-        return [
-            suggestedClass : verdict,
-            suggestedReason: reasons.join("; "),
-            suggestionNote : "Heuristic, not a verdict. The binding assessment is the manual one."
-        ] as LinkedHashMap
+        return signals
     }
 
     /* ---- shadow check (opt-in) ---------------------------------------------
@@ -571,6 +596,56 @@ class Uma {
 
     static final List<String> CANDIDATE_KEYS = ["atlassian.confluence.user.macros"]
 
+    /* ---- what the library showed, and what the report shows -----------------
+     * DEFECT F4. These two are not the same set, and treating them as one is the
+     * bug this pair exists to make impossible.
+     *
+     * The shadow check asks what the LIBRARY does not show. With ?name=X the
+     * endpoint built the comparison set out of the FILTERED rows, so on an
+     * instance with 60 macros ?name=X&shadowCheck=true reported the other 59 as
+     * hidden by a plugin macro and put visibleMacroCount at 1. One click away:
+     * the completeness button carries the name filter with it.
+     *
+     * The two helpers sit here rather than in the endpoint closure because the
+     * closure is compiled by no test (defect F6), and the closure is exactly
+     * where the pairing went wrong.
+     *
+     * Nebenbefund, fixed with it: the filter matched with equalsIgnoreCase while
+     * the comparison below was case-sensitive, so a macro stored as "Info-Box"
+     * and returned as "info-box" read as hidden. Both sides fold now. */
+
+    static boolean matchesNameFilter(String nameFilter, String macroName) {
+        if (nameFilter == null || nameFilter.trim().isEmpty()) {
+            return true
+        }
+        return nameFilter.trim().equalsIgnoreCase(macroName == null ? "" : macroName.trim())
+    }
+
+    /* Every name the pass over the configuration produced, filter or no filter.
+     * Order and case are kept: this set is also what visibleMacroCount counts
+     * and what the report prints. */
+    static Set<String> libraryNameSet(Collection<String> names) {
+        Set<String> visible = new LinkedHashSet<String>()
+        if (names == null) {
+            return visible
+        }
+        for (String name : names) {
+            String trimmed = name == null ? "" : name.trim()
+            if (!trimmed.isEmpty()) {
+                visible.add(trimmed)
+            }
+        }
+        return visible
+    }
+
+    static Set<String> foldedNames(Collection<String> names) {
+        Set<String> folded = new LinkedHashSet<String>()
+        for (String name : libraryNameSet(names)) {
+            folded.add(name.toLowerCase())
+        }
+        return folded
+    }
+
     /* Pure comparison. Given some keys and a way to read a value for a key, find
      * the store that holds UserMacroConfig values and name what the library does
      * not show. Every failure is UNKNOWN, never a measured zero. */
@@ -590,6 +665,7 @@ class Uma {
         List<String> notes = new ArrayList<String>()
         List<String> sourceKeys = new ArrayList<String>()
         int storedCount = 0
+        Set<String> folded = foldedNames(visibleNames)
 
         for (String key : keys) {
             Object value = null
@@ -628,8 +704,8 @@ class Uma {
             sourceKeys.add(key)
             storedCount += candidate.size()
             for (Object storedName : candidate.keySet()) {
-                String name = storedName == null ? "" : storedName.toString()
-                if (!name.isEmpty() && !visibleNames.contains(name)) {
+                String name = storedName == null ? "" : storedName.toString().trim()
+                if (!name.isEmpty() && !folded.contains(name.toLowerCase())) {
                     hidden.add(name)
                 }
             }
@@ -810,6 +886,131 @@ class Uma {
         return out
     }
 
+    /* ---- the administrator's marks -----------------------------------------
+     * Whether a macro is still needed cannot be read off its template. It is
+     * knowledge held by the people running the instance, so the HTML report asks
+     * for it and the export carries the answer.
+     *
+     * The rule behind it deletes work: an unmarked macro counts as obsolete and
+     * is not researched. Everything here exists so that it cannot delete
+     * quietly - the decision is stated per macro in all four formats, and the
+     * count of unmarked macros is stated once, on its own, before the inventory.
+     *
+     * All of it is a pure function over the posted form, and it lives inside the
+     * offline-testable block for that reason. The endpoint closure below is
+     * compiled by no test (defect F6), and it is precisely the closure that got
+     * the shadow-check name set wrong for a year. */
+
+    static final String DECISION_NEEDED = "still needed"
+    static final String DECISION_UNMARKED = "not assessed - treated as obsolete"
+
+    static String decisionOf(boolean stillNeeded) {
+        return stillNeeded ? DECISION_NEEDED : DECISION_UNMARKED
+    }
+
+    /* One percent-decoded field. A malformed escape costs that field and not the
+     * whole submission - losing a page of typed remarks to one stray percent
+     * sign would be the worse failure by far. */
+    static String decodeField(String text) {
+        try {
+            return URLDecoder.decode(text, "UTF-8")
+        } catch (Exception ignored) {
+            return text
+        }
+    }
+
+    /* application/x-www-form-urlencoded, the body a browser sends for this form.
+     * First value wins: every field here is written once, and a duplicate name
+     * is a client doing something unexpected, not an instruction. */
+    static Map<String, String> parseForm(String body) {
+        Map<String, String> form = new LinkedHashMap<String, String>()
+        if (body == null || body.trim().isEmpty()) {
+            return form
+        }
+        for (String pair : body.split("&")) {
+            if (pair.trim().isEmpty()) {
+                continue
+            }
+            int split = pair.indexOf("=")
+            String key = decodeField(split < 0 ? pair : pair.substring(0, split)).trim()
+            String value = decodeField(split < 0 ? "" : pair.substring(split + 1))
+            if (key.isEmpty() || form.containsKey(key)) {
+                continue
+            }
+            form.put(key, value)
+        }
+        return form
+    }
+
+    /* Read by INDEX out of the form, keyed by NAME on the way out. An unticked
+     * checkbox sends nothing at all, so the tick cannot carry the macro name and
+     * a hidden field does. Keying the result by name means a macro that moved
+     * between rendering the page and posting it gets its own mark rather than
+     * its neighbour's. */
+    static Map<String, Map> marksIn(Map form) {
+        Map<String, Map> marks = new LinkedHashMap<String, Map>()
+        int index = 0
+        while (form != null && form.containsKey("macro." + index)) {
+            String name = strOf(form, "macro." + index).trim()
+            if (!name.isEmpty()) {
+                Map mark = [:] as LinkedHashMap
+                mark.stillNeeded = YES_VALUES.contains(strOf(form, "needed." + index).trim().toLowerCase())
+                mark.remark = strOf(form, "remark." + index).trim()
+                marks.put(name, mark)
+            }
+            index++
+        }
+        return marks
+    }
+
+    /* Every row carries a decision, marked or not. An unmarked row is never left
+     * blank: unmarked IS the decision, and a blank cell would read as an
+     * oversight rather than as the rule taking effect. */
+    static void applyMarks(List<Map> rows, Map marks) {
+        for (Map row : rows) {
+            Map mark = mapOf(marks, strOf(row, "name"))
+            boolean stillNeeded = boolOf(mark, "stillNeeded")
+            row.stillNeeded = stillNeeded
+            row.decision = decisionOf(stillNeeded)
+            row.remark = strOf(mark, "remark")
+        }
+    }
+
+    static Map markSummary(List<Map> rows) {
+        List<String> unassessed = new ArrayList<String>()
+        int assessed = 0
+        for (Map row : rows) {
+            if (boolOf(row, "stillNeeded")) {
+                assessed++
+            } else {
+                unassessed.add(strOf(row, "name"))
+            }
+        }
+        Map summary = [:] as LinkedHashMap
+        summary.total = rows.size()
+        summary.assessed = assessed
+        summary.unassessed = unassessed.size()
+        summary.unassessedNames = unassessed
+        summary.rule = "A macro left unmarked counts as obsolete and is not researched."
+        return summary
+    }
+
+    /* The sentence an export may not bury, worded once and used by every format
+     * that has room for a sentence. */
+    static String unassessedLine(Map summary) {
+        int total = intOf(summary, "total")
+        int unassessed = intOf(summary, "unassessed")
+        if (total == 0) {
+            return "No macros in this report."
+        }
+        if (unassessed == 0) {
+            return "All " + total + " macro" + (total == 1 ? " was" : "s were") +
+                " marked as still needed. Nothing is dropped as obsolete."
+        }
+        return unassessed + " of " + total + " macros were NOT assessed - they are treated as " +
+            "OBSOLETE and will not be researched."
+    }
+
     /* Quoting alone is not enough. A spreadsheet evaluates a cell starting with
      * =, +, - or @ as a formula, and a macro title is attacker-controlled text
      * from the instance. The apostrophe keeps the value readable and inert; it
@@ -859,8 +1060,13 @@ class Uma {
                 csvCell(joined(analysis, "embeddedMacroCandidates", " ")),
                 csvCell(analysis.get("usesPermissionLogic")),
                 csvCell(analysis.get("usesContentMetadata")),
-                csvCell(row.get("suggestedClass")),
-                csvCell(row.get("suggestedReason"))
+                csvCell(joined(row, "signals", "; ")),
+                /* The remark is text an administrator typed, so it is exactly as
+                 * dangerous in a spreadsheet as a macro title and goes through
+                 * the same neutralisation. */
+                csvCell(row.get("stillNeeded")),
+                csvCell(row.get("decision")),
+                csvCell(row.get("remark"))
             ]
             csv.append(cells.join(",")).append("\n")
         }
@@ -915,11 +1121,13 @@ class Uma {
         }
         Map analysis = (Map) rawAnalysis
 
+        /* No traffic light. Until 4.0.0 the first chip was the suggestedClass,
+         * green for CLOUD_NATIVE_CANDIDATE and red for FORGE_REQUIRED, and the
+         * four chips that drove that verdict were red as well. Colour is read as
+         * a judgement whatever the label says, so the verdict chip is gone and
+         * the signal chips are neutral. Red is left for one thing only: a state
+         * of THIS report, such as a template that could not be analysed. */
         StringBuilder chips = new StringBuilder()
-        String verdict = strOf(row, "suggestedClass")
-        if (!verdict.isEmpty()) {
-            chips.append(chip(verdict, verdict == "CLOUD_NATIVE_CANDIDATE" ? "ok" : (verdict == "FORGE_REQUIRED" ? "warn" : "neutral")))
-        }
 
         String bodyType = strOf(row, "bodyType")
         if (!bodyType.isEmpty()) {
@@ -943,19 +1151,19 @@ class Uma {
             chips.append(chip("Velocity logic", "ctx"))
         }
         if (boolOf(analysis, "usesPermissionLogic")) {
-            chips.append(chip("permission logic", "warn"))
+            chips.append(chip("permission logic", "ctx"))
         }
         if (boolOf(analysis, "usesContentMetadata")) {
             chips.append(chip("content metadata", "ctx"))
         }
         if (boolOf(analysis, "hasJavaScript")) {
-            chips.append(chip("JavaScript", "warn"))
+            chips.append(chip("JavaScript", "ctx"))
         }
         if (boolOf(analysis, "hasCss")) {
             chips.append(chip("CSS", "neutral"))
         }
         if (boolOf(analysis, "hasExternalResourceLoads")) {
-            chips.append(chip("loads from: " + joined(analysis, "externalResourceHosts", ", "), "warn"))
+            chips.append(chip("loads from: " + joined(analysis, "externalResourceHosts", ", "), "ctx"))
         }
 
         List<String> linkHosts = listOf(analysis, "externalLinkHosts")
@@ -970,7 +1178,7 @@ class Uma {
 
         List<String> methodCalls = listOf(analysis, "methodCalls")
         if (!methodCalls.isEmpty()) {
-            chips.append(chip(methodCalls.size() + " method call" + (methodCalls.size() == 1 ? "" : "s"), "warn"))
+            chips.append(chip(methodCalls.size() + " method call" + (methodCalls.size() == 1 ? "" : "s"), "ctx"))
         }
 
         List<String> embedded = listOf(analysis, "embeddedMacroCandidates")
@@ -1003,9 +1211,15 @@ class Uma {
             }
         }
 
-        String reason = strOf(row, "suggestedReason")
-        if (!reason.isEmpty()) {
-            cell.append("<div class=\"reason\">").append(esc(reason)).append("</div>")
+        /* The measured signals as text, under the chips. Same lines as the
+         * export, so what a reader assessed on screen is what the file says. */
+        List<String> signals = listOf(row, "signals")
+        if (!signals.isEmpty()) {
+            cell.append("<ul class=\"signals\">")
+            for (String signal : signals) {
+                cell.append("<li>").append(esc(signal)).append("</li>")
+            }
+            cell.append("</ul>")
         }
         if (!methodCalls.isEmpty()) {
             cell.append("<div class=\"calls\">").append(esc(methodCalls.join("  "))).append("</div>")
@@ -1013,11 +1227,16 @@ class Uma {
         return cell.toString()
     }
 
-    /* The Markdown export is the same endpoint with one parameter changed, so the
-     * button is a plain link and needs no script. The current options are carried
-     * over: a report filtered to one macro must export that same macro, not the
-     * whole instance. The name goes through URLEncoder - a macro name may contain
-     * a space or an ampersand, and an unencoded one would truncate the query. */
+    /* The Markdown export is the same endpoint with one parameter changed. The
+     * current options are carried over: a report filtered to one macro must
+     * export that same macro, not the whole instance. The name goes through
+     * URLEncoder - a macro name may contain a space or an ampersand, and an
+     * unencoded one would truncate the query.
+     *
+     * Since 4.0.0 the export itself is a POST (the marks and their free text do
+     * not fit in a URL) and this builds the completeness link only. The POST
+     * carries the SAME options as hidden fields; see exportFields below, which
+     * is deliberately written next to this. */
     static String href(String format, boolean withTemplate, boolean withAnalysis, boolean withShadowCheck, String nameFilter) {
         StringBuilder href = new StringBuilder("?format=").append(format)
         if (!withTemplate) {
@@ -1035,6 +1254,9 @@ class Uma {
         return href.toString()
     }
 
+    /* No longer on the page, and kept on purpose: ?format=md is still a valid
+     * GET and still renders the export, only without any marks, so this is the
+     * shape of that URL. The button on the page posts instead. */
     static String mdHref(boolean withTemplate, boolean withAnalysis, boolean withShadowCheck, String nameFilter) {
         return href("md", withTemplate, withAnalysis, withShadowCheck, nameFilter)
     }
@@ -1045,6 +1267,48 @@ class Uma {
      * finding needs. */
     static String checkHref(boolean withTemplate, boolean withAnalysis, String nameFilter) {
         return href("html", withTemplate, withAnalysis, true, nameFilter)
+    }
+
+    /* Relative on purpose, and without a query string. The report is served from
+     * .../custom/userMacros, so this resolves back onto the same endpoint under
+     * any Confluence context path, and every option then comes from the form
+     * rather than half from the URL the page happened to be opened with. */
+    static final String ENDPOINT_PATH = "userMacros"
+
+    static String hiddenField(String name, String value) {
+        return "<input type=\"hidden\" name=\"" + esc(name) + "\" value=\"" + esc(value) + "\">"
+    }
+
+    /* The options href() puts in a query string, as hidden fields. Both shapes
+     * carry the same four, and they have to stay in step. */
+    static String exportFields(boolean withTemplate, boolean withAnalysis, boolean withShadowCheck, String nameFilter) {
+        StringBuilder fields = new StringBuilder()
+        fields.append(hiddenField("format", "md"))
+        fields.append(hiddenField("template", withTemplate ? "true" : "false"))
+        fields.append(hiddenField("analyze", withAnalysis ? "true" : "false"))
+        fields.append(hiddenField("shadowCheck", withShadowCheck ? "true" : "false"))
+        if (nameFilter != null && !nameFilter.isEmpty()) {
+            fields.append(hiddenField("name", nameFilter))
+        }
+        return fields.toString()
+    }
+
+    /* The three fields of one row: the macro name, which travels in a hidden
+     * field because an unticked checkbox sends nothing at all, the tick and the
+     * remark. Indexed, so the three stay together on the way back. */
+    static String markCell(Map row, int index) {
+        String name = strOf(row, "name")
+        StringBuilder cell = new StringBuilder()
+        cell.append(hiddenField("macro." + index, name))
+        cell.append("<label class=\"mark\"><input type=\"checkbox\" name=\"needed.")
+            .append(index).append("\" value=\"true\"")
+            .append(boolOf(row, "stillNeeded") ? " checked" : "")
+            .append("> still needed</label>")
+        cell.append("<textarea name=\"remark.").append(index)
+            .append("\" rows=\"3\" placeholder=\"Remark\">")
+            .append(esc(strOf(row, "remark"))).append("</textarea>")
+        cell.append("<div class=\"decision\">").append(esc(strOf(row, "decision"))).append("</div>")
+        return cell.toString()
     }
 
     /* Not-requested is the default state of every report and therefore says
@@ -1100,7 +1364,27 @@ class Uma {
         return out.toString()
     }
 
-    static String toHtml(List<Map> rows, boolean readComplete, List<String> diagnostics, Map shadow, String mdHref, String checkHref) {
+    /* The unmarked macros, stated before the inventory rather than inside it.
+     * The rule that follows from the mark deletes work, so it gets its own
+     * block: the count, the consequence, and every name it applies to. */
+    static String marksHtml(Map summary) {
+        StringBuilder out = new StringBuilder()
+        List<String> unassessed = listOf(summary, "unassessedNames")
+        out.append("<div class=\"alert marks").append(unassessed.isEmpty() ? " ok" : "")
+            .append("\"><strong>").append(esc(unassessedLine(summary))).append("</strong> ")
+            .append(esc(strOf(summary, "rule")))
+        if (!unassessed.isEmpty()) {
+            out.append("<ul>")
+            for (String name : unassessed) {
+                out.append("<li>").append(esc(name)).append("</li>")
+            }
+            out.append("</ul>")
+        }
+        out.append("</div>\n")
+        return out.toString()
+    }
+
+    static String toHtml(List<Map> rows, boolean readComplete, List<String> diagnostics, Map shadow, String exportFields, String checkHref) {
         StringBuilder out = new StringBuilder()
         out.append("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n")
         out.append("<title>Confluence User Macros</title>\n<style>\n")
@@ -1122,7 +1406,7 @@ h1{margin:0;font-size:20px}
 table{width:100%;border-collapse:collapse;table-layout:fixed}
 th,td{border:1px solid #dfe1e6;padding:10px 12px;vertical-align:top;text-align:left}
 th{background:#f4f5f7;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:#5e6c84}
-col.c1{width:16%}col.c2{width:36%}col.c3{width:48%}
+col.c1{width:14%}col.c2{width:30%}col.c3{width:40%}col.c4{width:16%}
 td.name{font-weight:600;word-break:break-word}
 td.name .key{display:block;margin-top:2px;font-weight:400;font-size:12px;color:#5e6c84}
 .title{font-weight:600;margin-bottom:2px}
@@ -1141,8 +1425,20 @@ td.name .key{display:block;margin-top:2px;font-weight:400;font-size:12px;color:#
 .documented dt{font-weight:600}
 .documented dd{margin:0;word-break:break-word}
 .claims{margin:6px 0 0;padding-left:18px;font-size:12px;color:#bf2600}
-.reason{margin-top:8px;font-size:12px;color:#5e6c84}
+.signals{margin:8px 0 0;padding-left:18px;font-size:12px;color:#5e6c84}
 .calls{margin-top:4px;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#5e6c84;word-break:break-all}
+.alert.marks ul{columns:2;margin-top:8px}
+form{counter-reset:assessed}
+td.mark{background:#fafbfc}
+label.mark{display:block;font-weight:600;margin-bottom:6px}
+label.mark input{margin-right:6px}
+td.mark input[type=checkbox]:checked{counter-increment:assessed}
+td.mark textarea{width:100%;font-family:inherit;font-size:13px;line-height:1.4;padding:6px;border:1px solid #dfe1e6;border-radius:3px;background:#fff;color:inherit;resize:vertical}
+.decision{margin-top:6px;font-size:12px;color:#5e6c84}
+.bar{position:sticky;bottom:0;display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:16px;padding:10px 12px;background:#f4f5f7;border-top:2px solid #dfe1e6}
+.tally{font-weight:600;white-space:nowrap}
+.tally::before{content:counter(assessed)}
+.barnote{flex:1 1 320px;font-size:12px;color:#5e6c84}
 pre{margin:0;max-height:420px;overflow:auto;padding:10px;background:#f4f5f7;border-radius:3px;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
 .none{color:#97a0af;font-style:italic}
 @media (prefers-color-scheme:dark){
@@ -1158,6 +1454,9 @@ pre{background:#22272b}
 .chip.warn{background:#5d1f1a;color:#ffd5d2}
 .chip.muted{border-color:#454f59;color:#8c9bab}
 .claims{color:#ff9c8f}
+td.mark{background:#22272b}
+td.mark textarea{background:#1d2125;color:#c7d1db;border-color:#454f59}
+.bar{background:#22272b;border-top-color:#454f59}
 }
 ''')
         out.append("</style>\n</head>\n<body>\n")
@@ -1167,14 +1466,14 @@ pre{background:#22272b}
             out.append("<a class=\"btn secondary\" href=\"").append(esc(checkHref))
                 .append("\" title=\"compares the stored configuration against the library and names user macros hidden by a plugin macro of the same name\">Check completeness</a>")
         }
-        out.append("<a class=\"btn\" href=\"").append(esc(mdHref))
-            .append("\" title=\"for postprocessing using your preferred LLM\">Save as .md</a>")
         out.append("</div>\n</div>\n")
         out.append("<p class=\"meta\">").append(rows.size()).append(" library-visible macro")
             .append(rows.size() == 1 ? "" : "s").append(" &middot; source UserMacroLibrary &middot; read-only &middot; ")
             .append("Velocity comments excluded from the analysis &middot; v")
             .append(esc(VERSION)).append("<br>").append(esc(SCOPE_CAVEAT)).append("</p>\n")
 
+        Map summary = markSummary(rows)
+        out.append(marksHtml(summary))
         out.append(shadowHtml(shadow))
 
         if (!readComplete || !diagnostics.isEmpty()) {
@@ -1189,9 +1488,18 @@ pre{background:#22272b}
             out.append("</ul></div>\n")
         }
 
-        out.append("<table>\n<colgroup><col class=\"c1\"><col class=\"c2\"><col class=\"c3\"></colgroup>\n")
-        out.append("<thead><tr><th>Macro</th><th>Function / description</th><th>Content</th></tr></thead>\n<tbody>\n")
+        /* Everything from here down is one form. The marks and their free text
+         * go back to this same endpoint by POST, and the SERVER renders the
+         * export - a renderer in the browser would be a second copy of the same
+         * output, which is what this repository has a drift gate against. */
+        out.append("<form method=\"post\" action=\"").append(esc(ENDPOINT_PATH)).append("\">\n")
+        out.append(exportFields == null ? "" : exportFields).append("\n")
 
+        out.append("<table>\n<colgroup><col class=\"c1\"><col class=\"c2\"><col class=\"c3\"><col class=\"c4\"></colgroup>\n")
+        out.append("<thead><tr><th>Macro</th><th>Function / description</th><th>Content</th>")
+            .append("<th>Still needed?</th></tr></thead>\n<tbody>\n")
+
+        int index = 0
         for (Map row : rows) {
             String name = strOf(row, "name")
             String key = strOf(row, "macroKey")
@@ -1211,14 +1519,29 @@ pre{background:#22272b}
             } else {
                 out.append("<pre>").append(esc(template)).append("</pre>")
             }
-            out.append("</td></tr>\n")
+            out.append("</td><td class=\"mark\">").append(markCell(row, index)).append("</td></tr>\n")
+            index++
         }
 
         if (rows.isEmpty()) {
-            out.append("<tr><td colspan=\"3\" class=\"none\">No user macros found.</td></tr>\n")
+            out.append("<tr><td colspan=\"4\" class=\"none\">No user macros found.</td></tr>\n")
         }
 
-        out.append("</tbody>\n</table>\n</body>\n</html>\n")
+        out.append("</tbody>\n</table>\n")
+
+        /* The running count is a CSS counter over the ticked boxes, because this
+         * page carries no script by design: macro content is rendered here, and
+         * the assertion that nothing on this page executes is worth more than a
+         * live number. It sits BELOW the table because a CSS counter can only be
+         * read after the elements it counts. */
+        out.append("<div class=\"bar\">\n<span class=\"tally\"></span><span> of ")
+            .append(rows.size()).append(" assessed</span>\n")
+        out.append("<span class=\"barnote\">These marks are NOT saved in Confluence. ")
+            .append("They live in this page only and are lost when you leave it. ")
+            .append("The export below is the only thing that carries them.</span>\n")
+        out.append("<button class=\"btn\" type=\"submit\" ")
+            .append("title=\"for postprocessing using your preferred LLM\">Save as .md</button>\n")
+        out.append("</div>\n</form>\n</body>\n</html>\n")
         return out.toString()
     }
 
@@ -1310,15 +1633,16 @@ Rules:
    paraphrase of a summary.
 2. Anything you cannot support from a primary source becomes MANUAL_REVIEW with
    a reason. Do not guess.
-3. The "Heuristic pre-sort" line in each section is this script's text analysis
-   and explicitly NOT a verdict. Derive your assessment from the template
-   yourself; the pre-sort must not stand in for it.
-4. Describe WHAT the macro does functionally first, and only then whether Cloud
+3. Describe WHAT the macro does functionally first, and only then whether Cloud
    can do it. The recorded description is often empty or stale - the template is
    the source of truth.
-5. For CLOUD_NATIVE and CLOUD_NATIVE_REDESIGN, name the concrete Cloud capability
+4. For CLOUD_NATIVE and CLOUD_NATIVE_REDESIGN, name the concrete Cloud capability
    (macro, editor feature, product feature), not merely "possible natively".
-6. For FORGE_REQUIRED, state which Forge module and which scopes would be needed.
+5. For FORGE_REQUIRED, state which Forge module and which scopes would be needed.
+6. Every macro carries an administrator decision. Assess only the macros marked
+   `still needed`. A macro marked `not assessed - treated as obsolete` is out of
+   scope: record it as OBSOLETE, give that decision as the reason, and do not
+   research it. The count and the names are stated above the inventory.
 
 ## Required deliverable: the Cloud native Yes/No column
 
@@ -1441,6 +1765,21 @@ one-to-one port is ruled out.
 
         out.append("> **").append(SCOPE_CAVEAT).append("**\n\n")
 
+        /* Before anything else, and on its own. The unmarked macros are dropped
+         * from the assessment by a rule, and a rule that removes work has to be
+         * read before the work starts, not found in a column further down. */
+        Map summary = markSummary(rows)
+        out.append("> **").append(unassessedLine(summary)).append("** ")
+        out.append(strOf(summary, "rule")).append("\n")
+        List<String> unassessed = listOf(summary, "unassessedNames")
+        if (!unassessed.isEmpty()) {
+            out.append(">\n")
+            for (String name : unassessed) {
+                out.append("> - ").append(mdCell(name)).append("\n")
+            }
+        }
+        out.append("\n")
+
         out.append("> **Confidentiality.** This file contains the complete templates of every\n")
         out.append("> user macro in the instance. Those can carry internal host names, group\n")
         out.append("> names, paths or embedded credentials. Review before handing it to an\n")
@@ -1485,7 +1824,12 @@ one-to-one port is ruled out.
             out.append("| Has body | ").append(mdCell(row.get("hasBody"))).append(" |\n")
             out.append("| Hidden | ").append(mdCell(row.get("hidden"))).append(" |\n")
             out.append("| Categories | ").append(mdCell(mdList(listOf(row, "categories")))).append(" |\n")
-            out.append("| Documentation | ").append(mdCell(row.get("documentationUrl"))).append(" |\n\n")
+            out.append("| Documentation | ").append(mdCell(row.get("documentationUrl"))).append(" |\n")
+            /* The remark is text a human typed on the report page. It goes
+             * through mdCell like any other foreign text: an unescaped pipe
+             * would silently shift the row it sits in. */
+            out.append("| Administrator decision | ").append(mdCell(row.get("decision"))).append(" |\n")
+            out.append("| Administrator remark | ").append(mdCell(row.get("remark"))).append(" |\n\n")
 
             Object rawParameters = row.get("parameters")
             List<Map> parameters = new ArrayList<Map>()
@@ -1563,9 +1907,16 @@ one-to-one port is ruled out.
                 out.append("| Code lines | ").append(mdCell(analysis.get("codeLines"))).append(" |\n")
                 out.append("| Comment lines | ").append(mdCell(analysis.get("commentLines"))).append(" |\n\n")
 
-                out.append("**Heuristic pre-sort, NOT a verdict:** ")
-                    .append(strOf(row, "suggestedClass"))
-                    .append(" - ").append(strOf(row, "suggestedReason")).append("\n\n")
+                List<String> signals = listOf(row, "signals")
+                out.append("**Signals** (measured, no assessment attached)\n\n")
+                if (signals.isEmpty()) {
+                    out.append("None of the signals above were found.\n\n")
+                } else {
+                    for (String signal : signals) {
+                        out.append("- ").append(signal).append("\n")
+                    }
+                    out.append("\n")
+                }
             } else {
                 out.append("**Detected dependencies:** not analysed (`analyze=false`).\n\n")
             }
@@ -1594,10 +1945,16 @@ one-to-one port is ruled out.
         out.append("`CLOUD_NATIVE_REDESIGN` maps, then fill the table completely, one row ")
         out.append("per macro, and justify each assessment per macro below it.\n\n")
         out.append("Mapping rule used: _______________________________________________\n\n")
-        out.append("| Macro | Functional purpose | DC dependencies | Cloud solution | Classification | Cloud native Y/N | Evidence (doc URL) |\n")
-        out.append("| --- | --- | --- | --- | --- | --- | --- |\n")
+        out.append("| Macro | Administrator decision | Functional purpose | DC dependencies | Cloud solution | Classification | Cloud native Y/N | Evidence (doc URL) |\n")
+        out.append("| --- | --- | --- | --- | --- | --- | --- | --- |\n")
         for (Map row : rows) {
-            out.append("| ").append(mdCell(row.get("name"))).append(" |  |  |  |  |  |  |\n")
+            /* The decision is pre-filled, the rest is the analyst's to fill. A
+             * row that says "not assessed" is a row nobody has to research. */
+            String remark = strOf(row, "remark")
+            out.append("| ").append(mdCell(row.get("name")))
+                .append(" | ").append(mdCell(strOf(row, "decision") +
+                    (remark.isEmpty() ? "" : " - " + remark)))
+                .append(" |  |  |  |  |  |  |\n")
         }
         out.append("\n")
         return out.toString()
@@ -1707,6 +2064,21 @@ one-to-one port is ruled out.
         Object raw = duck(queryParams, "getFirst", name)
         return raw == null ? null : raw.toString()
     }
+
+    /* One option, whichever way the request carried it. On POST the form holds
+     * the whole request, so it is read first: the page posts to the endpoint
+     * without a query string, and a value left over in a URL must never overrule
+     * what the administrator submitted. On GET the form is empty and this is
+     * flag() unchanged. */
+    static String option(Object queryParams, Map form, String name, String fallback) {
+        String posted = strOf(form, name).trim()
+        return posted.isEmpty() ? flag(queryParams, name, fallback) : posted.toLowerCase()
+    }
+
+    static String optionText(Object queryParams, Map form, String name) {
+        String posted = strOf(form, name).trim()
+        return posted.isEmpty() ? firstParam(queryParams, name) : posted
+    }
 }
 
 /* =============================================================================
@@ -1726,19 +2098,24 @@ one-to-one port is ruled out.
  * =============================================================================
  */
 
-userMacros(
-    httpMethod: "GET",
-    groups: ["confluence-administrators"]
-) { queryParams, body ->
+/* The report, registered below for GET and for POST. Both run this same closure:
+ * POST carries the administrator's marks and their free text, which do not fit
+ * in a query string, and it CHANGES NOTHING in Confluence. It is a rendering
+ * call. The alternative - building the export in the browser from a copy of this
+ * renderer - is exactly the drift tools/shared-renderer-drift.py exists against. */
+Closure report = { queryParams, body ->
 
     /* JAX-RS Response, resolved at runtime (javax / jakarta neutral). */
     Class responseClass = Uma.resolveResponseClass()
 
-    String format = Uma.flag(queryParams, "format", "html")
-    boolean withTemplate = Uma.flag(queryParams, "template", "true") != "false"
-    boolean withAnalysis = Uma.flag(queryParams, "analyze", "true") != "false"
-    boolean withShadowCheck = Uma.flag(queryParams, "shadowCheck", "false") == "true"
-    String nameFilter = Uma.firstParam(queryParams, "name")
+    /* Empty on GET. On POST it holds the options AND the marks. */
+    Map<String, String> form = Uma.parseForm(body instanceof String ? (String) body : null)
+
+    String format = Uma.option(queryParams, form, "format", "html")
+    boolean withTemplate = Uma.option(queryParams, form, "template", "true") != "false"
+    boolean withAnalysis = Uma.option(queryParams, form, "analyze", "true") != "false"
+    boolean withShadowCheck = Uma.option(queryParams, form, "shadowCheck", "false") == "true"
+    String nameFilter = Uma.optionText(queryParams, form, "name")
 
     List<String> diagnostics = new ArrayList<String>()
     boolean readComplete = true
@@ -1789,6 +2166,12 @@ userMacros(
 
     List<Map> macros = new ArrayList<Map>()
 
+    /* Defect F4: every name the library returned, collected BEFORE the name
+     * filter can drop anything. The shadow check compares the stored
+     * configuration against what the LIBRARY shows, and the filtered report is
+     * not that set. */
+    List<String> libraryNames = new ArrayList<String>()
+
     /* One macro, one failure domain. Every getter below can throw on a badly
      * deserialised definition, and previously only parameters and template were
      * guarded - so a single broken macro turned the whole export into a 500
@@ -1806,7 +2189,8 @@ userMacros(
         if (macroName == null || macroName.trim().isEmpty()) {
             macroName = entry.getKey()
         }
-        if (nameFilter != null && !nameFilter.equalsIgnoreCase(macroName)) {
+        libraryNames.add(macroName)
+        if (!Uma.matchesNameFilter(nameFilter, macroName)) {
             continue
         }
 
@@ -1856,7 +2240,7 @@ userMacros(
         if (withAnalysis) {
             Map analysis = Uma.analyze(template)
             row.analysis = analysis
-            row.putAll(Uma.suggest(analysis))
+            row.signals = Uma.signalsOf(analysis)
         }
 
         macros.add(row)
@@ -1869,14 +2253,17 @@ userMacros(
 
     macros.sort(Uma.byName())
 
+    /* The administrator's marks off the posted form, attached to every row. On a
+     * GET there is no form and every row reads "not assessed", which is the
+     * decision the rule makes, not a missing value. */
+    Uma.applyMarks(macros, Uma.marksIn(form))
+
     /* Opt-in, because it deserialises every Bandana value in the global context.
      * Never runs implicitly, and its absence is reported as UNKNOWN. */
     Map shadow = [:] as LinkedHashMap
     if (withShadowCheck) {
-        Set<String> visibleNames = new LinkedHashSet<String>()
-        for (Map row : macros) {
-            visibleNames.add(Uma.strOf(row, "name"))
-        }
+        /* Defect F4: built from libraryNames, NOT from the filtered rows. */
+        Set<String> visibleNames = Uma.libraryNameSet(libraryNames)
         try {
             shadow = Uma.resolveShadow(ComponentLocator.getComponent(PluginSettingsFactory.class), visibleNames)
         } catch (Exception error) {
@@ -1890,12 +2277,12 @@ userMacros(
     }
 
     if (format == "html") {
-        String href = Uma.mdHref(withTemplate, withAnalysis, withShadowCheck, nameFilter)
+        String fields = Uma.exportFields(withTemplate, withAnalysis, withShadowCheck, nameFilter)
         /* Offer the check only while it has not run - once it has, its result is
          * on the page and a second button would just invite a re-run. */
         String check = withShadowCheck ? null : Uma.checkHref(withTemplate, withAnalysis, nameFilter)
         return Uma.ok(responseClass,
-            Uma.toHtml(macros, readComplete, diagnostics, shadow, href, check), Uma.HTML, null)
+            Uma.toHtml(macros, readComplete, diagnostics, shadow, fields, check), Uma.HTML, null)
     }
 
     if (format == "md" || format == "markdown") {
@@ -1919,6 +2306,7 @@ userMacros(
     payload.templateIncluded = withTemplate
     payload.analysisIncluded = withAnalysis
     payload.shadowCheck = shadow
+    payload.assessment = Uma.markSummary(macros)
     payload.source = "com.atlassian.confluence.renderer.UserMacroLibrary"
     payload.commentsExcludedFromAnalysis = true
     payload.writeOperationsPerformed = false
@@ -1927,3 +2315,10 @@ userMacros(
 
     return Uma.ok(responseClass, JsonOutput.prettyPrint(JsonOutput.toJson(payload)), Uma.JSON, null)
 }
+
+/* Two registrations, one closure. GET renders the report and asks for the marks;
+ * POST renders the export from the marks it was given. Neither writes anything
+ * to Confluence, and both go through Uma.build, so the no-store headers and
+ * nosniff are on every response of either method. */
+userMacros(httpMethod: "GET", groups: ["confluence-administrators"], report)
+userMacros(httpMethod: "POST", groups: ["confluence-administrators"], report)

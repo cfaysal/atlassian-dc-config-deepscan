@@ -4,6 +4,62 @@ All notable changes to this project are documented here. Each endpoint carries i
 version, declared once in its helper class and printed by every output channel, so the
 sections below are grouped by endpoint rather than by a single repository version.
 
+## userMacroDeepScan 4.0.0 - unreleased
+
+### Removed, and the reason it is a major version
+
+- **The heuristic pre-sort is gone.** `suggestedClass` and `suggestedReason` no longer appear
+  in JSON, CSV, HTML or Markdown, the HTML chip that carried the verdict in green and amber
+  is gone with them, and the rule in the embedded brief that warned readers about the
+  pre-sort is gone because there is nothing left to warn about. Measured against the
+  evidenced assessment it was meant to feed: the pre-sort said `FORGE_REQUIRED` 33 times
+  where that assessment reached 12. Labelling a verdict "heuristic" does not stop it being
+  read as a verdict, and a wrong one is worse than none. This breaks the output contract,
+  which is what the major version is for.
+
+### Added
+
+- **The signals stayed.** The same five measurements the pre-sort weighed are reported as
+  plain lines under `signals`, in all four formats: permission logic, JavaScript, resource
+  loads with their host, the number of method calls, the context objects. Plus the linked
+  hosts, still told apart from the loaded ones. No line says what it is worth. The four HTML
+  chips that used to be red because they drove the verdict are neutral now; red is left for
+  a state of the report itself, such as a template that could not be analysed.
+- **The administrator marks the macros that are still needed.** Per macro, the HTML report
+  offers a tick and a free text remark. An unmarked macro counts as obsolete and is not
+  researched. That rule removes work, so it is stated rather than applied quietly: every
+  export carries a line of its own, above the inventory, naming how many macros went unmarked
+  and which, and the HTML page keeps a running count and says plainly that the marks are not
+  saved in Confluence and are lost when the page is left.
+- The decision and the remark appear per macro in HTML, Markdown, JSON and CSV, and in the
+  Markdown result table as a column of its own. The remark is user text, so it goes through
+  the same gate as macro content in each format: `esc()`, `mdCell()`, `csvCell()` with the
+  leading `=`, `+`, `-`, `@` neutralisation.
+- **The export is a POST.** The Save as .md button became a form against the same endpoint,
+  carrying `template`, `analyze`, `shadowCheck` and `name` as hidden fields. A page of typed
+  remarks does not fit in a query string, and a renderer in the browser would be a second
+  copy of output this repository has a drift gate against, so the server renders. The
+  endpoint remains READ-ONLY: the POST is a rendering call, it has no write path in either
+  method, and every response of both carries the no-store headers and nosniff. The JAX-RS
+  namespace is still resolved reflectively; no `jakarta` or `javax` import was added.
+
+### Fixed
+
+- **F4, major.** With `?name=X&shadowCheck=true` the completeness check reported every other
+  stored user macro as hidden by a plugin macro and put `visibleMacroCount` at 1. The set of
+  visible names was built from the list the name filter had already reduced, while the check
+  asks what the LIBRARY shows. It is built from the unfiltered pass now. Reachable with one
+  click, because the completeness button carries the name filter with it.
+- Same defect, second half: the name filter compared with `equalsIgnoreCase` while the shadow
+  comparison was case-sensitive, so a macro stored under one casing and returned under
+  another read as hidden. Both sides fold now.
+- **F6, major.** The offline suite compiles only the block above the
+  `END OF THE OFFLINE-TESTABLE BLOCK` banner, so the endpoint closure ran in no test - and
+  F4 sat in that closure. The name-set building, the name filter and the whole mark
+  evaluation are static `Uma` helpers now, inside the cut block and under test. The suite
+  grew from 208 to 309 assertions, including one that combines the name filter with
+  `shadowCheck` and proves the filtered-out macros do not land in `hiddenMacroNames`.
+
 ## userMacroDeepScan 3.6.0 - unreleased
 
 ### Added
