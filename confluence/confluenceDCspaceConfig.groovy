@@ -185,15 +185,22 @@ import com.atlassian.confluence.themes.ThemeManager
  * com.atlassian.confluence.api.service.content.SpaceService, and that type is a
  * Spring AOP proxy: the resolution throws on two independent Confluence 10.2.14
  * instances, saying that org.springframework.aop.SpringProxy is not visible from
- * the ScriptRunner chaining classloader. The set was carried over from the App
- * Footprint sibling because it runs THERE, which is a different measurement from
- * running here, and this file already records the same failure for
- * SpacePropertyService and for EffectiveSpacePermissionsCalculator. The picker
+ * the ScriptRunner chaining classloader. This file already records the same failure
+ * for SpacePropertyService and for EffectiveSpacePermissionsCalculator. The picker
  * reads the SPACES table instead.
+ *
+ * The set was carried over from the App Footprint sibling on the assumption that it
+ * ran THERE. That assumption is now disproven and this note is corrected on OP-1063:
+ * the sibling's space picker threw the identical SpringProxy IllegalArgumentException
+ * on a customer instance, so the type was never working anywhere. The sibling reads
+ * the SPACES table now as well. Read no more into this than it says: it is a finding
+ * about ONE proxied type. api.service.settings is untouched by it, and this same file
+ * imports and runs ExtendedPluginSettings and ExtendedPluginSettingsFactory out of
+ * that package on the same instance line.
  *
  * com.atlassian.confluence.content.service is the OLD content service layer and a
  * different thing altogether: it is not proxied, it is measured working here, and
- * PageService below is one of its types. Nothing about the proxied API layer says
+ * PageService below is one of its types. Nothing about the proxied type above says
  * anything about it. */
 import com.atlassian.confluence.content.service.PageService
 import com.atlassian.confluence.core.BodyContent
@@ -6492,8 +6499,10 @@ class Cw {
      * saying that org.springframework.aop.SpringProxy is not visible from the
      * chaining classloader, and the picker then reported a failed read every time
      * it was opened. It is the same failure this file already records for
-     * SpacePropertyService and for EffectiveSpacePermissionsCalculator: the API
-     * service layer is a Spring proxy the chaining classloader cannot use.
+     * SpacePropertyService and for EffectiveSpacePermissionsCalculator: each of
+     * those concrete types is a Spring proxy the chaining classloader cannot use.
+     * That is a statement about those types and not about api.service as a layer -
+     * api.service.settings is imported and running in this same file.
      *
      * The columns the shape check has to verify. The status is on the list because
      * the statement RESTRICTS on it: a column that vanished in an upgrade must
