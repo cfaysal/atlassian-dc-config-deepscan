@@ -904,6 +904,13 @@ class Uma {
     static final String DECISION_NEEDED = "still needed"
     static final String DECISION_UNMARKED = "not assessed - treated as obsolete"
 
+    /* The rule those two decisions come from, worded once. It is stated by every
+     * format that has room for a sentence, so it is a constant rather than a
+     * literal inside one renderer: the page and the exports cannot come to say
+     * different things about what an unmarked macro costs. */
+    static final String DECISION_RULE =
+        "A macro left unmarked counts as obsolete and is not researched."
+
     static String decisionOf(boolean stillNeeded) {
         return stillNeeded ? DECISION_NEEDED : DECISION_UNMARKED
     }
@@ -991,7 +998,7 @@ class Uma {
         summary.assessed = assessed
         summary.unassessed = unassessed.size()
         summary.unassessedNames = unassessed
-        summary.rule = "A macro left unmarked counts as obsolete and is not researched."
+        summary.rule = DECISION_RULE
         return summary
     }
 
@@ -1061,11 +1068,11 @@ class Uma {
                 csvCell(analysis.get("usesPermissionLogic")),
                 csvCell(analysis.get("usesContentMetadata")),
                 csvCell(joined(row, "signals", "; ")),
+                csvCell(row.get("stillNeeded")),
+                csvCell(row.get("decision")),
                 /* The remark is text an administrator typed, so it is exactly as
                  * dangerous in a spreadsheet as a macro title and goes through
                  * the same neutralisation. */
-                csvCell(row.get("stillNeeded")),
-                csvCell(row.get("decision")),
                 csvCell(row.get("remark"))
             ]
             csv.append(cells.join(",")).append("\n")
@@ -1542,11 +1549,11 @@ td.mark textarea{background:#1d2125;color:#c7d1db;border-color:#454f59}
         out.append("<div class=\"bar\">\n<span class=\"tally\"></span><span> of ")
             .append(rows.size()).append(" assessed</span>\n")
         /* The rule that deletes work sits here, in one sentence, next to the
-         * button that acts on it. Its wording is read from the same summary the
-         * exports use, so the page and the file cannot come to say different
-         * things. */
-        Map summary = markSummary(rows)
-        out.append("<span class=\"barnote\">").append(esc(strOf(summary, "rule")))
+         * button that acts on it. Same constant the exports state, so the page
+         * and the file cannot come to say different things. The page reads
+         * nothing else off the summary: what is assessed is the tally above,
+         * counted in CSS. */
+        out.append("<span class=\"barnote\">").append(esc(DECISION_RULE))
             .append(" These marks are NOT saved in Confluence. ")
             .append("They live in this page only and are lost when you leave it. ")
             .append("The export below is the only thing that carries them.</span>\n")
