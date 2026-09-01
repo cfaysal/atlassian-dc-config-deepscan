@@ -814,8 +814,18 @@ check("html.remarkEscaped", markedHtml.contains("owner &lt;HR&gt; | still used")
 check("html.remarkNotRendered", markedHtml.contains("owner <HR>"), false)
 check("html.decisionShown",
     markedHtml.contains('<div class="decision">' + Uma.DECISION_UNMARKED + '</div>'), true)
-check("html.unassessedBanner", markedHtml.contains("1 of 2 macros were NOT assessed"), true)
-check("html.unassessedNamed", markedHtml.contains("<li>old-box</li>"), true)
+/* No head banner on the interactive page, and no second copy of the name list.
+ * Zero marks is the state every report OPENS in, so a block that fires on it is
+ * read once and skipped from then on, and the table already says per row whether
+ * a macro is marked. The rule is not gone: it moved to the bar, one sentence
+ * beside the button that acts on it, worded from the same summary the exports
+ * use so the two cannot drift apart. */
+check("html.noUnassessedBanner", markedHtml.contains("1 of 2 macros were NOT assessed"), false)
+check("html.noUnassessedNameList", markedHtml.contains("<li>old-box</li>"), false)
+check("html.ruleStatedInTheBar",
+    markedHtml.contains('<span class="barnote">' + Uma.strOf(summary, "rule")), true)
+check("html.ruleSitsBelowTheTable",
+    markedHtml.indexOf(Uma.strOf(summary, "rule")) > markedHtml.indexOf("</tbody>"), true)
 check("html.runningCount",
     markedHtml.contains('<span class="tally"></span><span> of 2 assessed</span>'), true)
 /* The count is a CSS counter because this page carries no script: macro content
@@ -831,6 +841,22 @@ check("html.noVerdictChip", markedHtml.contains("FORGE_REQUIRED"), false)
 check("html.noVerdictAtAll", markedHtml.contains("CLOUD_NATIVE"), false)
 check("html.emptyReportSpansFour", Uma.toHtml([], true, [], [:], exportFieldsDefault, null)
     .contains('colspan="4"'), true)
+
+/* A freshly opened report carries no marks at all, which is the case that put a
+ * block naming all 60 macros of the instance above the first table row. The page
+ * states the rule; it does not recite the inventory back before showing it. */
+List<Map> unmarkedOutput = [
+    [name: "info-box", macroKey: "info-box", template: "x",
+        parameters: [], categories: [], analysis: a1] as LinkedHashMap,
+    [name: "old-box", macroKey: "old-box", template: "y",
+        parameters: [], categories: [], analysis: Uma.analyze("y")] as LinkedHashMap] as List<Map>
+Uma.applyMarks(unmarkedOutput, [:])
+String unmarkedHtml = Uma.toHtml(unmarkedOutput, true, [], [:], exportFieldsDefault, null)
+check("html.zeroMarksNoBanner", unmarkedHtml.contains("were NOT assessed"), false)
+check("html.zeroMarksNoNameList",
+    unmarkedHtml.contains("<li>info-box</li>") || unmarkedHtml.contains("<li>old-box</li>"), false)
+check("html.zeroMarksStillStatesTheRule",
+    unmarkedHtml.contains(Uma.strOf(Uma.markSummary(unmarkedOutput), "rule")), true)
 
 /* ---- the POST form carries the same options as the link it replaced -------- */
 

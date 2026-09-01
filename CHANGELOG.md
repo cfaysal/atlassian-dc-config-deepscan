@@ -27,10 +27,20 @@ sections below are grouped by endpoint rather than by a single repository versio
   a state of the report itself, such as a template that could not be analysed.
 - **The administrator marks the macros that are still needed.** Per macro, the HTML report
   offers a tick and a free text remark. An unmarked macro counts as obsolete and is not
-  researched. That rule removes work, so it is stated rather than applied quietly: every
-  export carries a line of its own, above the inventory, naming how many macros went unmarked
-  and which, and the HTML page keeps a running count and says plainly that the marks are not
-  saved in Confluence and are lost when the page is left.
+  researched. That rule removes work, so it is stated rather than applied quietly - but where
+  it is stated follows from what the reader is holding. The Markdown, JSON and CSV exports
+  carry the full caveat above the inventory, with the count, the consequence and the name of
+  every macro it applies to: in a file that has left the instance, the unassessed set is a
+  decision already taken. The interactive page carries the rule as a single sentence in the
+  bar at the bottom, beside the running count, the note that the marks are not saved in
+  Confluence and are lost when the page is left, and the export button. Those are the three
+  things that act on it.
+- **The interactive page opens with no alert block and no name list.** Zero marks is the state
+  every report starts in, so a block that fires on it is read once and skipped from the second
+  report on, and it spends on a default state the attention the real findings need. On the
+  reference instance it filled the top of the page with 60 of 60 macros by name before a
+  single table row was visible, while the table says per row whether a macro is marked. The
+  renderer that produced it is kept and unchanged; only its place in the view was wrong.
 - The decision and the remark appear per macro in HTML, Markdown, JSON and CSV, and in the
   Markdown result table as a column of its own. The remark is user text, so it goes through
   the same gate as macro content in each format: `esc()`, `mdCell()`, `csvCell()` with the

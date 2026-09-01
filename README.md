@@ -311,11 +311,17 @@ people running the instance, so the HTML report asks for it before the export: p
 **still needed** tick and a free text **remark**.
 
 **An unmarked macro counts as obsolete and is not researched.** That is a deliberate rule and
-it removes work, so nothing about it is quiet. Every export states in its own line, above the
-inventory, how many macros went unmarked and names them. The HTML page keeps a running count
-of how many of the macros have been marked, and says plainly that **the marks are not saved
-in Confluence**: they live in the page, they are lost when it is left, and the export is the
-only thing that carries them.
+it removes work, so nothing about it is quiet. The Markdown, JSON and CSV exports state it in
+a line of their own, above the inventory: how many macros went unmarked, what follows from
+that, and the name of every one of them. In a file that has left the instance, the unassessed
+set is a decision already taken.
+
+The interactive page states the same rule as one sentence in the bar at the bottom, next to
+the running count of marked macros, the plain statement that **the marks are not saved in
+Confluence** (they live in the page, they are lost when it is left) and the export button.
+It opens with no alert block and no list of names: no marks is the state every report starts
+in, a block that fires on it is read once and skipped from the second report on, and the
+table already says per row whether a macro is marked.
 
 The decision and the remark appear per macro in all four formats, and in the Markdown result
 table as a column of its own. The remark is text a human typed, so every renderer treats it

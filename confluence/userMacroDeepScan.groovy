@@ -1364,9 +1364,16 @@ class Uma {
         return out.toString()
     }
 
-    /* The unmarked macros, stated before the inventory rather than inside it.
-     * The rule that follows from the mark deletes work, so it gets its own
-     * block: the count, the consequence, and every name it applies to. */
+    /* The count, the consequence and every name it applies to, in one block.
+     *
+     * NO CALLER in the interactive page since 4.0.0, and kept rather than
+     * deleted. It headed the HTML report and was wrong there for the reason
+     * shadowHtml states above: zero marks is the state every report OPENS in, so
+     * the block fired on every first look, listed every macro in the instance
+     * before the first table row, and spent on a default state the attention the
+     * real finding needs. In an export the same list is a decision with
+     * consequences, which is why toMarkdown still states it. The renderer is
+     * unchanged and correct; only its place in the view was wrong. */
     static String marksHtml(Map summary) {
         StringBuilder out = new StringBuilder()
         List<String> unassessed = listOf(summary, "unassessedNames")
@@ -1472,8 +1479,6 @@ td.mark textarea{background:#1d2125;color:#c7d1db;border-color:#454f59}
             .append("Velocity comments excluded from the analysis &middot; v")
             .append(esc(VERSION)).append("<br>").append(esc(SCOPE_CAVEAT)).append("</p>\n")
 
-        Map summary = markSummary(rows)
-        out.append(marksHtml(summary))
         out.append(shadowHtml(shadow))
 
         if (!readComplete || !diagnostics.isEmpty()) {
@@ -1536,7 +1541,13 @@ td.mark textarea{background:#1d2125;color:#c7d1db;border-color:#454f59}
          * read after the elements it counts. */
         out.append("<div class=\"bar\">\n<span class=\"tally\"></span><span> of ")
             .append(rows.size()).append(" assessed</span>\n")
-        out.append("<span class=\"barnote\">These marks are NOT saved in Confluence. ")
+        /* The rule that deletes work sits here, in one sentence, next to the
+         * button that acts on it. Its wording is read from the same summary the
+         * exports use, so the page and the file cannot come to say different
+         * things. */
+        Map summary = markSummary(rows)
+        out.append("<span class=\"barnote\">").append(esc(strOf(summary, "rule")))
+            .append(" These marks are NOT saved in Confluence. ")
             .append("They live in this page only and are lost when you leave it. ")
             .append("The export below is the only thing that carries them.</span>\n")
         out.append("<button class=\"btn\" type=\"submit\" ")
