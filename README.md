@@ -10,7 +10,7 @@ link to the exact administration screen where it is maintained.
 
 | Script | Platform | Version |
 | --- | --- | --- |
-| [`jira/jiraDCprojectConfig.groovy`](jira/jiraDCprojectConfig.groovy) | Jira Data Center | 0.1 |
+| [`jira/jiraDCprojectConfig.groovy`](jira/jiraDCprojectConfig.groovy) | Jira Data Center | 0.2 |
 | [`confluence/userMacroDeepScan.groovy`](confluence/userMacroDeepScan.groovy) | Confluence Data Center | 4.1.0 |
 
 Typical uses: handing a project over to a new administrator, documenting a project before a

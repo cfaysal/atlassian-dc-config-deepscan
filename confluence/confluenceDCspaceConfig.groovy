@@ -249,12 +249,12 @@ import java.time.format.DateTimeFormatter
 
 class Pc {
 
-    static final String NA = "—"
+    static final String NA = "\u2014"
 
     /* The single place the report version lives. The file header points here and
      * every output channel prints this constant, so a report always names the
      * build that produced it. */
-    static final String VERSION = "0.1"
+    static final String VERSION = "0.2"
 
     /* Node states. A node is not just present or absent: it can be present but
      * unreadable, and the report has to keep those apart.
@@ -2692,13 +2692,17 @@ table.estate th.sortable:hover { color: var(--blue); }
 /* The sort direction is shown next to the heading rather than by colour alone,
    so a reader who cannot distinguish the colours can still tell which way the
    column is ordered.
-   The two glyphs are LITERAL characters, not CSS escapes. A CSS escape here is
-   read by Groovy first, where a backslash followed by digits is an OCTAL escape:
-   the same mistake put a raw control byte and the literal text "B8" on the page
-   once already, and a control byte in this file makes every text tool treat it as
-   binary. The rule is one escaping layer, never two. */
-table.estate th.sort-asc::after { content: " ↑"; }
-table.estate th.sort-desc::after { content: " ↓"; }
+   The two glyphs are GROOVY escapes, never CSS escapes. Groovy reads this string
+   first and turns \\u2191 into the character itself, so exactly one glyph reaches
+   the stylesheet. A CSS escape would be read by Groovy first, where a backslash
+   followed by digits is an OCTAL escape: that mistake put a raw control byte and
+   the literal text "B8" on the page once already, and a control byte in this file
+   makes every text tool treat it as binary. The rule is still one escaping layer,
+   never two - the escape is on the Groovy side because ScriptRunner compiles this
+   file with the default charset of the server JVM, and a raw byte above ASCII then
+   decodes to whatever that charset happens to be. */
+table.estate th.sort-asc::after { content: " \u2191"; }
+table.estate th.sort-desc::after { content: " \u2193"; }
 .export-note ul { margin: 6px 0 10px; padding-left: 20px; }
 .export-note li { margin: 2px 0; }
 .project-list .export-hit { display: block; }

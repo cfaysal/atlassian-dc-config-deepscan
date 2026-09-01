@@ -175,12 +175,12 @@ import java.time.format.DateTimeFormatter
 
 class Pc {
 
-    static final String NA = "—"
+    static final String NA = "\u2014"
 
     /* The single place the report version lives. The file header points here and
      * every output channel prints this constant, so a report always names the
      * build that produced it. */
-    static final String VERSION = "0.1"
+    static final String VERSION = "0.2"
 
     /* Node states. A node is not just present or absent: it can be present but
      * unreadable, and the report has to keep those apart. */

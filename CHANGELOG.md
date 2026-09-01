@@ -4,6 +4,30 @@ All notable changes to this project are documented here. Each endpoint carries i
 version, declared once in its helper class and printed by every output channel, so the
 sections below are grouped by endpoint rather than by a single repository version.
 
+## confluenceDCspaceConfig 0.2 and jiraDCprojectConfig 0.2
+
+### Changed
+
+- **Every glyph above ASCII is written as a `\uXXXX` escape, and a CI gate keeps it that
+  way.** Four raw characters sat in output strings: the `\u2014` placeholder in `NA` in both
+  endpoints, and the `\u2191` / `\u2193` sort arrows in the estate stylesheet. ScriptRunner
+  compiles a script with the DEFAULT charset of the server JVM, which is a property of the
+  customer's server and not of this repository. Measured on Groovy 3.0.21 with the identical
+  source file: the raw literal reads as the intended character under `-Dfile.encoding=UTF-8`,
+  as `U+FFFD` under `US-ASCII` and as mojibake under `ISO-8859-1`, while `\uXXXX` reads as the
+  intended character under all three, in every string form the file uses including the triple
+  quoted ones. The escape sits on the GROOVY side, so exactly one glyph still reaches the
+  stylesheet: the one-escaping-layer rule that the comment next to the arrows records is
+  unchanged, and a CSS escape there would still be the octal trap it warns about.
+- **New hygiene gate: no raw character above `U+007F` in a tracked Groovy file.** Same class
+  as the control-byte gate next to it and in the same place. It is written in Python rather
+  than as a `grep -P` pattern, because the control-byte gate is a `grep -P` with a `|| true`:
+  BSD grep has no `-P`, the error is swallowed, and the step reports green on a maintainer's
+  Mac without having read a byte - observed while writing this, `grep: invalid option -- P`
+  once per file, step result PASS. A gate that passes without checking is worse than none.
+  The existing control-byte gate is left as it is; changing it is not part of this work and
+  it does hold on the runner, which is GNU grep.
+
 ## userMacroDeepScan 4.1.0
 
 ### Changed
