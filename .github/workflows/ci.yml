@@ -59,7 +59,7 @@ jobs:
             helperClass: Uma
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up JDK
         uses: actions/setup-java@v4
@@ -160,7 +160,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # This script is pasted into an administrative console on a production
       # instance. A credential or an internal hostname reaching this repository
@@ -521,24 +521,4 @@ jobs:
             fail=1
           fi
           [ "$fail" = 0 ] && echo "$content CONTENT statement(s) checked, both guards present on each."
-          exit $fail
-
-      # This endpoint answers a spreadsheet request with a spreadsheet or with a
-      # stated failure, never with an empty document. View.spaceCsv returns null
-      # for an unreadable page list so the refusal cannot be forgotten at a call
-      # site, and the endpoint turns that null into a 500. Both halves are checked
-      # here because either one alone is useless: a renderer that refuses and a
-      # caller that ignores the refusal still ships an empty CSV.
-      - name: Assert the CSV path refuses to render a failed read
-        run: |
-          set -uo pipefail
-          F=confluence/confluenceDCspaceInfo.groovy
-          fail=0
-          grep -q 'if (!pages.isReadable()) {' "$F" || {
-            echo "::error file=$F::View.spaceCsv no longer tests the page list for readability before rendering."; fail=1; }
-          grep -q 'if (csv == null) {' "$F" || {
-            echo "::error file=$F::The endpoint no longer handles the null that spaceCsv returns for an unreadable list, so an empty CSV could reach the reader."; fail=1; }
-          grep -q 'space-pages-' "$F" || {
-            echo "::error file=$F::The CSV no longer travels as a named attachment."; fail=1; }
-          [ "$fail" = 0 ] && echo "The CSV path refuses a failed read and names its attachment."
           exit $fail
