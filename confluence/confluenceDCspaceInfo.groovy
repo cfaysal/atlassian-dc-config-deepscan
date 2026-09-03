@@ -78,7 +78,7 @@
  * Parameters
  *   space=<KEY>          none      without it and without find, the search box
  *   find=<text>          none      suggestions as JSON, from 2 characters
- *   format=html|json     default html
+ *   format=html|json|csv default html; csv needs a space and returns the page list
  *   limit=<n>            default 5000, hard maximum 20000, page list only
  * ========================================================================== */
 
@@ -201,12 +201,83 @@ class P {
     static String cell(Map<String, String> row, String column) {
         return row == null ? null : row.get(column)
     }
+
+    /* One CSV field.
+     *
+     * The separator is a semicolon, which is what a German-locale spreadsheet
+     * opens without an import dialogue. A field carrying the separator, a quote
+     * or a line break is wrapped and its inner quotes are doubled, which is the
+     * whole of RFC 4180 that matters here.
+     *
+     * The leading apostrophe is not cosmetic. A page titled "=cmd|..." is a
+     * FORMULA to Excel and to LibreOffice, and it executes on open. Page titles
+     * are written by anyone who can create a page, so this file must not hand a
+     * spreadsheet something it will run. */
+    static String csv(Object value) {
+        String text = value == null ? "" : value.toString()
+        /* A page titled "=cmd|..." is a FORMULA to Excel and to LibreOffice, and
+         * it runs when the file is opened. Page titles are written by anyone who
+         * can create a page, so a leading formula character is disarmed with an
+         * apostrophe before the field is ever quoted. */
+        if (text.length() > 0 && "=+-@".indexOf((int) text.charAt(0)) >= 0) {
+            text = "'" + text
+        }
+        boolean needsQuotes = text.indexOf(";") >= 0 || text.indexOf("\"") >= 0
+        for (int index = 0; index < text.length() && !needsQuotes; index++) {
+            char c = text.charAt(index)
+            if (c == ((char) 10) || c == ((char) 13)) {
+                needsQuotes = true
+            }
+        }
+        if (needsQuotes) {
+            return "\"" + text.replace("\"", "\"\"") + "\""
+        }
+        return text
+    }
+
+    /* The page list as a spreadsheet, or NULL when the list could not be read.
+     *
+     * Null rather than an empty document, and the caller turns that into a 500
+     * with the reason. A CSV has no place to put a banner: an empty file and a
+     * failed read look identical once they are open in a spreadsheet, and the
+     * reader would conclude the space holds no pages. That is the one confusion
+     * this whole endpoint exists to prevent, so the file is not produced at all.
+     *
+     * The cut travels on EVERY row for the same reason. A cap announced once, in
+     * a header comment a spreadsheet does not show, is a cap nobody sees. */
+    static String spaceCsv(Rows pages, String spaceKey, String order) {
+        if (!pages.isReadable()) {
+            return null
+        }
+        String state = pages.truncated ? "truncated" : "complete"
+        String cap = pages.truncated ? String.valueOf(pages.cap) : ""
+        String cutBy = pages.truncated ? order : ""
+        StringBuilder out = new StringBuilder()
+        out.append("spaceKey;title;contentId;createdBy;created;lastModifiedBy;lastModified;")
+        out.append("listState;listCap;listOrder\n")
+        for (Map<String, String> row : pages.rows) {
+            out.append(csv(spaceKey)).append(";")
+            out.append(csv(P.orNa(P.cell(row, "title")))).append(";")
+            out.append(csv(P.orNa(P.cell(row, "contentid")))).append(";")
+            out.append(csv(P.user(P.cell(row, "creatordisplay"), P.cell(row, "creatorname"),
+                P.cell(row, "creator")))).append(";")
+            out.append(csv(P.orNa(P.cell(row, "creationdate")))).append(";")
+            out.append(csv(P.user(P.cell(row, "modifierdisplay"), P.cell(row, "modifiername"),
+                P.cell(row, "lastmodifier")))).append(";")
+            out.append(csv(P.orNa(P.cell(row, "lastmoddate")))).append(";")
+            out.append(csv(state)).append(";")
+            out.append(csv(cap)).append(";")
+            out.append(csv(cutBy)).append("\n")
+        }
+        return out.toString()
+    }
 }
 
 class Rest {
 
     static final String HTML = "text/html; charset=UTF-8"
     static final String JSON = "application/json; charset=UTF-8"
+    static final String CSV = "text/csv; charset=UTF-8"
 
     static Class responseClass() {
         try {
@@ -217,6 +288,11 @@ class Rest {
     }
 
     static Object build(Class type, int status, String entity, String contentType) {
+        return build(type, status, entity, contentType, null, null)
+    }
+
+    static Object build(Class type, int status, String entity, String contentType,
+                        String headerName, String headerValue) {
         Object builder
         if (status == 200) {
             builder = P.duck(type, "ok", [entity] as Object[])
@@ -225,6 +301,9 @@ class Rest {
             builder = P.duck(builder, "entity", [entity] as Object[])
         }
         builder = P.duck(builder, "type", [contentType] as Object[])
+        if (headerName != null && headerValue != null) {
+            builder = P.duck(builder, "header", [headerName, headerValue] as Object[])
+        }
         return P.duck(builder, "build", new Object[0])
     }
 }
@@ -833,6 +912,21 @@ spaceInfo(
 
     if ("picker".equals(result.get("kind"))) {
         Rows total = (Rows) result.get("total")
+
+        /* There is no estate CSV, because there is no estate view. Answering the
+         * picker page as a spreadsheet would hand back a search box in a column,
+         * so the request is refused with the reason rather than served with
+         * something that is not what was asked for. */
+        if (format == "csv") {
+            Map<String, Object> refusal = new LinkedHashMap<String, Object>()
+            refusal.put("ok", Boolean.FALSE)
+            refusal.put("stage", "request")
+            refusal.put("error", "A CSV is produced for one space. Name it with the space " +
+                "parameter, for example space=DEV&format=csv.")
+            refusal.put("executionMs", Long.valueOf(elapsed))
+            return Rest.build(rest, 400,
+                JsonOutput.prettyPrint(JsonOutput.toJson(refusal)), Rest.JSON)
+        }
         String spaceCount = total.isReadable() && !total.isEmpty()
             ? P.orNa(P.cell(total.first(), "spaces")) : null
 
@@ -946,6 +1040,26 @@ spaceInfo(
             ? "The aggregate returned no row, which an aggregate cannot do. Nothing is claimed."
             : null)
         : counts.failure
+
+    /* The spreadsheet. It sits before the JSON branch because a failed page read
+     * must not fall through into a rendering path that would answer 200. */
+    if (format == "csv") {
+        String csv = P.spaceCsv(pages, P.orNa(P.cell(space, "spacekey")), Q.PAGE_ORDER)
+        if (csv == null) {
+            Map<String, Object> refusal = new LinkedHashMap<String, Object>()
+            refusal.put("ok", Boolean.FALSE)
+            refusal.put("stage", "The page list")
+            refusal.put("error", pages.failure +
+                " No CSV is produced: an empty spreadsheet and a failed read look identical " +
+                "once they are open, so none is offered.")
+            refusal.put("executionMs", Long.valueOf(elapsed))
+            return Rest.build(rest, 500,
+                JsonOutput.prettyPrint(JsonOutput.toJson(refusal)), Rest.JSON)
+        }
+        String name = "space-pages-" + P.orNa(P.cell(space, "spacekey")).replaceAll("[^A-Za-z0-9_-]", "_") + ".csv"
+        return Rest.build(rest, 200, csv, Rest.CSV,
+            "Content-Disposition", "attachment; filename=\"" + name + "\"")
+    }
 
     if (format == "json") {
         Map<String, Object> spaceNode = new LinkedHashMap<String, Object>()

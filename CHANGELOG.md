@@ -42,6 +42,15 @@ sections below are grouped by endpoint rather than by a single repository versio
   one user name twice and a join would emit the same page twice. A page list whose row count
   changes with the user configuration is worse than one without display names.
 
+- **A CSV of the page list, which refuses to exist when the read failed.** `format=csv` with
+  a space returns one row per page. A page list that could not be read produces NO document
+  and a 500 with the reason: a spreadsheet has nowhere to put a banner, so an empty file and a
+  failed read are the same thing once they are open, and the reader would conclude the space
+  holds no pages. The cut state, the cap and the ordering travel on EVERY row for the same
+  reason - a cap announced once is a cap nobody sees. A field opening with `=`, `+`, `-` or
+  `@` is disarmed with an apostrophe, because Excel and LibreOffice execute such a field on
+  open and a page title is written by anyone who can create a page.
+
 - **A shortened page list offers the way out as an address.** The banner names the cap, the
   ordering it cut by and which pages fell off the end, and carries a link to the raised limit
   rather than prose telling the reader to build a URL. At the maximum it says so instead of
@@ -50,9 +59,9 @@ sections below are grouped by endpoint rather than by a single repository versio
 ### Known limitations
 
 - This endpoint shares no code with its sibling and is deliberately not part of the
-  `shared-renderer-drift` comparison. It therefore has no five-state node model and no CSV
-  output; the distinction that matters, between a read that failed, one that found nothing and
-  one that was cut short, is carried by its `Rows` type and rendered differently in each case.
+  `shared-renderer-drift` comparison. It therefore has no five-state node model; the
+  distinction that matters, between a read that failed, one that found nothing and one that
+  was cut short, is carried by its `Rows` type and rendered differently in each case.
 - Its statements have not run on Oracle. None of them uses the `COALESCE` construct that broke
   the sibling there, which is not the same as being proven.
 - The page count has not been reconciled against the figure the Confluence interface reports.

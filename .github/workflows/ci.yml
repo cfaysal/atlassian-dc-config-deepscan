@@ -434,6 +434,40 @@ jobs:
           [ "$fail" = 0 ] && echo "The estate sweep joins on spaceid and excludes the global permission rows."
           exit $fail
 
+      # A spreadsheet cannot show a banner. An empty CSV and a failed read are the
+      # same file once they are open, and the reader concludes the space holds no
+      # pages - which is the exact confusion this endpoint exists to prevent. So a
+      # failed read produces NO document at all and the request is refused with the
+      # reason instead.
+      #
+      # The offline suite checks the same property by executing the builder, which
+      # is stronger. This gate exists anyway and is not redundant: the suite binds
+      # whoever runs the suite, this binds every push regardless of runtime, and it
+      # is the one of the two that still fires if the suite file is deleted
+      # (Golden Rule 16).
+      #
+      # An earlier version of this gate guarded a CSV path the endpoint did not
+      # have, and was removed rather than satisfied. It is back because the path is
+      # now there. A gate whose subject does not exist protects nothing; a gate
+      # removed while its subject does exist is a hole.
+      - name: Assert the CSV path refuses to render a failed read
+        run: |
+          set -uo pipefail
+          F=confluence/confluenceDCspaceInfo.groovy
+          fail=0
+          grep -q 'if (!pages.isReadable()) {' "$F" || {
+            echo "::error file=$F::spaceCsv no longer tests the page list for readability before rendering."; fail=1; }
+          grep -q 'if (csv == null) {' "$F" || {
+            echo "::error file=$F::The endpoint no longer handles the null that spaceCsv returns for an unreadable list, so an empty CSV could reach the reader."; fail=1; }
+          grep -q 'space-pages-' "$F" || {
+            echo "::error file=$F::The CSV no longer travels as a named attachment."; fail=1; }
+          grep -q 'listState;listCap;listOrder' "$F" || {
+            echo "::error file=$F::The CSV header no longer carries the cut state, so a shortened list would look complete in a spreadsheet."; fail=1; }
+          grep -q '"=+-@".indexOf' "$F" || {
+            echo "::error file=$F::A leading formula character is no longer disarmed, so a page title could execute on open."; fail=1; }
+          [ "$fail" = 0 ] && echo "The CSV path refuses a failed read, names its attachment, carries the cut on every row and disarms formulas."
+          exit $fail
+
       # CONTENT holds one row per page VERSION, not one per page. Two independent
       # guards keep a page count from silently becoming a version count: PREVVER
       # IS NULL, which is what makes a row the head of its page, and a restriction

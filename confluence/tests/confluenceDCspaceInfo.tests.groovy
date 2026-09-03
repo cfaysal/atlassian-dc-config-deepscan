@@ -316,6 +316,91 @@ ok("state: an unreadable space row leaves existence unknown",
     source.contains("Whether this space exists is UNKNOWN."))
 
 /* =========================================================================
+ * 10b. EXECUTED - the CSV field. A spreadsheet is a hostile target.
+ * ====================================================================== */
+
+check("csv: a plain field is untouched", P.csv("Runbook 42"), "Runbook 42")
+check("csv: null is an empty field, never the word null", P.csv(null), "")
+check("csv: the separator forces quoting",
+    P.csv("a;b"), "\"a;b\"")
+check("csv: an inner quote is doubled and the field wrapped",
+    P.csv("say \"hi\""), "\"say \"\"hi\"\"\"")
+check("csv: a newline forces quoting, so one page stays one row",
+    P.csv("line\nbreak"), "\"line\nbreak\"")
+check("csv: a carriage return does too",
+    P.csv("line\rbreak"), "\"line\rbreak\"")
+
+/* A title is written by anyone who can create a page. Excel and LibreOffice
+ * EXECUTE a field that opens with a formula character, so the file must not
+ * hand them one. */
+check("csv: a leading equals is disarmed",
+    P.csv("=cmd|'/c calc'!A1"), "'=cmd|'/c calc'!A1")
+check("csv: a leading plus is disarmed", P.csv("+1"), "'+1")
+check("csv: a leading minus is disarmed", P.csv("-1"), "'-1")
+check("csv: a leading at sign is disarmed", P.csv("@SUM(A1)"), "'@SUM(A1)")
+check("csv: a minus inside the text is not touched",
+    P.csv("pre-flight"), "pre-flight")
+
+/* =========================================================================
+ * 10c. EXECUTED - the CSV document. A failed read produces NO document.
+ * ====================================================================== */
+
+Rows csvFailed = new Rows()
+csvFailed.failure = "The statement failed: SQLException"
+check("csv: an unreadable page list produces no document at all",
+    P.spaceCsv(csvFailed, "DEV", "x"), null)
+
+Rows csvEmpty = new Rows()
+String emptyDoc = P.spaceCsv(csvEmpty, "DEV", "x")
+ok("csv: an empty but successful read DOES produce a document", emptyDoc != null)
+check("csv: and that document is the header alone",
+    emptyDoc.split("\n").length, 1)
+ok("csv: failed and empty produce different answers",
+    P.spaceCsv(csvFailed, "DEV", "x") != P.spaceCsv(csvEmpty, "DEV", "x"))
+
+Rows csvRows = new Rows()
+csvRows.cap = 5000
+Map<String, String> pageRow = new LinkedHashMap<String, String>()
+pageRow.put("title", "Runbook; the first")
+pageRow.put("contentid", "12345")
+pageRow.put("creatorname", "cfaysal")
+pageRow.put("creatordisplay", "C.Faysal")
+pageRow.put("creator", "8aaa")
+pageRow.put("creationdate", "2026-01-01 10:00:00")
+pageRow.put("modifiername", "cfaysal")
+pageRow.put("modifierdisplay", "C.Faysal")
+pageRow.put("lastmodifier", "8aaa")
+pageRow.put("lastmoddate", "2026-02-02 11:00:00")
+csvRows.rows.add(pageRow)
+
+String doc = P.spaceCsv(csvRows, "DEV", "last modified")
+List<String> docLines = Arrays.asList(doc.split("\n"))
+check("csv: header exactly as documented",
+    docLines.get(0),
+    "spaceKey;title;contentId;createdBy;created;lastModifiedBy;lastModified;" +
+    "listState;listCap;listOrder")
+check("csv: one row per page, plus the header", docLines.size(), 2)
+ok("csv: a title carrying the separator is quoted rather than splitting the row",
+    docLines.get(1).contains("\"Runbook; the first\""))
+ok("csv: the person is named the way the report names them",
+    docLines.get(1).contains("C.Faysal (cfaysal)"))
+ok("csv: a complete list says so on the row",
+    docLines.get(1).endsWith(";complete;;"))
+
+Rows csvCut = new Rows()
+csvCut.cap = 5000
+csvCut.truncated = true
+csvCut.rows.add(pageRow)
+csvCut.rows.add(pageRow)
+List<String> cutLines = Arrays.asList(P.spaceCsv(csvCut, "DEV", "last modified").split("\n"))
+/* A CSV has no banner. A cut announced once is a cut nobody sees, so it
+ * travels on every row. */
+for (int i = 1; i < cutLines.size(); i++) {
+    ok("csv: row " + i + " carries the cut, its cap and the ordering it cut by",
+        cutLines.get(i).endsWith(";truncated;5000;last modified"))
+}
+
+/* =========================================================================
  * 11. TEXT - the browser side
  * ====================================================================== */
 
@@ -331,6 +416,25 @@ ok("browser: the embedded JSON cannot close its own script element",
     source.contains("\\\\u003c") || !source.contains("JsonOutput.toJson(picker)"))
 ok("browser: a short query costs no statement",
     source.contains("static final int MIN_QUERY = 2"))
+
+/* =========================================================================
+ * 12. TEXT - the CSV contract at the endpoint
+ * ====================================================================== */
+
+ok("csv: the endpoint tests the page list for readability before rendering",
+    source.contains("if (!pages.isReadable()) {"))
+ok("csv: the endpoint handles the null that spaceCsv returns for an unreadable list",
+    source.contains("if (csv == null) {"))
+ok("csv: an unreadable list answers 500, never an empty document",
+    source.contains("No CSV is produced: an empty spreadsheet and a failed read look identical"))
+ok("csv: the document travels as a named attachment",
+    source.contains("space-pages-") && source.contains("Content-Disposition"))
+ok("csv: the attachment name cannot carry a separator or a path",
+    source.contains("replaceAll(\"[^A-Za-z0-9_-]\", \"_\")"))
+ok("csv: a csv request without a space is refused rather than served something else",
+    source.contains("A CSV is produced for one space."))
+ok("csv: the content type is declared with its charset",
+    source.contains("static final String CSV = \"text/csv; charset=UTF-8\""))
 
 /* =========================================================================
  * Report
