@@ -34,6 +34,19 @@ jobs:
             tests: confluence/tests/confluenceDCspaceConfig.tests.groovy
             banner: END OF THE CONFLUENCE-FREE BLOCK
             helperClass: Pc
+          # This endpoint shares no renderer with the one above and is deliberately
+          # not part of the drift comparison, so the matrix leg is the ONLY gate it
+          # has. It carries its own parse check and its own offline suite.
+          - product: confluence-spaceinfo
+            endpoint: confluence/confluenceDCspaceInfo.groovy
+            tests: confluence/tests/confluenceDCspaceInfo.tests.groovy
+            # This endpoint carries no banner comment. Its Confluence-free classes
+            # simply end where Sql begins, and Sql is the first thing in the file
+            # to name ComponentLocator and java.sql. Cutting at a class line rather
+            # than at a comment means the cut point cannot drift away from the code
+            # it describes, because it IS the code.
+            banner: class Sql {
+            helperClass: P
           - product: confluence-probe
             endpoint: confluence/tools/spaceConfigReachabilityProbe.groovy
             tests: ""
@@ -117,7 +130,12 @@ jobs:
             exit 0
           fi
           START=$(grep -n "^class ${{ matrix.helperClass }} {" "$F" | cut -d: -f1)
-          END=$(( $(grep -n "^ \* $BANNER$" "$F" | cut -d: -f1) - 2 ))
+          # Two kinds of end marker. A banner comment, which is how the older
+          # endpoints mark the cut, or a class line for a file that has none.
+          case "$BANNER" in
+            "class "*) END=$(( $(grep -n "^$BANNER$" "$F" | cut -d: -f1) - 2 )) ;;
+            *)         END=$(( $(grep -n "^ \* $BANNER$" "$F" | cut -d: -f1) - 2 )) ;;
+          esac
           if [ -z "$START" ] || [ "$END" -le "$START" ]; then
             echo "::error title=Cut markers moved::Could not locate the helper class block in $F."
             exit 1
@@ -414,4 +432,113 @@ jobs:
           echo "$sweep" | grep -q 'ON g.sid = s.spaceid' || {
             echo "::error file=$F::SWEEP_SQL no longer joins the per-space aggregate on spaceid."; fail=1; }
           [ "$fail" = 0 ] && echo "The estate sweep joins on spaceid and excludes the global permission rows."
+          exit $fail
+
+      # CONTENT holds one row per page VERSION, not one per page. Two independent
+      # guards keep a page count from silently becoming a version count: PREVVER
+      # IS NULL, which is what makes a row the head of its page, and a restriction
+      # of the rows to one space by SPACEID, which on the reference instance
+      # excludes the historical versions a second time because they carry a NULL
+      # spaceid.
+      #
+      # Neither behaviour is documented by Atlassian, so neither guard may be
+      # dropped on the strength of the other. Dropping one produces a PLAUSIBLE
+      # number: no test of the rendering catches it, no reviewer notices it, and
+      # the report is confidently wrong. The guard is on the statement TEXT
+      # because that is where the mistake is made.
+      #
+      # The offline suite of this endpoint checks the same property against the
+      # compiled constants, which is stronger. This gate exists ANYWAY and is not
+      # redundant: the suite binds whoever runs the suite, and this binds every
+      # push regardless of runtime (Golden Rule 16). It is also the only one of
+      # the two that still fires if the suite file is deleted.
+      #
+      # Two spellings of the spaceid restriction are accepted, because the
+      # statements are shaped differently: an inner join for the two per-space
+      # statements, a correlated equality for the count inside the suggestion
+      # statement. A statement carrying NEITHER is refused.
+      #
+      # The same loop refuses two other things. A row limit or null ordering that
+      # is not portable across the databases Confluence supports: the cap is
+      # enforced in Sql.query, which reads one row past it so that "exactly at the
+      # cap" and "more than the cap" are told apart, and a LIMIT in the SQL would
+      # take that apart. And a literal percent sign, because every LIKE pattern is
+      # built in Groovy and BOUND - a pattern pasted into the statement against a
+      # text column is both the ORA-12704 trap and an injection.
+      - name: Assert every CONTENT statement in spaceInfo carries both guards
+        run: |
+          set -uo pipefail
+          F=confluence/confluenceDCspaceInfo.groovy
+          if [ ! -f "$F" ]; then
+            echo "::error::$F is not in the repository. This gate exists to check the statements in it, so a file it cannot find is a check that did not run."
+            exit 1
+          fi
+          names=$(grep -oE 'static final String [A-Z_]+_SQL' "$F" | awk '{print $4}' | sort -u)
+          if [ -z "$names" ]; then
+            echo "::error file=$F::No statement constant was found at all. The statements are the thing this gate exists to check."
+            exit 1
+          fi
+          fail=0
+          content=0
+          for name in $names; do
+            body=$(sed -n "/static final String $name =/,/^$/p" "$F")
+            if [ -z "$body" ]; then
+              echo "::error file=$F::$name was named but its body could not be cut. Every statement constant is followed by a blank line, and this gate depends on that."
+              fail=1
+              continue
+            fi
+            case "$body" in
+              *"LIMIT "*|*"FETCH FIRST"*|*" TOP "*|*"NULLS "*)
+                echo "::error file=$F::$name uses a row limit or a null ordering that is not portable across the databases Confluence supports."
+                fail=1 ;;
+            esac
+            case "$body" in
+              *%*)
+                echo "::error file=$F::$name carries a literal percent sign. Every LIKE pattern is built in Groovy and bound; a pattern in the statement text against a text column is the ORA-12704 trap and an injection besides."
+                fail=1 ;;
+            esac
+            echo "$body" | grep -q 'FROM content c' || continue
+            content=$((content + 1))
+            echo "$body" | grep -q 'c.prevver IS NULL' || {
+              echo "::error file=$F::$name reads CONTENT without prevver IS NULL. Every stored version of every page would be counted as a page."; fail=1; }
+            echo "$body" | grep -q 'c.contenttype = ?' || {
+              echo "::error file=$F::$name reads CONTENT without binding the content type. Blog posts, comments and attachments would be counted as pages."; fail=1; }
+            if echo "$body" | grep -q 'JOIN spaces s ON s.spaceid = c.spaceid' \
+               || echo "$body" | grep -q 'c.spaceid = s.spaceid'; then
+              :
+            else
+              echo "::error file=$F::$name reads CONTENT without restricting the rows to a space by spaceid, which is the second guard against counting historical versions."
+              fail=1
+            fi
+            case "$name" in
+              COUNT_SQL|PAGES_SQL)
+                echo "$body" | grep -q 's.spacekey = ?' || {
+                  echo "::error file=$F::$name no longer binds the space key, so the space it reports on is not the space that was asked for."; fail=1; } ;;
+            esac
+          done
+          if [ "$content" -lt 3 ]; then
+            echo "::error file=$F::Only $content statement(s) reading CONTENT were found and this endpoint issues three. A gate that checks fewer statements than exist is not a passing gate."
+            fail=1
+          fi
+          [ "$fail" = 0 ] && echo "$content CONTENT statement(s) checked, both guards present on each."
+          exit $fail
+
+      # This endpoint answers a spreadsheet request with a spreadsheet or with a
+      # stated failure, never with an empty document. View.spaceCsv returns null
+      # for an unreadable page list so the refusal cannot be forgotten at a call
+      # site, and the endpoint turns that null into a 500. Both halves are checked
+      # here because either one alone is useless: a renderer that refuses and a
+      # caller that ignores the refusal still ships an empty CSV.
+      - name: Assert the CSV path refuses to render a failed read
+        run: |
+          set -uo pipefail
+          F=confluence/confluenceDCspaceInfo.groovy
+          fail=0
+          grep -q 'if (!pages.isReadable()) {' "$F" || {
+            echo "::error file=$F::View.spaceCsv no longer tests the page list for readability before rendering."; fail=1; }
+          grep -q 'if (csv == null) {' "$F" || {
+            echo "::error file=$F::The endpoint no longer handles the null that spaceCsv returns for an unreadable list, so an empty CSV could reach the reader."; fail=1; }
+          grep -q 'space-pages-' "$F" || {
+            echo "::error file=$F::The CSV no longer travels as a named attachment."; fail=1; }
+          [ "$fail" = 0 ] && echo "The CSV path refuses a failed read and names its attachment."
           exit $fail

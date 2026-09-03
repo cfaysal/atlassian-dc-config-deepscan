@@ -12,6 +12,7 @@ link to the exact administration screen where it is maintained.
 | --- | --- | --- |
 | [`jira/jiraDCprojectConfig.groovy`](jira/jiraDCprojectConfig.groovy) | Jira Data Center | 0.2 |
 | [`confluence/userMacroDeepScan.groovy`](confluence/userMacroDeepScan.groovy) | Confluence Data Center | 4.1.0 |
+| [`confluence/confluenceDCspaceInfo.groovy`](confluence/confluenceDCspaceInfo.groovy) | Confluence Data Center | 0.1 |
 
 Typical uses: handing a project over to a new administrator, documenting a project before a
 migration, finding out why two projects behave differently, or producing the configuration

@@ -4,6 +4,62 @@ All notable changes to this project are documented here. Each endpoint carries i
 version, declared once in its helper class and printed by every output channel, so the
 sections below are grouped by endpoint rather than by a single repository version.
 
+## confluenceDCspaceInfo 0.1
+
+### Added
+
+- **A Confluence endpoint that answers how one space looks, rather than how it is
+  configured.** Its sibling `confluenceDCspaceConfig.groovy` states as a rule that it counts
+  no content and runs no search, so that it stays cheap enough to be harmless on a production
+  instance. This endpoint is the deliberate counterpart: the space header, the page count and
+  the trash count as two separate figures, and the page list with title, creator, creation
+  date, last modification and who made it. It is a separate file so that the sibling's rule
+  stays intact.
+
+- **The page filter is measured, not assumed.** `CONTENT` holds one row per page VERSION.
+  Measured on Confluence 10.2.15 over `contenttype = 'PAGE'`: 1005070 rows carry
+  `content_status = 'current'` with a null `prevver` and a space id, 25 carry a non-null
+  `prevver` with a NULL space id, 12 are trash and 40 are drafts. A live page is therefore
+  current, without a previous version, and in a space. Two independent guards enforce that,
+  and both stay: neither behaviour is documented by Atlassian, and dropping one does not fail
+  loudly - it returns a plausible wrong number.
+
+- **The landing page delivers no space list.** Opening the endpoint reads one number and
+  renders a search box. Suggestions are answered per keystroke, ranked in SQL so the cap cuts
+  by the order the reader sees. An earlier draft shipped every space to the browser to drive
+  the search: 293 ms and 269822 bytes on an instance with 5038 spaces, spent before the reader
+  had typed a character and almost all of it discarded. The suggestion statement is measured at
+  80 ms for a broad prefix, counts included.
+
+- **People are named rather than keyed.** `CONTENT.CREATOR`, `CONTENT.LASTMODIFIER` and
+  `SPACES.CREATOR` store a user key. `USER_MAPPING` resolves it to a user name and `CWD_USER`
+  to a display name, so the report shows `Display Name (username)` and falls back one layer at
+  a time. Each fallback is a different fact: a user removed from the directory keeps their
+  `USER_MAPPING` row, so the user name outlives the display name.
+
+  The display name is read as a scalar aggregate, never as a join. `CWD_USER` keys a person by
+  user name AND directory, so an instance running LDAP beside the internal directory can hold
+  one user name twice and a join would emit the same page twice. A page list whose row count
+  changes with the user configuration is worse than one without display names.
+
+- **A shortened page list offers the way out as an address.** The banner names the cap, the
+  ordering it cut by and which pages fell off the end, and carries a link to the raised limit
+  rather than prose telling the reader to build a URL. At the maximum it says so instead of
+  offering a link that would change nothing.
+
+### Known limitations
+
+- This endpoint shares no code with its sibling and is deliberately not part of the
+  `shared-renderer-drift` comparison. It therefore has no five-state node model and no CSV
+  output; the distinction that matters, between a read that failed, one that found nothing and
+  one that was cut short, is carried by its `Rows` type and rendered differently in each case.
+- Its statements have not run on Oracle. None of them uses the `COALESCE` construct that broke
+  the sibling there, which is not the same as being proven.
+- The page count has not been reconciled against the figure the Confluence interface reports.
+- A zero page count is measured rather than defaulted, because `COUNT(CASE ... THEN 1 END)`
+  returns zero over zero rows. The rendered page does not yet say so, so a reader cannot tell
+  that zero apart from a zero arrived at by other means.
+
 ## confluenceDCspaceConfig 0.2 and jiraDCprojectConfig 0.2
 
 ### Changed
