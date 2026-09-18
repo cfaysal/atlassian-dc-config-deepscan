@@ -175,6 +175,36 @@ jobs:
           java -Dfile.encoding=UTF-8 -cp "$GROOVY_CP" groovy.ui.GroovyMain \
             tools/parsecheck.groovy tools/structure-doctor-capability-probe.groovy
 
+      - name: Structure Doctor core source suite
+        if: matrix.product == 'jira-structure-doctor'
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/doctor-classes
+          mkdir -p /tmp/doctor-classes
+          mapfile -t SOURCES < <(find jira/structuredoctor -maxdepth 1 -name 'Core*.groovy' -print | sort)
+          SOURCES+=(jira/structuredoctor/DoctorContracts.groovy)
+          test "${#SOURCES[@]}" -gt 1
+          java -Dfile.encoding=UTF-8 -cp "$GROOVY_CP" \
+            org.codehaus.groovy.tools.FileSystemCompiler -d /tmp/doctor-classes "${SOURCES[@]}"
+          java -Dfile.encoding=UTF-8 -cp "$GROOVY_CP:/tmp/doctor-classes" \
+            groovy.ui.GroovyMain jira/tests/structureIssueDoctor.core.tests.groovy
+
+          fail=0
+          while IFS= read -r -d '' file; do
+            lines=$(wc -l < "$file")
+            if [ "$lines" -gt 250 ]; then
+              echo "::error file=$file::$file has $lines lines; Structure Doctor source limit is 250."
+              fail=1
+            fi
+            imports=$(grep -nE '^[[:space:]]*import[[:space:]]+(com\.atlassian|com\.almworks|com\.onresolve|jakarta|javax)\.' "$file" || true)
+            if [ -n "$imports" ]; then
+              echo "::error file=$file::Jira-free Structure Doctor core imports a product or JAX-RS type."
+              echo "$imports"
+              fail=1
+            fi
+          done < <(find jira/structuredoctor -maxdepth 1 -name '*.groovy' -print0)
+          exit $fail
+
   hygiene:
     name: Publication hygiene
     runs-on: ubuntu-latest

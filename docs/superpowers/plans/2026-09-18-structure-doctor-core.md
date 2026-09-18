@@ -32,6 +32,7 @@
 | `jira/structureIssueDoctor.groovy` | Thin REST declarations, dependency assembly, response conversion |
 | `jira/structuredoctor/CoreRead.groovy` | Complete, incomplete, failed, and unavailable read states with coverage |
 | `jira/structuredoctor/CoreModels.groovy` | Immutable hierarchy, Structure, issue, finding, evidence, proposal, and operation models |
+| `jira/structuredoctor/CoreRepairModels.groovy` | Immutable repair package, impact, mutation, receipt, and operation-state models |
 | `jira/structuredoctor/CoreCanonical.groovy` | Canonical JSON, fingerprints, deterministic IDs |
 | `jira/structuredoctor/CoreHierarchyAnalyzer.groovy` | Missing parent, conflicting parent, invalid level, orphan, and wrong-path findings |
 | `jira/structuredoctor/CoreDuplicateAnalyzer.groovy` | Duplicate grouping, occurrence validity, retention choices, provenance blockers |

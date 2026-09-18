@@ -29,6 +29,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import groovy.transform.BaseScript
 import org.codehaus.groovy.runtime.InvokerHelper
+import structuredoctor.CoreSupport
 
 class ParentUpdateCheck {
     boolean valid
@@ -110,12 +111,7 @@ Closure<Object> respondJson = { int status, Object payload ->
 }
 
 Closure<String> html = { Object value ->
-    String.valueOf(value == null ? '' : value)
-        .replace('&', '&amp;')
-        .replace('<', '&lt;')
-        .replace('>', '&gt;')
-        .replace('"', '&quot;')
-        .replace("'", '&#39;')
+    CoreSupport.html(value)
 }
 
 Closure<Map<String, Object>> errorDetails = { ErrorCollection errors ->
@@ -139,36 +135,11 @@ Closure<Map<String, Object>> errorDetails = { ErrorCollection errors ->
 
 Closure<Object> jsonSafe
 jsonSafe = { Object value ->
-    if (value == null || value instanceof CharSequence || value instanceof Number || value instanceof Boolean) {
-        return value
-    }
-    if (value instanceof Map) {
-        Map<String, Object> safeMap = [:]
-        for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
-            safeMap.put(String.valueOf(entry.getKey()), jsonSafe.call(entry.getValue()))
-        }
-        return safeMap
-    }
-    if (value instanceof Iterable) {
-        List<Object> safeItems = []
-        for (Object nested : (Iterable<?>) value) {
-            safeItems.add(jsonSafe.call(nested))
-        }
-        return safeItems
-    }
-    if (value.getClass().isArray()) {
-        List<Object> safeItems = []
-        for (Object nested : (Object[]) value) {
-            safeItems.add(jsonSafe.call(nested))
-        }
-        return safeItems
-    }
-    String.valueOf(value)
+    CoreSupport.jsonSafe(value)
 }
 
 Closure<String> queryValue = { Object queryParams, String name ->
-    Object value = queryParams == null ? null : InvokerHelper.invokeMethod(queryParams, 'getFirst', name)
-    value == null ? null : String.valueOf(value).trim()
+    CoreSupport.queryValue(queryParams, name)
 }
 
 Closure<List<Issue>> issueValues = { Object raw ->

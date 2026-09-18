@@ -40,14 +40,10 @@ if (endpoint.isFile()) {
     ok('legacy confirmation is frozen',
         source.contains("final String FIX_CONFIRMATION = 'SET_PARENT_LINK'"))
 
-    ok('HTML escapes ampersands before markup',
-        source.indexOf(".replace('&', '&amp;')") < source.indexOf(".replace('<', '&lt;')"))
-    ok('HTML escapes double quotes', source.contains(".replace('\"', '&quot;')"))
-    ok('HTML escapes single quotes', source.contains(".replace(\"'\", '&#39;')"))
-
-    ok('JSON conversion handles maps', source.contains('value instanceof Map'))
-    ok('JSON conversion handles iterables', source.contains('value instanceof Iterable'))
-    ok('JSON conversion handles arrays', source.contains('value.getClass().isArray()'))
+    ok('HTML delegates to Jira-free CoreSupport', source.contains('CoreSupport.html(value)'))
+    ok('JSON conversion delegates to Jira-free CoreSupport', source.contains('CoreSupport.jsonSafe(value)'))
+    ok('query parsing delegates to Jira-free CoreSupport',
+        source.contains('CoreSupport.queryValue(queryParams, name)'))
 
     ok('Structure IDs are parsed as long values', source.contains('Long.valueOf(structureIdText)'))
     ok('invalid Structure IDs are explicit', source.contains("error: 'INVALID_STRUCTURE_ID'"))

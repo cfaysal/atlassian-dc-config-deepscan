@@ -16,7 +16,7 @@
 - **javax / jakarta neutral.** Neither namespace may be imported. The `Response` class is
   resolved at runtime in `Http`, and that is the only place that knows about it.
 
-## One file, on purpose
+## Existing configuration reports: one file, on purpose
 
 The endpoint is a single Groovy file and stays one, however long it gets. Splitting it
 into modules over ScriptRunner script roots, or assembling it from parts at build time,
@@ -33,9 +33,15 @@ script root is the only way in regardless. That is a consequence of the decision
 reason for it: even at a tenth of the size, splitting it would mean handing an
 administrator a set of files that have to arrive together and stay in step.
 
-So the file is long, and the structure lives inside it: banner comments mark the blocks,
+So each existing configuration report is long, and the structure lives inside it: banner comments mark the blocks,
 and the Jira-free half is cut out by CI and unit tested. If a section grows unreadable,
 make the section smaller. Do not make the file plural.
+
+The Structure Doctor is the deliberate exception. It is installed as one atomic
+`jira/structureIssueDoctor.groovy` controller plus the complete `jira/structuredoctor/`
+package on every Jira node. Its controller contains REST declarations and dependency
+assembly; Jira-free models, analysis, planning, and repair state stay in focused package
+files capped at 250 lines. Never copy or update only part of this bundle.
 
 ## Layout
 
