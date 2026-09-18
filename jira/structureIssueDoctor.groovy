@@ -29,7 +29,21 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import groovy.transform.BaseScript
 import org.codehaus.groovy.runtime.InvokerHelper
+import structuredoctor.AnalyzeRequest
 import structuredoctor.CoreSupport
+import structuredoctor.DoctorAnalysis
+import structuredoctor.DoctorApplication
+import structuredoctor.DoctorRenderer
+import structuredoctor.LiveAutomationProvider
+import structuredoctor.LiveConfigurationDiscovery
+import structuredoctor.LiveJiraGateway
+import structuredoctor.LiveStructureGateway
+import structuredoctor.LegacyIssueDoctor
+import structuredoctor.PlanRequest
+import structuredoctor.ProposalPlan
+import structuredoctor.ProposalSource
+import structuredoctor.ReadResult
+import structuredoctor.StructureChoice
 
 class ParentUpdateCheck {
     boolean valid
@@ -49,11 +63,11 @@ class InspectionResult {
  * Browser UI:
  *   GET /rest/scriptrunner/latest/custom/structureIssueDoctor
  *
- * JSON analysis:
- *   GET /rest/scriptrunner/latest/custom/structureIssueDoctor
- *       ?structureId=123&issueKey=ABC-123&format=json
+ * Structure-wide read-only analysis and planning:
+ *   POST /rest/scriptrunner/latest/custom/structureIssueDoctorAnalyze
+ *   POST /rest/scriptrunner/latest/custom/structureIssueDoctorPlan
  *
- * Fix (called by the browser UI; may also be called directly):
+ * Legacy compatibility fix (not used by the Structure-wide Core UI):
  *   POST /rest/scriptrunner/latest/custom/structureIssueDoctorFix
  *   Content-Type: application/json
  *   X-Atlassian-Token: no-check
@@ -817,51 +831,149 @@ Closure<String> renderPage = {
     </main></body></html>""".toString()
 }
 
+LiveStructureGateway doctorStructureGateway = new LiveStructureGateway({
+    List<Structure> values = structureComponents.getStructureManager()
+        .getAllStructures(PermissionLevel.VIEW) as List<Structure>
+    ReadResult.complete(values.collect { Structure item ->
+        new StructureChoice(id: item.getId(), name: item.getName())
+    })
+}, null)
+LiveConfigurationDiscovery doctorHierarchy = new LiveConfigurationDiscovery(null)
+LiveJiraGateway doctorJira = new LiveJiraGateway(null)
+LiveAutomationProvider doctorAutomation = new LiveAutomationProvider(null, null)
+ProposalSource doctorProposals = { ignored ->
+    ReadResult.unavailable('Repair proposal discovery is not proven on this instance')
+} as ProposalSource
+DoctorApplication doctorApplication = new DoctorApplication(
+    doctorStructureGateway, doctorHierarchy, doctorStructureGateway, doctorJira,
+    doctorAutomation, null, doctorProposals, { String issueKey ->
+        ApplicationUser actor = authenticationContext.getLoggedInUser()
+        IssueService.IssueResult result = actor == null ? null :
+            issueService.getIssue(actor, issueKey.toUpperCase(Locale.ROOT))
+        result?.isValid() && result.getIssue() != null ? result.getIssue().getId() : null
+    })
+DoctorRenderer doctorRenderer = new DoctorRenderer()
+Closure<Object> legacyParentLinkRepair = {
+        Long structureId, String issueKey, String ignoredConfirmation ->
+    ApplicationUser user = authenticationContext.getLoggedInUser()
+    if (user == null) return respondJson.call(401, [ok: false, error: 'AUTHENTICATION_REQUIRED'])
+
+    InspectionResult inspection = inspectStructure.call(structureId, issueKey)
+    Map<String, Object> before = inspection.getPayload()
+    if (inspection.getStatus() != 200 || Boolean.FALSE == before.get('ok')) {
+        return respondJson.call(inspection.getStatus(), before)
+    }
+    Map<String, Object> beforeFix = (Map<String, Object>) before.get('fix')
+    if (Boolean.TRUE != beforeFix.get('available') ||
+            before.get('primaryDiagnosis') != 'PARENT_LINK_MISMATCH') {
+        return respondJson.call(409, [ok: false, error: 'FIX_NOT_AVAILABLE',
+            message: 'The current analysis does not allow a safe automatic fix.',
+            diagnosis: before])
+    }
+
+    IssueService.IssueResult issueResult = issueService.getIssue(user, issueKey)
+    Issue issue = issueResult.getIssue()
+    if (!issueResult.isValid() || issue == null) {
+        return respondJson.call(409, [ok: false, error: 'FIX_PRECONDITION_CHANGED'])
+    }
+    Map<String, Object> sourceLookup = findSourceField.call(issue)
+    Map<String, Object> parentLookup = findParentLinkField.call(issue)
+    CustomField sourceField = (CustomField) sourceLookup.get('field')
+    CustomField parentField = (CustomField) parentLookup.get('field')
+    List<Issue> strategicParents = sourceField == null ? [] :
+        issueValues.call(issue.getCustomFieldValue(sourceField))
+    Issue target = strategicParents.size() == 1 ? strategicParents.first() : null
+    if (parentField == null || target == null) {
+        return respondJson.call(409, [ok: false, error: 'FIX_PRECONDITION_CHANGED'])
+    }
+
+    ParentUpdateCheck validation = validateParentUpdate.call(issue, parentField, target, user)
+    if (!validation.isValid()) {
+        return respondJson.call(409, [ok: false, error: 'UPDATE_VALIDATION_FAILED',
+            details: validation.getErrors()])
+    }
+    String oldParent = (String) beforeFix.get('from')
+    IssueService.IssueResult updateResult = issueService.update(
+        user, validation.getValidationResult(), EventDispatchOption.ISSUE_UPDATED, false)
+    if (!updateResult.isValid()) {
+        return respondJson.call(500, [ok: false, error: 'UPDATE_FAILED',
+            details: errorDetails.call(updateResult.getErrorCollection())])
+    }
+
+    Issue refreshed = issueManager.getIssueObject(issue.getId())
+    List<Issue> refreshedParents = issueValues.call(refreshed.getCustomFieldValue(parentField))
+    boolean verified = refreshedParents.size() == 1 &&
+        refreshedParents.first().getId() == target.getId()
+    if (!verified) {
+        return respondJson.call(500, [ok: false, error: 'UPDATE_COULD_NOT_BE_VERIFIED',
+            expected: target.getKey(),
+            actual: refreshedParents.collect { Issue parent -> parent.getKey() }])
+    }
+
+    log.warn("Structure Issue Doctor fix by ${user.getKey()}: structure=${structureId}, issue=${issue.getKey()}, " +
+        "field=${parentField.getId()}, oldParent=${oldParent ?: '(empty)'}, newParent=${target.getKey()}")
+    InspectionResult afterInspection = inspectStructure.call(structureId, issue.getKey())
+    respondJson.call(200, [
+        ok: true, action: 'SET_PARENT_LINK', issueKey: issue.getKey(),
+        fieldId: parentField.getId(), oldParent: oldParent, newParent: target.getKey(),
+        verified: true, mailSent: false, eventDispatched: 'ISSUE_UPDATED',
+        structureRefreshMayBeAsynchronous: true,
+        analysisAfter: afterInspection.getPayload()
+    ])
+}
+LegacyIssueDoctor legacyIssueDoctor = new LegacyIssueDoctor(
+    inspectStructure, legacyParentLinkRepair)
+
 structureIssueDoctor(httpMethod: 'GET', groups: ["jira-administrators"]) { Object queryParams, Object ignoredBody ->
     ApplicationUser user = authenticationContext.getLoggedInUser()
     if (user == null) return respondJson.call(401, [ok: false, error: 'AUTHENTICATION_REQUIRED'])
 
-    List<Structure> structures
-    try {
-        structures = structureComponents.getStructureManager().getAllStructures(PermissionLevel.VIEW) as List<Structure>
-    } catch (Exception failure) {
-        return respondJson.call(500, [ok: false, error: 'STRUCTURE_LIST_FAILED',
-            message: failure.getMessage() ?: failure.getClass().getSimpleName()])
-    }
-
-    String structureIdText = queryValue.call(queryParams, 'structureId')
-    String issueKey = queryValue.call(queryParams, 'issueKey')
     String format = queryValue.call(queryParams, 'format')
-    Long structureId = null
-    if (structureIdText) {
-        try {
-            structureId = Long.valueOf(structureIdText)
-        } catch (NumberFormatException ignored) {
-            return respondJson.call(400, [ok: false, error: 'INVALID_STRUCTURE_ID'])
-        }
-    }
-
-    InspectionResult inspection = null
-    if (structureId != null || issueKey) {
-        if (structureId == null || !issueKey) {
-            inspection = new InspectionResult(status: 400, payload: [ok: false,
-                error: 'STRUCTURE_AND_ISSUE_REQUIRED',
-                message: 'Structure and issue key must be provided together.'])
-        } else {
-            inspection = inspectStructure.call(structureId, issueKey)
-        }
-    }
-
+    ReadResult<List<StructureChoice>> structures = doctorApplication.listStructures()
     if ('json'.equalsIgnoreCase(format)) {
-        return inspection == null ?
-            respondJson.call(200, [ok: true, structures: structures.collect { Structure item ->
-                [id: item.getId(), name: item.getName()]
-            }]) :
-            respondJson.call(inspection.getStatus(), inspection.getPayload())
+        return respondJson.call(structures.complete() ? 200 : 503, [
+            ok: structures.complete(), state: structures.getState().name(),
+            reason: structures.getReason(), structures: (structures.getValue() ?: []).collect {
+                StructureChoice item -> [id: item.getId(), name: item.getName()]
+            }
+        ])
     }
+    respond.call(structures.complete() ? 200 : 503,
+        doctorRenderer.render(structures, null, null), 'text/html;charset=UTF-8')
+}
 
-    String page = renderPage.call(structures, inspection?.getPayload(), structureId, issueKey ?: '')
-    respond.call(inspection == null ? 200 : inspection.getStatus(), page, 'text/html;charset=UTF-8')
+structureIssueDoctorAnalyze(httpMethod: 'POST', groups: ["jira-administrators"]) { Object ignoredQueryParams, String body ->
+    ApplicationUser user = authenticationContext.getLoggedInUser()
+    if (user == null) return respondJson.call(401, [ok: false, error: 'AUTHENTICATION_REQUIRED'])
+    try {
+        Object parsed = body?.trim() ? new JsonSlurper().parseText(body) : null
+        if (!(parsed instanceof Map)) throw new IllegalArgumentException('JSON object required')
+        AnalyzeRequest request = DoctorApplication.parseAnalyzeRequest(
+            (Map<String, Object>) parsed)
+        DoctorAnalysis analysis = doctorApplication.analyze(request)
+        ReadResult<List<StructureChoice>> structures = doctorApplication.listStructures()
+        respond.call(200, doctorRenderer.render(structures, analysis, null),
+            'text/html;charset=UTF-8')
+    } catch (IllegalArgumentException ignored) {
+        respondJson.call(400, [ok: false, error: 'INVALID_ANALYZE_REQUEST'])
+    }
+}
+
+structureIssueDoctorPlan(httpMethod: 'POST', groups: ["jira-administrators"]) { Object ignoredQueryParams, String body ->
+    ApplicationUser user = authenticationContext.getLoggedInUser()
+    if (user == null) return respondJson.call(401, [ok: false, error: 'AUTHENTICATION_REQUIRED'])
+    try {
+        Object parsed = body?.trim() ? new JsonSlurper().parseText(body) : null
+        if (!(parsed instanceof Map)) throw new IllegalArgumentException('JSON object required')
+        PlanRequest request = DoctorApplication.parsePlanRequest((Map<String, Object>) parsed)
+        ProposalPlan plan = doctorApplication.plan(request)
+        DoctorAnalysis analysis = doctorApplication.analysis(request.getSnapshotId())
+        ReadResult<List<StructureChoice>> structures = doctorApplication.listStructures()
+        respond.call(analysis == null ? 404 : 200,
+            doctorRenderer.render(structures, analysis, plan), 'text/html;charset=UTF-8')
+    } catch (IllegalArgumentException ignored) {
+        respondJson.call(400, [ok: false, error: 'INVALID_PLAN_REQUEST'])
+    }
 }
 
 structureIssueDoctorFix(httpMethod: 'POST', groups: ["jira-administrators"]) { Object ignoredQueryParams, String body ->
@@ -887,77 +999,5 @@ structureIssueDoctorFix(httpMethod: 'POST', groups: ["jira-administrators"]) { O
         return respondJson.call(400, [ok: false, error: 'INVALID_STRUCTURE_ID'])
     }
     String issueKey = String.valueOf(request.get('issueKey') ?: '').trim().toUpperCase(Locale.ROOT)
-
-    // Re-run the complete diagnosis server-side. No field IDs or target issue
-    // supplied by the browser are trusted.
-    InspectionResult inspection = inspectStructure.call(structureId, issueKey)
-    Map<String, Object> before = inspection.getPayload()
-    if (inspection.getStatus() != 200 || Boolean.FALSE == before.get('ok')) {
-        return respondJson.call(inspection.getStatus(), before)
-    }
-    Map<String, Object> beforeFix = (Map<String, Object>) before.get('fix')
-    if (Boolean.TRUE != beforeFix.get('available') ||
-            before.get('primaryDiagnosis') != 'PARENT_LINK_MISMATCH') {
-        return respondJson.call(409, [ok: false, error: 'FIX_NOT_AVAILABLE',
-                                      message: 'The current analysis does not allow a safe automatic fix.',
-                                      diagnosis: before])
-    }
-
-    IssueService.IssueResult issueResult = issueService.getIssue(user, issueKey)
-    Issue issue = issueResult.getIssue()
-    if (!issueResult.isValid() || issue == null) {
-        return respondJson.call(409, [ok: false, error: 'FIX_PRECONDITION_CHANGED'])
-    }
-    Map<String, Object> sourceLookup = findSourceField.call(issue)
-    Map<String, Object> parentLookup = findParentLinkField.call(issue)
-    CustomField sourceField = (CustomField) sourceLookup.get('field')
-    CustomField parentField = (CustomField) parentLookup.get('field')
-    List<Issue> strategicParents = sourceField == null ? [] :
-        issueValues.call(issue.getCustomFieldValue(sourceField))
-    Issue target = strategicParents.size() == 1 ? strategicParents.first() : null
-    if (parentField == null || target == null) {
-        return respondJson.call(409, [ok: false, error: 'FIX_PRECONDITION_CHANGED'])
-    }
-
-    ParentUpdateCheck validation = validateParentUpdate.call(issue, parentField, target, user)
-    if (!validation.isValid()) {
-        return respondJson.call(409, [ok: false, error: 'UPDATE_VALIDATION_FAILED',
-                                      details: validation.getErrors()])
-    }
-
-    String oldParent = (String) beforeFix.get('from')
-    IssueService.IssueResult updateResult = issueService.update(
-        user, validation.getValidationResult(), EventDispatchOption.ISSUE_UPDATED, false)
-    if (!updateResult.isValid()) {
-        return respondJson.call(500, [ok: false, error: 'UPDATE_FAILED',
-                                      details: errorDetails.call(updateResult.getErrorCollection())])
-    }
-
-    Issue refreshed = issueManager.getIssueObject(issue.getId())
-    List<Issue> refreshedParents = issueValues.call(refreshed.getCustomFieldValue(parentField))
-    boolean verified = refreshedParents.size() == 1 &&
-        refreshedParents.first().getId() == target.getId()
-    if (!verified) {
-        return respondJson.call(500, [ok: false, error: 'UPDATE_COULD_NOT_BE_VERIFIED',
-                                      expected: target.getKey(),
-                                      actual: refreshedParents.collect { Issue parent -> parent.getKey() }])
-    }
-
-    log.warn("Structure Issue Doctor fix by ${user.getKey()}: structure=${structureId}, issue=${issue.getKey()}, " +
-        "field=${parentField.getId()}, oldParent=${oldParent ?: '(empty)'}, newParent=${target.getKey()}")
-
-    InspectionResult afterInspection = inspectStructure.call(structureId, issue.getKey())
-    respondJson.call(200, [
-        ok: true,
-        action: 'SET_PARENT_LINK',
-        issueKey: issue.getKey(),
-        fieldId: parentField.getId(),
-        oldParent: oldParent,
-        newParent: target.getKey(),
-        verified: true,
-        mailSent: false,
-        eventDispatched: 'ISSUE_UPDATED',
-        structureRefreshMayBeAsynchronous: true,
-        analysisAfter: afterInspection.getPayload()
-    ])
+    legacyIssueDoctor.repair(structureId, issueKey, FIX_CONFIRMATION)
 }

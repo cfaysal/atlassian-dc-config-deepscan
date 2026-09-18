@@ -181,9 +181,7 @@ jobs:
           set -euo pipefail
           rm -rf /tmp/doctor-classes
           mkdir -p /tmp/doctor-classes
-          mapfile -t SOURCES < <(find jira/structuredoctor -maxdepth 1 -name 'Core*.groovy' -print | sort)
-          SOURCES+=(jira/structuredoctor/DoctorContracts.groovy)
-          SOURCES+=(jira/structuredoctor/JsonAutomationProvider.groovy)
+          mapfile -t SOURCES < <(find jira/structuredoctor -maxdepth 1 -name '*.groovy' -print | sort)
           test "${#SOURCES[@]}" -gt 1
           java -Dfile.encoding=UTF-8 -cp "$GROOVY_CP" \
             org.codehaus.groovy.tools.FileSystemCompiler -d /tmp/doctor-classes "${SOURCES[@]}"
@@ -195,6 +193,8 @@ jobs:
             groovy.ui.GroovyMain jira/tests/structureIssueDoctor.causality.tests.groovy
           java -Dfile.encoding=UTF-8 -DrepoRoot=. -cp "$GROOVY_CP:/tmp/doctor-classes" \
             groovy.ui.GroovyMain jira/tests/structureIssueDoctor.proposal.tests.groovy
+          java -Dfile.encoding=UTF-8 -DrepoRoot=. -cp "$GROOVY_CP:/tmp/doctor-classes" \
+            groovy.ui.GroovyMain jira/tests/structureIssueDoctor.application.tests.groovy
 
           fail=0
           while IFS= read -r -d '' file; do

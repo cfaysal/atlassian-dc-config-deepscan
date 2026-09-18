@@ -112,6 +112,15 @@ Nothing that needs a running instance. That means the scan against Jira itself, 
 API call in it, the application link call that writes the Confluence page, the space and
 parent page lookups, the permission gate and both HTTP entry points.
 
+The Structure Doctor has separate Jira-free suites for its Core, Automation normalization,
+causality, repair proposals, and application layer. The application suite proves that page
+load does not scan a Structure, Analyze is explicit and does not require a work-item key,
+the audit default is 30 days, failed reads stay visible, JSON fallback is labelled, browser
+configuration injection is rejected, retain choices are mandatory, changed snapshots are
+stale, output is escaped, and Apply remains disabled. These checks do not prove an installed
+Jira, Structure, Advanced Roadmaps, or Automation API. Unproven live adapters intentionally
+return `UNAVAILABLE`.
+
 This is the larger half of the endpoint. Test against a real instance before trusting a
 change to any of it: a parse check and a green suite do not resolve a single Jira symbol.
 

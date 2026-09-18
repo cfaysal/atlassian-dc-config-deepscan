@@ -22,21 +22,26 @@ def ok = { String name, boolean condition ->
 
 File repository = new File(System.getProperty('repoRoot', '.')).canonicalFile
 File endpoint = new File(repository, 'jira/structureIssueDoctor.groovy')
+File renderer = new File(repository, 'jira/structuredoctor/DoctorRenderer.groovy')
 
 ok('secured baseline exists', endpoint.isFile())
 
 if (endpoint.isFile()) {
     String source = endpoint.getText('UTF-8')
 
-    check('one analyze declaration',
+    check('one page declaration',
         source.findAll(/(?m)^structureIssueDoctor\(httpMethod: 'GET'/).size(), 1)
+    check('one Structure-wide analyze declaration',
+        source.findAll(/(?m)^structureIssueDoctorAnalyze\(httpMethod: 'POST'/).size(), 1)
+    check('one Structure-wide plan declaration',
+        source.findAll(/(?m)^structureIssueDoctorPlan\(httpMethod: 'POST'/).size(), 1)
     check('one fix declaration',
         source.findAll(/(?m)^structureIssueDoctorFix\(httpMethod: 'POST'/).size(), 1)
-    check('both declarations are administrator-only',
-        source.findAll(/groups: \["jira-administrators"\]/).size(), 2)
+    check('all declarations are administrator-only',
+        source.findAll(/groups: \["jira-administrators"\]/).size(), 4)
     ok('anonymous declaration is absent', !source.contains('groups: []'))
     ok('handlers reject missing authentication',
-        source.findAll(/if \(user == null\)/).size() >= 2)
+        source.findAll(/if \(user == null\)/).size() >= 4)
     ok('legacy confirmation is frozen',
         source.contains("final String FIX_CONFIRMATION = 'SET_PARENT_LINK'"))
 
@@ -45,10 +50,16 @@ if (endpoint.isFile()) {
     ok('query parsing delegates to Jira-free CoreSupport',
         source.contains('CoreSupport.queryValue(queryParams, name)'))
 
-    ok('Structure IDs are parsed as long values', source.contains('Long.valueOf(structureIdText)'))
+    ok('Analyze requests use a strict server-side parser',
+        source.contains('DoctorApplication.parseAnalyzeRequest'))
+    ok('Plan requests use a strict server-side parser',
+        source.contains('DoctorApplication.parsePlanRequest'))
     ok('invalid Structure IDs are explicit', source.contains("error: 'INVALID_STRUCTURE_ID'"))
-    ok('legacy analysis still requires both identifiers',
-        source.contains('if (structureId == null || !issueKey)'))
+    ok('Structure-wide analysis does not require an issue key',
+        !source.contains('STRUCTURE_AND_ISSUE_REQUIRED') && renderer.isFile() &&
+            renderer.getText('UTF-8').contains('Work-Item-Key (optional)'))
+    ok('new Core Apply is visibly disabled',
+        renderer.isFile() && renderer.getText('UTF-8').contains('Apply is disabled'))
 }
 
 println 'PASSED: ' + passed

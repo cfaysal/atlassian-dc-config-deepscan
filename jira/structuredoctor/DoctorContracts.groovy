@@ -1,5 +1,9 @@
 package structuredoctor
 
+interface StructureCatalogProvider {
+    ReadResult<List<StructureChoice>> listStructures()
+}
+
 interface HierarchyProvider {
     ReadResult<HierarchySnapshot> readHierarchy()
 }

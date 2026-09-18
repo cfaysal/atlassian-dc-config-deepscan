@@ -492,6 +492,30 @@ a writer. Structure or Jira-data repair remains disabled until preview, revision
 restore, cluster lock, cluster-visible journal, recalculation, and target-state verification
 have been proven separately on an authorized disposable target.
 
+## Structure Doctor Core
+
+The Structure Doctor page is restricted to `jira-administrators`. Opening it reads only the
+list of Structures. A complete scan starts only after an administrator selects a Structure
+and explicitly chooses **Structure analysieren**. A work-item key is optional and limits only
+the displayed result; it never limits the snapshot used for safety decisions. The default
+Automation audit window is 30 days.
+
+The analysis reports every source separately as `COMPLETE`, `INCOMPLETE`, `FAILED`, or
+`UNAVAILABLE`. A missing installed API therefore remains visible and cannot be mistaken for
+an empty, healthy configuration. The hierarchy behind `PortfolioHierarchy.jspa` and Jira
+Automation configuration are strictly read-only. They have no mutation gateway in the Core.
+
+Planning accepts only snapshot, finding-group, retain-occurrence, and selected permanent-row
+identifiers. JQL, generator parameters, field values, scripts, and rule configuration are
+rejected at the HTTP boundary. Duplicate repair requires the administrator to choose exactly
+which physical occurrence remains. Every unselected finding is ignored.
+
+The Core Apply action is deliberately disabled in this version. It is enabled only after the
+installed Jira and Structure APIs have proven complete preview, revision, mutation, restore,
+cluster lock, journal, recalculation, and measured target verification on an authorized
+disposable test Structure. The existing narrow Parent Link compatibility endpoint retains
+its `SET_PARENT_LINK` confirmation contract and is not authority for the new Core writer.
+
 `tools/jira-typecheck.jsh` compiles a selected script against paths supplied explicitly as
 JVM properties. It carries no customer path and fails when the target or required properties
 are missing.
