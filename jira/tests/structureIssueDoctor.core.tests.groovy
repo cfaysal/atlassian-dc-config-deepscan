@@ -1,6 +1,7 @@
 import structuredoctor.Coverage
 import structuredoctor.CoreSupport
 import structuredoctor.CoreCanonical
+import structuredoctor.CoreDuplicateAnalyzer
 import structuredoctor.CoreHierarchyAnalyzer
 import structuredoctor.AnalysisScope
 import structuredoctor.AuditRequest
@@ -9,6 +10,7 @@ import structuredoctor.AutomationDataProvider
 import structuredoctor.AutomationRuleSnapshot
 import structuredoctor.CausalClaim
 import structuredoctor.DoctorClock
+import structuredoctor.DuplicateAnalysis
 import structuredoctor.EvidenceRequirement
 import structuredoctor.EvidenceGrade
 import structuredoctor.Finding
@@ -560,6 +562,173 @@ ok('hierarchy row loop performs no gateway call',
 ].each { String fixtureName ->
     ok('hierarchy fixture exists: ' + fixtureName,
         new File(fixtureRoot, fixtureName).isFile())
+}
+
+def duplicateOccurrence = { String occurrenceKey, long issueId, Long parentIssueId,
+                            String provenance, String creatorId,
+                            boolean provenanceComplete = true ->
+    new OccurrenceSnapshot(
+        occurrenceId: occurrenceKey,
+        issueId: issueId,
+        rowId: 'row-' + occurrenceKey,
+        parentPath: parentIssueId == null ? [] : [parentIssueId],
+        parentIssueId: parentIssueId,
+        depth: parentIssueId == null ? 0 : 1,
+        position: 0,
+        provenance: provenance,
+        creatorId: creatorId,
+        provenanceComplete: provenanceComplete
+    )
+}
+
+GeneratorSnapshot hierarchyGenerator = generator.copyWith(
+    generatorId: 21L,
+    moduleKey: 'synthetic:portfolio-extender',
+    type: 'EXTENDER',
+    order: 1,
+    revision: 'g21'
+)
+GeneratorSnapshot linkGenerator = generator.copyWith(
+    generatorId: 22L,
+    moduleKey: 'synthetic:link-extender',
+    type: 'EXTENDER',
+    order: 2,
+    revision: 'g22'
+)
+GeneratorSnapshot duplicateFilter = generator.copyWith(
+    generatorId: 23L,
+    moduleKey: 'synthetic:duplicates-filter',
+    type: 'DUPLICATES_FILTER',
+    order: 3,
+    revision: 'g23'
+)
+
+StructureSnapshot twoOccurrenceSnapshot = hierarchySnapshotFor([
+    validParent,
+    alternativeParent,
+    relationFor(1000L, 200L, 2000L, [2000L])
+], [
+    duplicateOccurrence('occ-native', 1000L, 2000L, 'ADVANCED_ROADMAPS', '21'),
+    duplicateOccurrence('occ-link', 1000L, 2001L, 'JIRA_LINK', '22')
+]).copyWith(generators: [hierarchyGenerator, linkGenerator, duplicateFilter])
+
+DuplicateAnalysis twoOccurrenceAnalysis = new CoreDuplicateAnalyzer().analyze(twoOccurrenceSnapshot)
+check('one numeric duplicate issue group', twoOccurrenceAnalysis.groups*.issueId, [1000L])
+check('every physical occurrence is a retain choice',
+    twoOccurrenceAnalysis.groups[0].occurrences*.occurrenceId,
+    ['occ-native', 'occ-link'])
+check('native hierarchy occurrence is recommended but not selected',
+    twoOccurrenceAnalysis.groups[0].recommendedOccurrenceId, 'occ-native')
+check('each occurrence gets exactly one retain choice',
+    twoOccurrenceAnalysis.groups[0].occurrences*.retainChoiceId,
+    ['retain:occ-native', 'retain:occ-link'])
+check('duplicate creates a typed finding',
+    twoOccurrenceAnalysis.findings*.type, [FindingType.DUPLICATE])
+check('generator overlap is explained',
+    twoOccurrenceAnalysis.groups[0].explanations.contains('Multiple generators render this work item'), true)
+
+StructureSnapshot threeOccurrenceSnapshot = twoOccurrenceSnapshot.copyWith(occurrences: [
+    duplicateOccurrence('occ-first', 1000L, 2000L, 'ADVANCED_ROADMAPS', '21'),
+    duplicateOccurrence('occ-second', 1000L, 2000L, 'ADVANCED_ROADMAPS', '21'),
+    duplicateOccurrence('occ-third', 1000L, 2001L, 'JIRA_LINK', '22')
+])
+DuplicateAnalysis threeOccurrenceAnalysis = new CoreDuplicateAnalyzer().analyze(threeOccurrenceSnapshot)
+check('three occurrences stay physically distinct',
+    threeOccurrenceAnalysis.groups[0].occurrences*.occurrenceId,
+    ['occ-first', 'occ-second', 'occ-third'])
+check('stable occurrence ordinals preserve forest order',
+    threeOccurrenceAnalysis.groups[0].occurrences*.ordinal, [1, 2, 3])
+
+StructureSnapshot equallyValidSnapshot = twoOccurrenceSnapshot.copyWith(occurrences: [
+    duplicateOccurrence('equal-a', 1000L, 2001L, 'JIRA_LINK', '22'),
+    duplicateOccurrence('equal-b', 1000L, 2001L, 'JIRA_LINK', '22')
+])
+DuplicateAnalysis equallyValidAnalysis = new CoreDuplicateAnalyzer().analyze(equallyValidSnapshot)
+check('equally valid occurrences have no automatic recommendation',
+    equallyValidAnalysis.groups[0].recommendedOccurrenceId, null)
+check('equally valid group remains selectable by administrator',
+    equallyValidAnalysis.groups[0].selectable, true)
+
+StructureSnapshot unknownProvenanceSnapshot = twoOccurrenceSnapshot.copyWith(occurrences: [
+    duplicateOccurrence('known', 1000L, 2000L, 'ADVANCED_ROADMAPS', '21'),
+    duplicateOccurrence('unknown', 1000L, 2001L, null, null, false)
+])
+DuplicateAnalysis unknownProvenanceAnalysis = new CoreDuplicateAnalyzer().analyze(unknownProvenanceSnapshot)
+check('unknown provenance blocks De-Dupe',
+    unknownProvenanceAnalysis.groups[0].selectable, false)
+check('unknown provenance blocker is explicit',
+    unknownProvenanceAnalysis.groups[0].blockers.contains('occurrence-provenance'), true)
+
+StructureSnapshot noValidOccurrenceSnapshot = twoOccurrenceSnapshot.copyWith(occurrences: [
+    duplicateOccurrence('invalid-a', 1000L, 3000L, 'JIRA_LINK', '22'),
+    duplicateOccurrence('invalid-b', 1000L, 3001L, 'JIRA_LINK', '22')
+], relations: [
+    relationFor(3000L, 100L, null, []),
+    relationFor(3001L, 100L, null, []),
+    relationFor(1000L, 200L, 2000L, [2000L])
+])
+DuplicateAnalysis noValidOccurrenceAnalysis = new CoreDuplicateAnalyzer().analyze(noValidOccurrenceSnapshot)
+check('no hierarchy-valid occurrence blocks De-Dupe',
+    noValidOccurrenceAnalysis.groups[0].blockers.contains('no-hierarchy-valid-occurrence'), true)
+check('invalid hierarchy is a complete finding, not a failed analysis',
+    noValidOccurrenceAnalysis.complete, true)
+
+DuplicateAnalysis incompleteDuplicateAnalysis = new CoreDuplicateAnalyzer().analyze(
+    twoOccurrenceSnapshot.copyWith(complete: false))
+check('duplicates remain visible for incomplete snapshot',
+    incompleteDuplicateAnalysis.groups*.issueId, [1000L])
+check('incomplete impact blocks De-Dupe',
+    incompleteDuplicateAnalysis.groups[0].blockers.contains('structure-snapshot'), true)
+
+DuplicateAnalysis noFilterAnalysis = new CoreDuplicateAnalyzer().analyze(
+    twoOccurrenceSnapshot.copyWith(generators: [hierarchyGenerator, linkGenerator]))
+check('missing duplicates filter is explained',
+    noFilterAnalysis.groups[0].explanations.contains('No enabled duplicates filter is present'), true)
+
+DuplicateAnalysis misplacedFilterAnalysis = new CoreDuplicateAnalyzer().analyze(
+    twoOccurrenceSnapshot.copyWith(generators: [
+        hierarchyGenerator,
+        linkGenerator,
+        duplicateFilter.copyWith(order: 1)
+    ]))
+check('misplaced duplicates filter is explained',
+    misplacedFilterAnalysis.groups[0].explanations.contains(
+        'Duplicates filter runs before an occurrence source'), true)
+
+DuplicateAnalysis permanentGeneratedAnalysis = new CoreDuplicateAnalyzer().analyze(
+    twoOccurrenceSnapshot.copyWith(occurrences: [
+        duplicateOccurrence('permanent', 1000L, 2000L, 'PERMANENT', null),
+        duplicateOccurrence('generated', 1000L, 2000L, 'ADVANCED_ROADMAPS', '21')
+    ]))
+check('permanent and generated overlap is explained',
+    permanentGeneratedAnalysis.groups[0].explanations.contains(
+        'Permanent and generated occurrences overlap'), true)
+
+DuplicateAnalysis repeatedDuplicateAnalysis = new CoreDuplicateAnalyzer().analyze(twoOccurrenceSnapshot)
+check('duplicate group ID is deterministic',
+    repeatedDuplicateAnalysis.groups[0].id,
+    twoOccurrenceAnalysis.groups[0].id)
+check('duplicate finding ID is deterministic',
+    repeatedDuplicateAnalysis.findings[0].id,
+    twoOccurrenceAnalysis.findings[0].id)
+
+File duplicateScenariosFixture = new File(fixtureRoot, 'duplicate-scenarios.json')
+ok('duplicate scenarios fixture exists', duplicateScenariosFixture.isFile())
+if (duplicateScenariosFixture.isFile()) {
+    Map<String, Object> duplicateScenarioData = (Map<String, Object>) new groovy.json.JsonSlurper()
+        .parse(duplicateScenariosFixture)
+    check('duplicate fixture covers approved cases',
+        ((List<Map<String, Object>>) duplicateScenarioData.scenarios)*.name,
+        [
+            'two-occurrences',
+            'three-occurrences',
+            'native-hierarchy-plus-jira-link',
+            'two-inserters',
+            'permanent-plus-generated',
+            'identical-rows',
+            'unknown-provenance',
+            'filter-order'
+        ])
 }
 
 println 'PASSED: ' + passed

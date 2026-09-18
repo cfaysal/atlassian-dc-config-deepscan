@@ -1,0 +1,12 @@
+{
+  "scenarios": [
+    {"name": "two-occurrences", "occurrenceIds": ["a", "b"]},
+    {"name": "three-occurrences", "occurrenceIds": ["a", "b", "c"]},
+    {"name": "native-hierarchy-plus-jira-link", "provenance": ["ADVANCED_ROADMAPS", "JIRA_LINK"]},
+    {"name": "two-inserters", "creatorIds": ["31", "32"]},
+    {"name": "permanent-plus-generated", "provenance": ["PERMANENT", "ADVANCED_ROADMAPS"]},
+    {"name": "identical-rows", "physicalRows": ["row-a", "row-b"]},
+    {"name": "unknown-provenance", "provenanceComplete": false},
+    {"name": "filter-order", "sourceOrder": 2, "filterOrder": 1}
+  ]
+}
