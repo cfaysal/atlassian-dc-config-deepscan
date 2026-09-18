@@ -83,7 +83,16 @@ class AutomationRuleSnapshot {
     List<Long> issueTypeIds
     List<String> reads
     List<String> writes
+    List<String> clears
+    Map<String, List<String>> sourcesByTarget
+    String trigger
+    List<String> orderedComponents
+    List<String> conditions
+    boolean asynchronous
+    boolean allowOtherRuleTrigger
+    String actor
     String revision
+    String exportVersion
     boolean complete
 }
 
@@ -93,6 +102,8 @@ class AutomationAuditSnapshot {
     long issueId
     String occurredAt
     String action
+    String target
+    boolean successful
     String revision
 }
 

@@ -1,6 +1,7 @@
 package structuredoctor
 
 import groovy.transform.CompileStatic
+import groovy.transform.KnownImmutable
 
 @CompileStatic
 enum ReadState {
@@ -11,6 +12,7 @@ enum ReadState {
 }
 
 @CompileStatic
+@KnownImmutable
 final class Coverage {
     final long requested
     final long actual

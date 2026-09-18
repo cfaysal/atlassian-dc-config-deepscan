@@ -1,0 +1,41 @@
+{
+  "exportVersion": "1",
+  "rules": [
+    {
+      "id": 541,
+      "enabled": true,
+      "projects": [101],
+      "issueTypes": [200],
+      "reads": ["field:source-a"],
+      "writes": ["field:parent"],
+      "clears": [],
+      "sourcesByTarget": {"field:parent": ["field:source-a"]},
+      "trigger": "ISSUE_UPDATED",
+      "orderedComponents": ["TRIGGER", "CONDITION", "ACTION"],
+      "conditions": ["SCOPE_MATCH"],
+      "asynchronous": true,
+      "allowOtherRuleTrigger": true,
+      "actor": "AUTOMATION",
+      "revision": "rule-541-r1",
+      "complete": true
+    },
+    {
+      "id": 562,
+      "enabled": true,
+      "projects": [101],
+      "issueTypes": [200],
+      "reads": ["field:source-b"],
+      "writes": ["field:parent"],
+      "clears": ["field:parent"],
+      "sourcesByTarget": {"field:parent": ["field:source-b"]},
+      "trigger": "ISSUE_UPDATED",
+      "orderedComponents": ["TRIGGER", "ACTION"],
+      "conditions": [],
+      "asynchronous": false,
+      "allowOtherRuleTrigger": false,
+      "actor": "AUTOMATION",
+      "revision": "rule-562-r1",
+      "complete": true
+    }
+  ]
+}

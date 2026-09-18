@@ -183,11 +183,14 @@ jobs:
           mkdir -p /tmp/doctor-classes
           mapfile -t SOURCES < <(find jira/structuredoctor -maxdepth 1 -name 'Core*.groovy' -print | sort)
           SOURCES+=(jira/structuredoctor/DoctorContracts.groovy)
+          SOURCES+=(jira/structuredoctor/JsonAutomationProvider.groovy)
           test "${#SOURCES[@]}" -gt 1
           java -Dfile.encoding=UTF-8 -cp "$GROOVY_CP" \
             org.codehaus.groovy.tools.FileSystemCompiler -d /tmp/doctor-classes "${SOURCES[@]}"
           java -Dfile.encoding=UTF-8 -cp "$GROOVY_CP:/tmp/doctor-classes" \
             groovy.ui.GroovyMain jira/tests/structureIssueDoctor.core.tests.groovy
+          java -Dfile.encoding=UTF-8 -DrepoRoot=. -cp "$GROOVY_CP:/tmp/doctor-classes" \
+            groovy.ui.GroovyMain jira/tests/structureIssueDoctor.automation.tests.groovy
 
           fail=0
           while IFS= read -r -d '' file; do

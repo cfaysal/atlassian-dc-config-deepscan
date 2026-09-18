@@ -1,0 +1,95 @@
+{
+  "cloud": false,
+  "rules": [
+    {
+      "id": 9001,
+      "clientKey": "synthetic-client",
+      "name": "Synthetic hierarchy rule",
+      "state": "ENABLED",
+      "description": "Synthetic fixture",
+      "authorAccountId": "synthetic-author",
+      "actorAccountId": "synthetic-actor",
+      "created": "2026-09-01T00:00:00Z",
+      "updated": "2026-09-18T00:00:00Z",
+      "trigger": {
+        "id": "trigger-1",
+        "component": "TRIGGER",
+        "schemaVersion": 1,
+        "type": "jira.issue.field.changed",
+        "value": {
+          "synchronous": false,
+          "fields": [
+            {"type": "field", "value": "customfield_10001"}
+          ],
+          "actions": []
+        },
+        "children": [],
+        "conditions": []
+      },
+      "components": [
+        {
+          "id": "branch-1",
+          "component": "BRANCH",
+          "schemaVersion": 1,
+          "type": "jira.issue.related",
+          "value": {
+            "relatedType": "linked",
+            "jql": "project = SYNTHETIC",
+            "linkTypes": [900],
+            "onlyUpdatedIssues": false,
+            "processIssuesInBulk": false
+          },
+          "children": [
+            {
+              "id": "condition-1",
+              "parentId": "branch-1",
+              "component": "CONDITION",
+              "schemaVersion": 1,
+              "type": "jira.jql.condition",
+              "value": "synthetic condition",
+              "children": [],
+              "conditions": []
+            },
+            {
+              "id": "action-1",
+              "parentId": "branch-1",
+              "component": "ACTION",
+              "schemaVersion": 1,
+              "type": "com.onresolve.jira.groovy.groovyrunner:execute-script-issue-action-v2",
+              "value": {
+                "note": "Synthetic inert payload",
+                "scriptConfig": {
+                  "parameters": {},
+                  "script": "throw new IllegalStateException('must never execute')"
+                },
+                "errors": [],
+                "assetKey": "",
+                "aql": "",
+                "loadedAction": {
+                  "componentType": "ACTION",
+                  "isEditable": true,
+                  "name": "Synthetic script",
+                  "type": "synthetic"
+                },
+                "editorSettings": {
+                  "hapiLinterEnabled": false,
+                  "miniMapEnabled": false
+                }
+              },
+              "children": [],
+              "conditions": []
+            }
+          ],
+          "conditions": []
+        }
+      ],
+      "projects": [
+        {"projectId": 101, "projectTypeKey": "software"}
+      ],
+      "canOtherRuleTrigger": true,
+      "notifyOnError": "FIRSTERROR",
+      "labels": [],
+      "tags": []
+    }
+  ]
+}

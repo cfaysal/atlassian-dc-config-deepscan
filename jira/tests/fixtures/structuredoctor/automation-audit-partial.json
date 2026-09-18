@@ -1,0 +1,19 @@
+{
+  "exportVersion": "1",
+  "requestedDays": 30,
+  "actualDays": 7,
+  "capped": false,
+  "fromInclusive": "2026-09-12",
+  "toInclusive": "2026-09-18",
+  "entries": [
+    {
+      "ruleId": 541,
+      "issueId": 1000,
+      "occurredAt": "2026-09-18T10:00:00Z",
+      "action": "FIELD_WRITE",
+      "target": "field:parent",
+      "successful": true,
+      "revision": "audit-1"
+    }
+  ]
+}
