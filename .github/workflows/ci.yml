@@ -155,6 +155,17 @@ jobs:
           } > /tmp/testsuite.groovy
           java -Xmx2g -Dfile.encoding=UTF-8 -cp "$GROOVY_CP" groovy.ui.GroovyMain /tmp/testsuite.groovy
 
+      - name: Structure Doctor capability-probe contract
+        if: matrix.product == 'jira'
+        run: |
+          set -euo pipefail
+          java -Dfile.encoding=UTF-8 -DrepoRoot=. -cp "$GROOVY_CP" \
+            groovy.ui.GroovyMain tools/tests/structure-doctor-capability-probe.tests.groovy
+          java -Dfile.encoding=UTF-8 -DrepoRoot=. -cp "$GROOVY_CP" \
+            groovy.ui.GroovyMain tools/tests/jira-typecheck.tests.groovy
+          java -Dfile.encoding=UTF-8 -cp "$GROOVY_CP" groovy.ui.GroovyMain \
+            tools/parsecheck.groovy tools/structure-doctor-capability-probe.groovy
+
   hygiene:
     name: Publication hygiene
     runs-on: ubuntu-latest

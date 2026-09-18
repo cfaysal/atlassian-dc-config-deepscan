@@ -473,6 +473,29 @@ Still unproven, and named here rather than left to be assumed:
   the script block; it cannot prove the filter accepts this request, because the filter is
   not part of the offline block. That remains open until the button is pressed on ScriptRunner.
 
+## Structure Doctor capability probe
+
+`tools/structure-doctor-capability-probe.groovy` is a development-only ScriptRunner probe.
+It reports the installed Jira, Advanced Roadmaps, Structure, and Automation versions plus
+public service signatures relevant to hierarchy, forest, generator, provenance, revision,
+rule, audit, history, preview, lock, and setting reads.
+
+The probe is deliberately read-only. It does not change the global Jira hierarchy,
+Automation rules, Jira work items, or Structure configuration. An unresolved service is
+reported as `UNAVAILABLE`, a failed reflective read as `FAILED`, and a successful service
+read without relevant signatures as `NO_MATCHING_METHODS`. None of those states proves that
+a capability is absent from every installed component.
+
+The output contains class and method names but no work-item data, generator payloads, JQL,
+credentials, hostnames, or URLs. It is evidence for adapter design, not permission to enable
+a writer. Structure or Jira-data repair remains disabled until preview, revision, mutation,
+restore, cluster lock, cluster-visible journal, recalculation, and target-state verification
+have been proven separately on an authorized disposable target.
+
+`tools/jira-typecheck.jsh` compiles a selected script against paths supplied explicitly as
+JVM properties. It carries no customer path and fails when the target or required properties
+are missing.
+
 ## Licence
 
 Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
