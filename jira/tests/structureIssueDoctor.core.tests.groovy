@@ -1,5 +1,6 @@
 import structuredoctor.Coverage
 import structuredoctor.CoreSupport
+import structuredoctor.CoreCanonical
 import structuredoctor.AnalysisScope
 import structuredoctor.AuditRequest
 import structuredoctor.AutomationAuditSnapshot
@@ -313,6 +314,77 @@ check('lock contract', StructureLock.declaredMethods*.name as Set<String>,
     ['withLock'] as Set<String>)
 check('clock contract', DoctorClock.declaredMethods*.name as Set<String>,
     ['now'] as Set<String>)
+
+check('canonical map order',
+    CoreCanonical.sha256([b: 2, a: 1]),
+    CoreCanonical.sha256([a: 1L, b: 2L]))
+ok('canonical list order matters',
+    CoreCanonical.sha256([generators: [11L, 12L]]) !=
+        CoreCanonical.sha256([generators: [12L, 11L]]))
+check('canonical sets are order independent',
+    CoreCanonical.sha256([values: ([3L, 1L, 2L] as Set<Long>)]),
+    CoreCanonical.sha256([values: ([2L, 3L, 1L] as Set<Long>)]))
+check('integral number types normalize to long',
+    CoreCanonical.canonicalJson([value: 7 as Integer]),
+    CoreCanonical.canonicalJson([value: 7L]))
+
+boolean unsupportedCanonicalValueRejected = false
+try {
+    CoreCanonical.canonicalJson([value: new File('unsupported')])
+} catch (IllegalArgumentException expected) {
+    unsupportedCanonicalValueRejected = true
+}
+ok('unsupported canonical value is rejected', unsupportedCanonicalValueRejected)
+
+String snapshotFingerprint = CoreCanonical.planningFingerprint(snapshot)
+ok('complete snapshot has planning fingerprint', snapshotFingerprint ==~ /[0-9a-f]{64}/)
+check('snapshot method delegates to canonical fingerprint',
+    snapshot.planningFingerprint(), snapshotFingerprint)
+StructureSnapshot incompleteSnapshot = snapshot.copyWith(complete: false)
+check('incomplete snapshot has no planning fingerprint',
+    CoreCanonical.planningFingerprint(incompleteSnapshot), null)
+check('incomplete snapshot method has no planning fingerprint',
+    incompleteSnapshot.planningFingerprint(), null)
+
+String occurrenceId = CoreCanonical.deterministicId('occurrence', [
+    structureId: snapshot.structureId,
+    issueId: occurrence.issueId,
+    rowId: occurrence.rowId,
+    parentPath: occurrence.parentPath,
+    provenance: occurrence.provenance,
+    creatorId: occurrence.creatorId
+])
+check('deterministic occurrence ID', occurrenceId,
+    CoreCanonical.deterministicId('occurrence', [
+        creatorId: occurrence.creatorId,
+        provenance: occurrence.provenance,
+        parentPath: occurrence.parentPath,
+        rowId: occurrence.rowId,
+        issueId: occurrence.issueId,
+        structureId: snapshot.structureId
+    ]))
+
+File fixtureRoot = new File(System.getProperty('repoRoot', '.'),
+    'jira/tests/fixtures/structuredoctor')
+File completeFixture = new File(fixtureRoot, 'complete-snapshot.json')
+File incompleteFixture = new File(fixtureRoot, 'incomplete-forest.json')
+File changedHierarchyFixture = new File(fixtureRoot, 'changed-hierarchy.json')
+ok('complete snapshot fixture exists', completeFixture.isFile())
+ok('incomplete forest fixture exists', incompleteFixture.isFile())
+ok('changed hierarchy fixture exists', changedHierarchyFixture.isFile())
+
+if (completeFixture.isFile() && incompleteFixture.isFile() && changedHierarchyFixture.isFile()) {
+    def parser = new groovy.json.JsonSlurper()
+    Map<String, Object> completeData = (Map<String, Object>) parser.parse(completeFixture)
+    Map<String, Object> incompleteData = (Map<String, Object>) parser.parse(incompleteFixture)
+    Map<String, Object> changedData = (Map<String, Object>) parser.parse(changedHierarchyFixture)
+    check('fixture is synthetic Structure 1', completeData.structureId, 1)
+    check('fixture keeps ordered generator IDs',
+        ((List<Map<String, Object>>) completeData.generators)*.id, [11, 12])
+    check('incomplete fixture names failed source', incompleteData.readState, 'INCOMPLETE')
+    ok('changed hierarchy differs from complete hierarchy',
+        CoreCanonical.sha256(completeData.hierarchy) != CoreCanonical.sha256(changedData.hierarchy))
+}
 
 println 'PASSED: ' + passed
 println 'FAILED: ' + failed

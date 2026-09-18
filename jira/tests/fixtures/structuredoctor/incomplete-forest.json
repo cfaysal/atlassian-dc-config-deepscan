@@ -1,0 +1,8 @@
+{
+  "structureId": 1,
+  "revision": "s1",
+  "readState": "INCOMPLETE",
+  "reason": "row cap reached",
+  "rowsRead": 2,
+  "reportedRows": 3
+}

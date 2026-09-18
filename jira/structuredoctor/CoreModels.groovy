@@ -61,6 +61,10 @@ class StructureSnapshot {
     List<IssueRelationSnapshot> relations
     String fingerprint
     boolean complete
+
+    String planningFingerprint() {
+        CoreCanonical.planningFingerprint(this)
+    }
 }
 
 @Immutable(copyWith = true)

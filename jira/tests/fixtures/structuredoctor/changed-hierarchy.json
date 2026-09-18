@@ -1,0 +1,11 @@
+{
+  "structureId": 1,
+  "revision": "s1",
+  "readState": "COMPLETE",
+  "hierarchy": {
+    "levels": [
+      {"rank": 3, "levelId": "level-3", "issueTypeIds": [10001]},
+      {"rank": 2, "levelId": "level-2", "issueTypeIds": [10003]}
+    ]
+  }
+}

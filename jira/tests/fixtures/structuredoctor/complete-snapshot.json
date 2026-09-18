@@ -1,0 +1,19 @@
+{
+  "structureId": 1,
+  "revision": "s1",
+  "readState": "COMPLETE",
+  "hierarchy": {
+    "levels": [
+      {"rank": 3, "levelId": "level-3", "issueTypeIds": [10001]},
+      {"rank": 2, "levelId": "level-2", "issueTypeIds": [10002]}
+    ]
+  },
+  "generators": [
+    {"id": 11, "type": "INSERTER", "order": 0, "enabled": true},
+    {"id": 12, "type": "EXTENDER", "order": 1, "enabled": true}
+  ],
+  "occurrences": [
+    {"id": "occ-1", "issueId": 10001, "rowId": "row-1", "parentPath": [20001]},
+    {"id": "occ-2", "issueId": 10001, "rowId": "row-2", "parentPath": [20002]}
+  ]
+}
