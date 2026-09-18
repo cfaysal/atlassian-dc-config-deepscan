@@ -195,6 +195,15 @@ check('Structure package requires explicit confirmation',
     sharedPlan.packages[0].confirmations, [Confirmation.STRUCTURE_CHANGE])
 check('server candidate supplies exact after state',
     sharedPlan.packages[0].afterState, [scope: 'hierarchy-only'])
+check('package dependencies include the Structure planning fingerprint',
+    sharedPlan.packages[0].requirements*.source.contains('structure:9'), true)
+check('package dependencies include the Jira hierarchy fingerprint',
+    sharedPlan.packages[0].requirements*.source.contains('jira-hierarchy'), true)
+check('package dependencies include the generator revision',
+    sharedPlan.packages[0].requirements*.source.contains('generator:21'), true)
+check('package dependencies include affected Jira issue revisions',
+    sharedPlan.packages[0].requirements*.source.containsAll(
+        ['jira-issue:1000', 'jira-issue:1001']), true)
 
 ProposalPlan jiraPlan = planner.plan(
     beforeSnapshot, duplicates, groupOneSelection,
@@ -232,6 +241,9 @@ check('failed ProposalSource blocks planning',
     failedSourcePlan.blockers.contains('proposal-source'), true)
 
 RepairPackage packageValue = sharedPlan.packages[0]
+Map<String, String> currentPackageFingerprints = packageValue.requirements.collectEntries {
+    EvidenceRequirement requirement -> [(requirement.source): requirement.fingerprint]
+}
 Finding duplicateFindingOne = new Finding(
     id: 'g1', type: FindingType.DUPLICATE, issueId: 1000L,
     occurrenceIds: ['keep-1', 'remove-1'], summary: 'duplicate',
@@ -250,7 +262,7 @@ SimulationRequest safeRequest = new SimulationRequest(
     approvedNewFindingIds: [],
     beforeFindings: [duplicateFindingOne, duplicateFindingTwo],
     afterFindings: [],
-    currentFingerprints: ['structure-generator:21': 'generator-r1'],
+    currentFingerprints: currentPackageFingerprints,
     selectedPermanentRowIds: [],
     capabilityAvailable: true
 )
@@ -280,7 +292,7 @@ check('new finding blocker is explicit',
     regressionImpact.blockers.contains('new-unapproved-finding:new-finding'), true)
 
 ImpactResult staleImpact = simulator.simulate(safeRequest.copyWith(
-    currentFingerprints: ['structure-generator:21': 'generator-r2']))
+    currentFingerprints: currentPackageFingerprints + ['structure-generator:21': 'generator-r2']))
 check('stale dependency blocks apply', staleImpact.safeToApply, false)
 check('stale dependency blocker is explicit',
     staleImpact.blockers.contains('stale-dependency:structure-generator:21'), true)

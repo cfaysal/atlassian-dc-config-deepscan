@@ -47,3 +47,16 @@ interface StructureLock {
 interface DoctorClock {
     String now()
 }
+
+interface RepairInfrastructure {
+    RepairAvailability availability()
+    RepairOperation find(String operationId)
+    RepairOperation findPending(long structureId, List<Long> issueIds)
+    Object withLocks(long structureId, List<Long> issueIds, Closure<Object> work)
+    RepairRefresh refresh(RepairApplyRequest request)
+    RepairRefresh resumeContext(RepairOperation operation)
+    void persist(RepairOperation operation, RepairPackage repairPackage)
+    RepairMutationOutcome mutate(RepairPackage repairPackage)
+    VerificationOutcome verify(RepairRefresh context, boolean restored)
+    RepairMutationOutcome restore(RepairPackage repairPackage)
+}

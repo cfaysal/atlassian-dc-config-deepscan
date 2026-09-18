@@ -33,7 +33,9 @@ import structuredoctor.AnalyzeRequest
 import structuredoctor.CoreSupport
 import structuredoctor.DoctorAnalysis
 import structuredoctor.DoctorApplication
+import structuredoctor.DoctorRepairApplication
 import structuredoctor.DoctorRenderer
+import structuredoctor.DisabledRepairInfrastructure
 import structuredoctor.LiveAutomationProvider
 import structuredoctor.LiveConfigurationDiscovery
 import structuredoctor.LiveJiraGateway
@@ -43,6 +45,8 @@ import structuredoctor.PlanRequest
 import structuredoctor.ProposalPlan
 import structuredoctor.ProposalSource
 import structuredoctor.ReadResult
+import structuredoctor.RepairCoordinatorResult
+import structuredoctor.RepairOperation
 import structuredoctor.StructureChoice
 
 class ParentUpdateCheck {
@@ -853,6 +857,8 @@ DoctorApplication doctorApplication = new DoctorApplication(
         result?.isValid() && result.getIssue() != null ? result.getIssue().getId() : null
     })
 DoctorRenderer doctorRenderer = new DoctorRenderer()
+DoctorRepairApplication doctorRepairApplication = new DoctorRepairApplication(
+    new DisabledRepairInfrastructure())
 Closure<Object> legacyParentLinkRepair = {
         Long structureId, String issueKey, String ignoredConfirmation ->
     ApplicationUser user = authenticationContext.getLoggedInUser()
@@ -968,11 +974,54 @@ structureIssueDoctorPlan(httpMethod: 'POST', groups: ["jira-administrators"]) { 
         PlanRequest request = DoctorApplication.parsePlanRequest((Map<String, Object>) parsed)
         ProposalPlan plan = doctorApplication.plan(request)
         DoctorAnalysis analysis = doctorApplication.analysis(request.getSnapshotId())
+        doctorRepairApplication.registerPlan(analysis, plan)
         ReadResult<List<StructureChoice>> structures = doctorApplication.listStructures()
         respond.call(analysis == null ? 404 : 200,
             doctorRenderer.render(structures, analysis, plan), 'text/html;charset=UTF-8')
     } catch (IllegalArgumentException ignored) {
         respondJson.call(400, [ok: false, error: 'INVALID_PLAN_REQUEST'])
+    }
+}
+
+Closure<Map<String, Object>> repairResultPayload = { RepairCoordinatorResult result ->
+    RepairOperation operation = result.getOperation()
+    [
+        ok: result.getStatus() < 300,
+        code: result.getCode(),
+        replayed: result.isReplayed(),
+        blockers: result.getBlockers(),
+        operation: operation == null ? null : [
+            id: operation.getOperationId(),
+            state: operation.getState().name(),
+            history: operation.getHistory()*.name()
+        ]
+    ]
+}
+
+structureIssueDoctorApply(httpMethod: 'POST', groups: ["jira-administrators"]) { Object ignoredQueryParams, String body ->
+    ApplicationUser user = authenticationContext.getLoggedInUser()
+    if (user == null) return respondJson.call(401, [ok: false, error: 'AUTHENTICATION_REQUIRED'])
+    try {
+        Object parsed = body?.trim() ? new JsonSlurper().parseText(body) : null
+        if (!(parsed instanceof Map)) throw new IllegalArgumentException('JSON object required')
+        RepairCoordinatorResult result = doctorRepairApplication.apply(
+            (Map<String, Object>) parsed, user.getKey())
+        respondJson.call(result.getStatus(), repairResultPayload.call(result))
+    } catch (IllegalArgumentException ignored) {
+        respondJson.call(400, [ok: false, error: 'INVALID_APPLY_REQUEST'])
+    }
+}
+
+structureIssueDoctorStatus(httpMethod: 'GET', groups: ["jira-administrators"]) { Object queryParams, Object ignoredBody ->
+    ApplicationUser user = authenticationContext.getLoggedInUser()
+    if (user == null) return respondJson.call(401, [ok: false, error: 'AUTHENTICATION_REQUIRED'])
+    try {
+        String operationId = queryValue.call(queryParams, 'operationId')
+        RepairCoordinatorResult result = doctorRepairApplication.status(
+            operationId, user.getKey())
+        respondJson.call(result.getStatus(), repairResultPayload.call(result))
+    } catch (IllegalArgumentException ignored) {
+        respondJson.call(400, [ok: false, error: 'INVALID_STATUS_REQUEST'])
     }
 }
 

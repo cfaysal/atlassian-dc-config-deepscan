@@ -516,6 +516,21 @@ cluster lock, journal, recalculation, and measured target verification on an aut
 disposable test Structure. The existing narrow Parent Link compatibility endpoint retains
 its `SET_PARENT_LINK` confirmation contract and is not authority for the new Core writer.
 
+The transactional boundary rejects stale hierarchy, Automation rule, Jira work-item,
+Structure, and generator fingerprints. It journals bounded before/after state before the
+first write, locks the Structure plus every affected work item, applies one atomic package at
+most once, waits for recalculation, verifies the measured target, and restores exact prior
+state after a proven mismatch. A verification timeout is `PENDING`; an unverified restoration
+is `MANUAL_RECOVERY_REQUIRED`. Replaying the same operation ID is read-only, while reusing it
+with different inputs is rejected.
+
+`tools/structure-doctor-mutation-probe.groovy` is a separate development probe, not a normal
+Doctor endpoint. It refuses to run without an explicitly authorized disposable Structure,
+the exact confirmation constant, and the expected snapshot fingerprint. Its adapter performs
+only the smallest proven reversible mutation. Restoration runs in `finally`, waits for a new
+revision, and must reproduce the original fingerprint. The repository tests this lifecycle
+with a synthetic adapter; no live mutation probe is run by CI or by the implementation work.
+
 `tools/jira-typecheck.jsh` compiles a selected script against paths supplied explicitly as
 JVM properties. It carries no customer path and fails when the target or required properties
 are missing.

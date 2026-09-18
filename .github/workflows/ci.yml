@@ -195,6 +195,10 @@ jobs:
             groovy.ui.GroovyMain jira/tests/structureIssueDoctor.proposal.tests.groovy
           java -Dfile.encoding=UTF-8 -DrepoRoot=. -cp "$GROOVY_CP:/tmp/doctor-classes" \
             groovy.ui.GroovyMain jira/tests/structureIssueDoctor.application.tests.groovy
+          java -Dfile.encoding=UTF-8 -DrepoRoot=. -cp "$GROOVY_CP:/tmp/doctor-classes" \
+            groovy.ui.GroovyMain jira/tests/structureIssueDoctor.repair.tests.groovy
+          java -Dfile.encoding=UTF-8 -DrepoRoot=. -cp "$GROOVY_CP" \
+            groovy.ui.GroovyMain tools/tests/structure-doctor-mutation-probe.tests.groovy
 
           fail=0
           while IFS= read -r -d '' file; do

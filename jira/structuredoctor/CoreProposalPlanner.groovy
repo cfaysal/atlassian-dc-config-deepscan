@@ -103,7 +103,9 @@ final class CoreProposalPlanner {
 
     private static RepairPackage buildPackage(StructureSnapshot snapshot,
                                               ProposalCandidate candidate) {
-        List<String> candidateBlockers = candidate.blockers ?: []
+        List<String> candidateBlockers = new ArrayList<>(candidate.blockers ?: [])
+        List<EvidenceRequirement> requirements = dependencyRequirements(
+            snapshot, candidate, candidateBlockers)
         List<Confirmation> confirmations = [Confirmation.STRUCTURE_CHANGE]
         if (candidate.kind == RepairKind.JIRA_DATA) {
             confirmations.add(Confirmation.JIRA_DATA_CHANGE)
@@ -132,9 +134,62 @@ final class CoreProposalPlanner {
             explanation: candidate.explanation,
             warnings: candidate.warnings,
             confirmations: confirmations,
-            requirements: candidate.requirements,
+            requirements: requirements,
             blockers: candidateBlockers,
             selectable: candidateBlockers.isEmpty()
         )
+    }
+
+    private static List<EvidenceRequirement> dependencyRequirements(
+        StructureSnapshot snapshot, ProposalCandidate candidate, List<String> blockers) {
+        Map<String, EvidenceRequirement> values = new LinkedHashMap<>()
+        addRequirement(values, new EvidenceRequirement(
+            'structure:' + snapshot.structureId,
+            snapshot.planningFingerprint(), true), blockers)
+        if (snapshot.hierarchy?.fingerprint) {
+            addRequirement(values, new EvidenceRequirement(
+                'jira-hierarchy', snapshot.hierarchy.fingerprint, true), blockers)
+        } else {
+            blockers.add('dependency-fingerprint:jira-hierarchy')
+        }
+        for (Long generatorId : candidate.generatorIds ?: []) {
+            GeneratorSnapshot generator = snapshot.generators.find {
+                GeneratorSnapshot item -> item.generatorId == generatorId
+            }
+            if (generator?.revision) {
+                addRequirement(values, new EvidenceRequirement(
+                    'generator:' + generatorId, generator.revision, true), blockers)
+            } else {
+                blockers.add('dependency-fingerprint:generator:' + generatorId)
+            }
+        }
+        for (Long issueId : candidate.affectedIssueIds ?: []) {
+            IssueRelationSnapshot relation = snapshot.relations.find {
+                IssueRelationSnapshot item -> item.issueId == issueId
+            }
+            if (relation != null) {
+                String issueFingerprint = relation.revisions?.get('issue') ?:
+                    CoreCanonical.sha256(relation.revisions ?: [:])
+                addRequirement(values, new EvidenceRequirement(
+                    'jira-issue:' + issueId, issueFingerprint, true), blockers)
+            } else {
+                blockers.add('dependency-fingerprint:jira-issue:' + issueId)
+            }
+        }
+        for (EvidenceRequirement requirement : candidate.requirements ?: []) {
+            addRequirement(values, requirement, blockers)
+        }
+        values.values() as List<EvidenceRequirement>
+    }
+
+    private static void addRequirement(Map<String, EvidenceRequirement> values,
+                                       EvidenceRequirement requirement,
+                                       List<String> blockers) {
+        EvidenceRequirement previous = values.get(requirement.source)
+        if (previous != null && previous.fingerprint != requirement.fingerprint) {
+            blockers.add('dependency-conflict:' + requirement.source)
+        } else {
+            values.put(requirement.source, requirement)
+        }
     }
 }

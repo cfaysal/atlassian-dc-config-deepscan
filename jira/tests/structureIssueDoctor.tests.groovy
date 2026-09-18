@@ -35,13 +35,17 @@ if (endpoint.isFile()) {
         source.findAll(/(?m)^structureIssueDoctorAnalyze\(httpMethod: 'POST'/).size(), 1)
     check('one Structure-wide plan declaration',
         source.findAll(/(?m)^structureIssueDoctorPlan\(httpMethod: 'POST'/).size(), 1)
+    check('one transactional Apply declaration',
+        source.findAll(/(?m)^structureIssueDoctorApply\(httpMethod: 'POST'/).size(), 1)
+    check('one operation Status declaration',
+        source.findAll(/(?m)^structureIssueDoctorStatus\(httpMethod: 'GET'/).size(), 1)
     check('one fix declaration',
         source.findAll(/(?m)^structureIssueDoctorFix\(httpMethod: 'POST'/).size(), 1)
     check('all declarations are administrator-only',
-        source.findAll(/groups: \["jira-administrators"\]/).size(), 4)
+        source.findAll(/groups: \["jira-administrators"\]/).size(), 6)
     ok('anonymous declaration is absent', !source.contains('groups: []'))
     ok('handlers reject missing authentication',
-        source.findAll(/if \(user == null\)/).size() >= 4)
+        source.findAll(/if \(user == null\)/).size() >= 6)
     ok('legacy confirmation is frozen',
         source.contains("final String FIX_CONFIRMATION = 'SET_PARENT_LINK'"))
 

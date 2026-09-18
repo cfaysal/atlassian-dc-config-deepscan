@@ -95,3 +95,94 @@ class MutationReceipt {
     String revision
     String message
 }
+
+enum RepairCapability {
+    STRUCTURE_PREVIEW,
+    REVISION_READ,
+    TARGET_PERMISSION,
+    MUTATION,
+    EXACT_RESTORE,
+    STRUCTURE_LOCK,
+    ISSUE_COMPARE_AND_SET,
+    CLUSTER_JOURNAL,
+    RECALCULATION,
+    TARGET_VERIFICATION
+}
+
+final class RepairAvailability {
+    final boolean enabled
+    final List<RepairCapability> missing
+
+    RepairAvailability(boolean enabled, List<RepairCapability> missing) {
+        this.enabled = enabled
+        this.missing = new ArrayList<RepairCapability>(missing ?: [])
+            .unique().sort { it.name() }.asImmutable()
+    }
+
+    static RepairAvailability enabled() {
+        new RepairAvailability(true, [])
+    }
+
+    static RepairAvailability disabled(Collection<RepairCapability> missing) {
+        new RepairAvailability(false, (missing ?: []) as List<RepairCapability>)
+    }
+}
+
+@Immutable(copyWith = true)
+class RepairApplyRequest {
+    String operationId
+    long structureId
+    String repairPackageId
+    List<Long> affectedIssueIds
+    String actorKey
+    Map<String, String> expectedFingerprints
+    List<Confirmation> confirmations
+}
+
+@Immutable(copyWith = true)
+class RepairRefresh {
+    RepairPackage repairPackage
+    Map<String, String> currentFingerprints
+    ImpactResult impact
+}
+
+enum MutationDisposition {
+    APPLIED,
+    NOT_APPLIED,
+    PARTIAL
+}
+
+@Immutable(copyWith = true)
+class RepairMutationOutcome {
+    MutationDisposition disposition
+    String revision
+    String message
+}
+
+enum VerificationDisposition {
+    VERIFIED,
+    PENDING,
+    MISMATCH,
+    UNAVAILABLE
+}
+
+@Immutable(copyWith = true)
+class VerificationOutcome {
+    VerificationDisposition disposition
+    String message
+}
+
+@Immutable(copyWith = true)
+class RepairCoordinatorResult {
+    int status
+    String code
+    RepairOperation operation
+    boolean replayed
+    List<String> blockers
+}
+
+final class RepairLockUnavailableException extends RuntimeException {
+    RepairLockUnavailableException(String code) {
+        super(code)
+    }
+}
