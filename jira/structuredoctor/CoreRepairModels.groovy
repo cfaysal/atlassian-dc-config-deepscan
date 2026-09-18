@@ -7,17 +7,36 @@ enum RepairKind {
     JIRA_DATA
 }
 
+enum Confirmation {
+    STRUCTURE_CHANGE,
+    JIRA_DATA_CHANGE
+}
+
+enum RepairStrategy {
+    ADJUST_DUPLICATES_FILTER,
+    NARROW_INSERTER,
+    RESTRICT_EXTENDER,
+    REORDER_GENERATORS,
+    REMOVE_PERMANENT_ROW,
+    REPAIR_JIRA_PARENT
+}
+
 @Immutable(copyWith = true)
 class RepairPackage {
     String id
     RepairKind kind
+    RepairStrategy strategy
     List<String> findingGroupIds
     List<Long> affectedIssueIds
     List<Long> generatorIds
     Map<String, Object> beforeState
     Map<String, Object> afterState
-    List<String> confirmations
+    List<String> permanentRowIds
+    String explanation
+    List<String> warnings
+    List<Confirmation> confirmations
     List<EvidenceRequirement> requirements
+    List<String> blockers
     boolean selectable
 }
 

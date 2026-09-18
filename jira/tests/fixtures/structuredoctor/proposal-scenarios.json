@@ -1,0 +1,10 @@
+{
+  "scenarios": [
+    {"name": "competing-plans", "candidateCount": 2},
+    {"name": "shared-generator", "findingGroupIds": ["g1", "g2"], "atomic": true},
+    {"name": "jira-data-change", "confirmations": ["STRUCTURE_CHANGE", "JIRA_DATA_CHANGE"]},
+    {"name": "incomplete-preview", "safeToApply": false},
+    {"name": "unrelated-loss", "safeToApply": false},
+    {"name": "new-finding-regression", "safeToApply": false}
+  ]
+}

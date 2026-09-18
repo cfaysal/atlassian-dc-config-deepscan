@@ -17,6 +17,10 @@ interface AutomationDataProvider {
     ReadResult<List<AutomationAuditSnapshot>> readAudit(AuditRequest request)
 }
 
+interface ProposalSource {
+    ReadResult<List<ProposalCandidate>> readCandidates(StructureSnapshot snapshot)
+}
+
 interface StructureMutationGateway {
     MutationReceipt applyGeneratorPackage(GeneratorMutation mutation)
     MutationReceipt restoreGeneratorPackage(GeneratorMutation mutation)

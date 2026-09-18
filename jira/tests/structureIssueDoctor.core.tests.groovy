@@ -1,4 +1,5 @@
 import structuredoctor.Coverage
+import structuredoctor.Confirmation
 import structuredoctor.CoreSupport
 import structuredoctor.CoreCanonical
 import structuredoctor.CoreDuplicateAnalyzer
@@ -252,7 +253,7 @@ RepairPackage repairPackage = new RepairPackage(
     generatorIds: [11L],
     beforeState: [enabled: true],
     afterState: [enabled: false],
-    confirmations: ['CONFIRM_STRUCTURE_CHANGE'],
+    confirmations: [Confirmation.STRUCTURE_CHANGE],
     requirements: [requirement],
     selectable: true
 )
