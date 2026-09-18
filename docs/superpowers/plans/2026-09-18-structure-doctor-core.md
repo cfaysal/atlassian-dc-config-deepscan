@@ -283,6 +283,7 @@ ok('jira data needs extra confirmation', packageValue.confirmations.contains(Con
 
 ```text
 ANALYZED -> PLANNED -> CONFIRMED -> APPLIED -> VERIFYING
+CONFIRMED -> MUTATION_FAILED | MANUAL_RECOVERY_REQUIRED
 VERIFYING -> VERIFIED | PENDING | ROLLED_BACK | MANUAL_RECOVERY_REQUIRED
 PENDING -> VERIFYING
 ```
@@ -295,7 +296,7 @@ PENDING -> VERIFYING
 - [ ] Persist bounded before/after state before mutation. Never persist credentials, full rule payloads, full JQL, or unnecessary work-item content.
 - [ ] Rebuild every package server-side under the lock, compare fingerprints and package IDs, simulate again, then mutate at most once.
 - [ ] Require `CONFIRM_STRUCTURE_CHANGE` for Structure packages and both `CONFIRM_STRUCTURE_CHANGE` plus `CONFIRM_JIRA_DATA_CHANGE` when a package changes Jira data and Structure impact is included.
-- [ ] Verify the recalculated forest and actual Jira values. Timeout becomes `PENDING`; proven mismatch triggers exact restore; unverifiable restore becomes `MANUAL_RECOVERY_REQUIRED`.
+- [ ] Verify the recalculated forest and actual Jira values. Timeout becomes `PENDING`; proven mismatch triggers exact restore; unverifiable restore becomes `MANUAL_RECOVERY_REQUIRED`. An explicit no-op receipt becomes terminal `MUTATION_FAILED`; a missing receipt or writer exception becomes `MANUAL_RECOVERY_REQUIRED` without blind retry.
 - [ ] Keep global hierarchy and Automation providers outside the mutable dependency graph and add source tests proving no write path exists.
 - [ ] Register Apply and Status endpoints with admin groups and explicit authentication/permission checks.
 - [ ] Commit with `OP-1371 feat: add transactional Doctor repairs`.

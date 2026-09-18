@@ -60,6 +60,8 @@ class FakeRepairInfrastructure implements RepairInfrastructure {
     int findCalls
     RepairRefresh refreshed
     MutationDisposition mutationDisposition = MutationDisposition.APPLIED
+    boolean nullMutation
+    boolean mutationThrows
     MutationDisposition restoreDisposition = MutationDisposition.APPLIED
     List<VerificationDisposition> verification = [VerificationDisposition.VERIFIED]
     String lockFailure
@@ -95,6 +97,8 @@ class FakeRepairInfrastructure implements RepairInfrastructure {
     RepairMutationOutcome mutate(RepairPackage repairPackage) {
         order << 'mutate'
         mutateCalls++
+        if (mutationThrows) throw new IllegalStateException('synthetic mutation failure')
+        if (nullMutation) return null
         new RepairMutationOutcome(disposition: mutationDisposition,
             revision: 'mutation-r1', message: 'synthetic mutation')
     }
@@ -293,6 +297,40 @@ ok('unavailable refresh names its evidence blocker',
     unavailableRefresh.blockers.contains('repair-refresh'))
 check('unavailable refresh prevents mutation', unavailableRefreshInfra.mutateCalls, 0)
 
+FakeRepairInfrastructure notAppliedInfra = infrastructureFor()
+notAppliedInfra.mutationDisposition = MutationDisposition.NOT_APPLIED
+CoreRepairCoordinator notAppliedCoordinator = new CoreRepairCoordinator(notAppliedInfra)
+RepairApplyRequest notAppliedRequest = requestFor(
+    '00000000-0000-4000-8000-000000000012')
+RepairCoordinatorResult notApplied = notAppliedCoordinator.apply(notAppliedRequest)
+check('explicitly refused mutation is terminal', notApplied.operation.state,
+    OperationState.MUTATION_FAILED)
+check('explicitly refused mutation remains a failure', notApplied.status, 500)
+check('explicitly refused mutation runs once', notAppliedInfra.mutateCalls, 1)
+check('explicitly refused mutation replays the same failure',
+    notAppliedCoordinator.apply(notAppliedRequest).status, 500)
+check('explicitly refused mutation is not retried', notAppliedInfra.mutateCalls, 1)
+
+FakeRepairInfrastructure unknownMutationInfra = infrastructureFor()
+unknownMutationInfra.nullMutation = true
+CoreRepairCoordinator unknownMutationCoordinator = new CoreRepairCoordinator(
+    unknownMutationInfra)
+RepairCoordinatorResult unknownMutation = unknownMutationCoordinator.apply(requestFor(
+    '00000000-0000-4000-8000-000000000013'))
+check('missing mutation receipt needs manual recovery', unknownMutation.operation.state,
+    OperationState.MANUAL_RECOVERY_REQUIRED)
+check('missing mutation receipt is not reported as success', unknownMutation.status, 500)
+
+FakeRepairInfrastructure thrownMutationInfra = infrastructureFor()
+thrownMutationInfra.mutationThrows = true
+RepairCoordinatorResult thrownMutation = new CoreRepairCoordinator(
+    thrownMutationInfra).apply(requestFor(
+        '00000000-0000-4000-8000-000000000014'))
+check('mutator exception needs manual recovery', thrownMutation.operation.state,
+    OperationState.MANUAL_RECOVERY_REQUIRED)
+check('mutator exception is bounded', thrownMutation.code,
+    OperationState.MANUAL_RECOVERY_REQUIRED.name())
+
 FakeRepairInfrastructure mismatchInfra = infrastructureFor()
 mismatchInfra.verification = [VerificationDisposition.MISMATCH, VerificationDisposition.VERIFIED]
 RepairCoordinatorResult rolledBack = new CoreRepairCoordinator(mismatchInfra).apply(
@@ -358,6 +396,8 @@ check('both confirmations allow Jira package',
 Set<List<OperationState>> allowed = [
     [OperationState.ANALYZED, OperationState.PLANNED],
     [OperationState.PLANNED, OperationState.CONFIRMED],
+    [OperationState.CONFIRMED, OperationState.MUTATION_FAILED],
+    [OperationState.CONFIRMED, OperationState.MANUAL_RECOVERY_REQUIRED],
     [OperationState.CONFIRMED, OperationState.APPLIED],
     [OperationState.APPLIED, OperationState.VERIFYING],
     [OperationState.VERIFYING, OperationState.VERIFIED],

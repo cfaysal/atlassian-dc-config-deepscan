@@ -12,7 +12,9 @@ final class CoreRepairCoordinator {
     private static final Map<OperationState, Set<OperationState>> TRANSITIONS = [
         (OperationState.ANALYZED): [OperationState.PLANNED] as Set,
         (OperationState.PLANNED): [OperationState.CONFIRMED] as Set,
-        (OperationState.CONFIRMED): [OperationState.APPLIED] as Set,
+        (OperationState.CONFIRMED): [OperationState.APPLIED,
+            OperationState.MUTATION_FAILED,
+            OperationState.MANUAL_RECOVERY_REQUIRED] as Set,
         (OperationState.APPLIED): [OperationState.VERIFYING] as Set,
         (OperationState.VERIFYING): [OperationState.VERIFIED, OperationState.PENDING,
             OperationState.ROLLED_BACK, OperationState.MANUAL_RECOVERY_REQUIRED] as Set,
@@ -158,9 +160,20 @@ final class CoreRepairCoordinator {
             history: [OperationState.ANALYZED, OperationState.PLANNED,
                       OperationState.CONFIRMED])
         infrastructure.persist(operation, refresh.repairPackage)
-        RepairMutationOutcome mutation = infrastructure.mutate(refresh.repairPackage)
-        if (mutation?.disposition == MutationDisposition.NOT_APPLIED || mutation == null) {
-            return result(500, 'MUTATION_NOT_APPLIED', operation, false, [])
+        RepairMutationOutcome mutation
+        try {
+            mutation = infrastructure.mutate(refresh.repairPackage)
+        } catch (RuntimeException ignored) {
+            return finish(operation, refresh.repairPackage,
+                OperationState.MANUAL_RECOVERY_REQUIRED, 500)
+        }
+        if (mutation == null) {
+            return finish(operation, refresh.repairPackage,
+                OperationState.MANUAL_RECOVERY_REQUIRED, 500)
+        }
+        if (mutation.disposition == MutationDisposition.NOT_APPLIED) {
+            return finish(operation, refresh.repairPackage,
+                OperationState.MUTATION_FAILED, 500)
         }
         operation = advance(operation, OperationState.APPLIED)
         infrastructure.persist(operation, refresh.repairPackage)

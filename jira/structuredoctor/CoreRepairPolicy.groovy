@@ -63,6 +63,7 @@ final class CoreRepairPolicy {
         switch (state) {
             case OperationState.VERIFIED: return 200
             case OperationState.ROLLED_BACK: return 409
+            case OperationState.MUTATION_FAILED: return 500
             case OperationState.MANUAL_RECOVERY_REQUIRED: return 500
             default: return 202
         }

@@ -55,6 +55,7 @@ enum OperationState {
     ANALYZED,
     PLANNED,
     CONFIRMED,
+    MUTATION_FAILED,
     APPLIED,
     VERIFYING,
     VERIFIED,

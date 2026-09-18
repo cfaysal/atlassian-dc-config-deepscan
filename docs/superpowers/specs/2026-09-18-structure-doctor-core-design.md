@@ -460,10 +460,12 @@ An operation follows this lifecycle:
 
 ```text
 ANALYZED -> PLANNED -> CONFIRMED -> APPLIED -> VERIFYING
-                                               |-> VERIFIED
-                                               |-> ROLLED_BACK
-                                               |-> PENDING
-                                               |-> MANUAL_RECOVERY_REQUIRED
+                            |                    |-> VERIFIED
+                            |                    |-> ROLLED_BACK
+                            |                    |-> PENDING
+                            |                    |-> MANUAL_RECOVERY_REQUIRED
+                            |-> MUTATION_FAILED
+                            |-> MANUAL_RECOVERY_REQUIRED
 ```
 
 If no supported cluster-visible journal or lock capability can be proven, the affected repair type remains disabled.
@@ -478,6 +480,8 @@ If no supported cluster-visible journal or lock capability can be proven, the af
 - A source failure produces incomplete coverage and dependent blocked proposals.
 - An empty successful source and a failed source are separate states.
 - A timeout produces `PENDING` or incomplete coverage, never false success.
+- An explicit writer receipt proving that nothing was applied produces terminal `MUTATION_FAILED`.
+- A missing writer receipt or writer exception has an unknown target effect and produces `MANUAL_RECOVERY_REQUIRED` without an automatic blind retry.
 - A rollback failure produces `MANUAL_RECOVERY_REQUIRED` and blocks further conflicting repairs.
 
 ## Performance constraints
