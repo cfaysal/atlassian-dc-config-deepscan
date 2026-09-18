@@ -1,0 +1,6 @@
+{
+  "scenario": "incomplete",
+  "hierarchyComplete": false,
+  "readState": "INCOMPLETE",
+  "reason": "synthetic row cap reached"
+}

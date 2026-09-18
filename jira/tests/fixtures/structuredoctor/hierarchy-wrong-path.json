@@ -1,0 +1,10 @@
+{
+  "scenario": "wrong-path",
+  "hierarchyComplete": true,
+  "occurrences": [
+    {"occurrenceId": "wrong-path-occurrence", "issueId": 1000, "parentIssueId": 2001}
+  ],
+  "relations": [
+    {"issueId": 1000, "issueTypeId": 200, "nativeParentId": 2000, "leadingParentIds": [2000]}
+  ]
+}

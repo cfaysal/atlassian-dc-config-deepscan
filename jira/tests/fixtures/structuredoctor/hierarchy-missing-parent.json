@@ -1,0 +1,7 @@
+{
+  "scenario": "missing-parent",
+  "hierarchyComplete": true,
+  "relations": [
+    {"issueId": 1000, "issueTypeId": 200, "nativeParentId": null, "leadingParentIds": [2000]}
+  ]
+}

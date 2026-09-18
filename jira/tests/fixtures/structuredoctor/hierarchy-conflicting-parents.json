@@ -1,0 +1,7 @@
+{
+  "scenario": "conflicting-parents",
+  "hierarchyComplete": true,
+  "relations": [
+    {"issueId": 1000, "issueTypeId": 200, "nativeParentId": 2001, "leadingParentIds": [2000]}
+  ]
+}

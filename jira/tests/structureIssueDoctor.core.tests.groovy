@@ -1,6 +1,7 @@
 import structuredoctor.Coverage
 import structuredoctor.CoreSupport
 import structuredoctor.CoreCanonical
+import structuredoctor.CoreHierarchyAnalyzer
 import structuredoctor.AnalysisScope
 import structuredoctor.AuditRequest
 import structuredoctor.AutomationAuditSnapshot
@@ -15,6 +16,7 @@ import structuredoctor.FindingType
 import structuredoctor.GeneratorMutation
 import structuredoctor.GeneratorSnapshot
 import structuredoctor.HierarchyLevel
+import structuredoctor.HierarchyAnalysis
 import structuredoctor.HierarchyProvider
 import structuredoctor.HierarchySnapshot
 import structuredoctor.ImpactResult
@@ -384,6 +386,180 @@ if (completeFixture.isFile() && incompleteFixture.isFile() && changedHierarchyFi
     check('incomplete fixture names failed source', incompleteData.readState, 'INCOMPLETE')
     ok('changed hierarchy differs from complete hierarchy',
         CoreCanonical.sha256(completeData.hierarchy) != CoreCanonical.sha256(changedData.hierarchy))
+}
+
+HierarchySnapshot analysisHierarchy = new HierarchySnapshot(
+    levels: [
+        new HierarchyLevel(rank: 3L, levelId: 'goal', name: 'Goal', issueTypeIds: [300L]),
+        new HierarchyLevel(rank: 2L, levelId: 'field', name: 'Field', issueTypeIds: [200L]),
+        new HierarchyLevel(rank: 1L, levelId: 'initiative', name: 'Initiative', issueTypeIds: [100L])
+    ],
+    fingerprint: 'hierarchy-analysis-fingerprint'
+)
+
+def relationFor = { long issueId, long issueTypeId, Long nativeParentId, List<Long> leadingParentIds ->
+    new IssueRelationSnapshot(
+        issueId: issueId,
+        issueTypeId: issueTypeId,
+        nativeParentId: nativeParentId,
+        leadingParentIds: leadingParentIds,
+        revisions: [issue: 'r-' + issueId]
+    )
+}
+
+def hierarchySnapshotFor = { List<IssueRelationSnapshot> relations,
+                             List<OccurrenceSnapshot> occurrences = [],
+                             boolean complete = true ->
+    new StructureSnapshot(
+        structureId: 9L,
+        revision: 'structure-analysis-r1',
+        hierarchy: analysisHierarchy,
+        generators: [],
+        occurrences: occurrences,
+        relations: relations,
+        fingerprint: 'analysis-snapshot',
+        complete: complete
+    )
+}
+
+IssueRelationSnapshot validParent = relationFor(2000L, 300L, null, [])
+IssueRelationSnapshot alternativeParent = relationFor(2001L, 300L, null, [])
+
+HierarchyAnalysis missingParentAnalysis = new CoreHierarchyAnalyzer().analyze(
+    hierarchySnapshotFor([validParent, relationFor(1000L, 200L, null, [2000L])]))
+check('detects missing parent', missingParentAnalysis.findings*.type,
+    [FindingType.MISSING_PARENT])
+check('missing parent uses hierarchy evidence',
+    missingParentAnalysis.findings[0].requirements*.source, ['jira-hierarchy'])
+
+HierarchyAnalysis conflictingParentAnalysis = new CoreHierarchyAnalyzer().analyze(
+    hierarchySnapshotFor([
+        validParent,
+        alternativeParent,
+        relationFor(1000L, 200L, 2001L, [2000L])
+    ]))
+check('detects conflicting parents', conflictingParentAnalysis.findings*.type,
+    [FindingType.CONFLICTING_PARENT])
+
+IssueRelationSnapshot invalidLevelParent = relationFor(3000L, 100L, null, [])
+HierarchyAnalysis invalidLevelAnalysis = new CoreHierarchyAnalyzer().analyze(
+    hierarchySnapshotFor([
+        invalidLevelParent,
+        relationFor(1000L, 200L, 3000L, [3000L])
+    ]))
+check('detects invalid parent level', invalidLevelAnalysis.findings*.type,
+    [FindingType.INVALID_LEVEL, FindingType.ORPHAN])
+
+HierarchyAnalysis orphanAnalysis = new CoreHierarchyAnalyzer().analyze(
+    hierarchySnapshotFor([relationFor(1000L, 200L, null, [])]))
+check('detects hierarchy orphan', orphanAnalysis.findings*.type,
+    [FindingType.ORPHAN])
+
+OccurrenceSnapshot wrongPathOccurrence = new OccurrenceSnapshot(
+    occurrenceId: 'wrong-path-occurrence',
+    issueId: 1000L,
+    rowId: 'wrong-row',
+    parentPath: [2001L],
+    parentIssueId: 2001L,
+    depth: 1,
+    position: 0,
+    provenance: 'generator-11',
+    creatorId: '11',
+    provenanceComplete: true
+)
+HierarchyAnalysis wrongPathAnalysis = new CoreHierarchyAnalyzer().analyze(
+    hierarchySnapshotFor([
+        validParent,
+        alternativeParent,
+        relationFor(1000L, 200L, 2000L, [2000L])
+    ], [wrongPathOccurrence]))
+check('detects wrong Structure path', wrongPathAnalysis.findings*.type,
+    [FindingType.WRONG_PATH])
+check('wrong path identifies occurrence', wrongPathAnalysis.findings[0].occurrenceIds,
+    ['wrong-path-occurrence'])
+
+HierarchyAnalysis incompleteHierarchyAnalysis = new CoreHierarchyAnalyzer().analyze(
+    hierarchySnapshotFor([relationFor(1000L, 200L, null, [])], [], false))
+check('incomplete snapshot is not a complete hierarchy analysis',
+    incompleteHierarchyAnalysis.complete, false)
+check('incomplete snapshot names hierarchy blocker',
+    incompleteHierarchyAnalysis.blockers, ['jira-hierarchy'])
+check('incomplete snapshot is not rendered as a clean finding set',
+    incompleteHierarchyAnalysis.clean(), false)
+check('incomplete hierarchy does not claim partial findings',
+    incompleteHierarchyAnalysis.findings, [])
+
+HierarchyAnalysis validHierarchyAnalysis = new CoreHierarchyAnalyzer().analyze(
+    hierarchySnapshotFor([
+        validParent,
+        relationFor(1000L, 200L, 2000L, [2000L])
+    ]))
+check('valid hierarchy has no findings', validHierarchyAnalysis.findings, [])
+check('valid hierarchy analysis is complete', validHierarchyAnalysis.complete, true)
+check('valid hierarchy analysis is clean', validHierarchyAnalysis.clean(), true)
+
+HierarchyAnalysis repeatedMissingParentAnalysis = new CoreHierarchyAnalyzer().analyze(
+    hierarchySnapshotFor([validParent, relationFor(1000L, 200L, null, [2000L])]))
+check('hierarchy finding ID is deterministic',
+    repeatedMissingParentAnalysis.findings[0].id,
+    missingParentAnalysis.findings[0].id)
+
+HierarchySnapshot renamedHierarchy = new HierarchySnapshot(
+    levels: [
+        new HierarchyLevel(rank: 71L, levelId: 'upper', name: 'Upper', issueTypeIds: [700L]),
+        new HierarchyLevel(rank: 70L, levelId: 'lower', name: 'Lower', issueTypeIds: [600L])
+    ],
+    fingerprint: 'renamed-hierarchy-fingerprint'
+)
+StructureSnapshot renamedHierarchySnapshot = hierarchySnapshotFor([
+    relationFor(7000L, 700L, null, []),
+    relationFor(6000L, 600L, 7000L, [7000L])
+]).copyWith(hierarchy: renamedHierarchy)
+check('hierarchy analysis does not depend on SAFe names',
+    new CoreHierarchyAnalyzer().analyze(renamedHierarchySnapshot).clean(), true)
+
+StructureSnapshot duplicateOnlyIncompleteSnapshot = hierarchySnapshotFor([
+    relationFor(1000L, 200L, null, [])
+], [
+    wrongPathOccurrence.copyWith(occurrenceId: 'duplicate-a'),
+    wrongPathOccurrence.copyWith(occurrenceId: 'duplicate-b')
+], false)
+check('duplicate facts survive an incomplete hierarchy read',
+    duplicateOnlyIncompleteSnapshot.occurrences*.occurrenceId,
+    ['duplicate-a', 'duplicate-b'])
+
+OccurrenceSnapshot validOccurrence = wrongPathOccurrence.copyWith(
+    occurrenceId: 'valid-occurrence',
+    parentPath: [2000L],
+    parentIssueId: 2000L
+)
+StructureSnapshot largeSnapshot = hierarchySnapshotFor([
+    validParent,
+    relationFor(1000L, 200L, 2000L, [2000L])
+], Collections.nCopies(50000, validOccurrence))
+HierarchyAnalysis largeAnalysis = new CoreHierarchyAnalyzer().analyze(largeSnapshot)
+check('50,000-row hierarchy analysis remains clean', largeAnalysis.clean(), true)
+File hierarchyAnalyzerSource = new File(System.getProperty('repoRoot', '.'),
+    'jira/structuredoctor/CoreHierarchyAnalyzer.groovy')
+String hierarchyAnalyzerText = hierarchyAnalyzerSource.getText('UTF-8')
+check('Structure forest has one explicit traversal in analyzer source',
+    hierarchyAnalyzerText.readLines().count { String line ->
+        line.contains('for (OccurrenceSnapshot occurrence : snapshot.occurrences)')
+    }, 1)
+ok('hierarchy row loop performs no gateway call',
+    !hierarchyAnalyzerText.contains('Gateway') && !hierarchyAnalyzerText.contains('Provider'))
+
+[
+    'hierarchy-valid.json',
+    'hierarchy-missing-parent.json',
+    'hierarchy-conflicting-parents.json',
+    'hierarchy-invalid-level.json',
+    'hierarchy-orphan.json',
+    'hierarchy-wrong-path.json',
+    'hierarchy-incomplete.json'
+].each { String fixtureName ->
+    ok('hierarchy fixture exists: ' + fixtureName,
+        new File(fixtureRoot, fixtureName).isFile())
 }
 
 println 'PASSED: ' + passed

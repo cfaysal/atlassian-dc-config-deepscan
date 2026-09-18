@@ -1,0 +1,8 @@
+{
+  "scenario": "valid",
+  "hierarchyComplete": true,
+  "relations": [
+    {"issueId": 2000, "issueTypeId": 300, "nativeParentId": null, "leadingParentIds": []},
+    {"issueId": 1000, "issueTypeId": 200, "nativeParentId": 2000, "leadingParentIds": [2000]}
+  ]
+}

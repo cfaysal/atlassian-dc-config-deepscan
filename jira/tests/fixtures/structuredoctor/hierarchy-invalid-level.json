@@ -1,0 +1,8 @@
+{
+  "scenario": "invalid-level",
+  "hierarchyComplete": true,
+  "relations": [
+    {"issueId": 3000, "issueTypeId": 100, "nativeParentId": null, "leadingParentIds": []},
+    {"issueId": 1000, "issueTypeId": 200, "nativeParentId": 3000, "leadingParentIds": [3000]}
+  ]
+}

@@ -125,6 +125,17 @@ class Finding {
     List<String> blockers
 }
 
+@Immutable(copyWith = true)
+class HierarchyAnalysis {
+    List<Finding> findings
+    boolean complete
+    List<String> blockers
+
+    boolean clean() {
+        complete && findings.isEmpty()
+    }
+}
+
 enum EvidenceGrade {
     CONFIGURATION_CONFLICT,
     POSSIBLE_CAUSE,
