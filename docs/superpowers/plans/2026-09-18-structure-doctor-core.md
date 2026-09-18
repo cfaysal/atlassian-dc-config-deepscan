@@ -20,7 +20,7 @@
 - Use synthetic fixtures only. Never commit customer work-item keys, rule payloads, JQL, hostnames, credentials, or private infrastructure details.
 - Tag `pre-op-1371-structure-doctor-core` immediately before the first structural source split.
 - Every production behavior begins with a failing test that is observed to fail for the intended reason.
-- Keep each new Groovy source file at or below 250 lines.
+- Keep each new Groovy source file at or below 250 lines. The byte-identical 992-line legacy controller imported in Task 2 is the temporary baseline exception and is split beginning in Task 3.
 - Do not install, deploy, or mutate Jira, Structure, the global hierarchy, or Automation during offline implementation.
 - A missing, failed, capped, or partial read is never converted to an empty successful result.
 - A live writer remains disabled until preview, revision, mutation, restore, lock, journal, and verification capabilities are all proven on an authorized disposable target.
@@ -89,7 +89,7 @@ List<String> publicReadSignatures(Object service) {
 **Files:** Create `jira/structureIssueDoctor.groovy` and `jira/tests/structureIssueDoctor.tests.groovy`; modify `.github/workflows/ci.yml`.
 
 - [ ] Verify the source contains exactly one GET and one POST declaration and both contain `groups: ["jira-administrators"]`.
-- [ ] Add failing source-contract tests for authenticated-user checks, HTML escaping, JSON conversion, Structure ID parsing, optional work-item key, the two admin declarations, and `SET_PARENT_LINK`.
+- [ ] Add failing source-contract tests for authenticated-user checks, HTML escaping, JSON conversion, Structure ID parsing, the legacy required work-item key, the two admin declarations, and `SET_PARENT_LINK`. Optional focused display is introduced later in Task 10, not during the byte-identical import.
 
 ```groovy
 check('admin declarations', source.count('groups: ["jira-administrators"]'), 2)

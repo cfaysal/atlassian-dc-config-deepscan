@@ -29,6 +29,11 @@ jobs:
             tests: jira/tests/jiraDCprojectConfig.tests.groovy
             banner: END OF THE JIRA-FREE BLOCK
             helperClass: Pc
+          - product: jira-structure-doctor
+            endpoint: jira/structureIssueDoctor.groovy
+            tests: jira/tests/structureIssueDoctor.tests.groovy
+            banner: ""
+            helperClass: ""
           - product: confluence
             endpoint: confluence/confluenceDCspaceConfig.groovy
             tests: confluence/tests/confluenceDCspaceConfig.tests.groovy
@@ -127,6 +132,10 @@ jobs:
           fi
           if [ ! -f "$T" ]; then
             echo "::notice title=Not present::Test suite missing, suite skipped."
+            exit 0
+          fi
+          if [ '${{ matrix.product }}' = 'jira-structure-doctor' ]; then
+            java -Dfile.encoding=UTF-8 -DrepoRoot=. -cp "$GROOVY_CP" groovy.ui.GroovyMain "$T"
             exit 0
           fi
           START=$(grep -n "^class ${{ matrix.helperClass }} {" "$F" | cut -d: -f1)
