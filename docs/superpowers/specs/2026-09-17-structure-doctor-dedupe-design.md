@@ -1,6 +1,10 @@
 # Structure Issue Doctor De-Dupe Design
 
-Status: approved
+> **Superseded on 2026-09-18 by
+> `docs/superpowers/specs/2026-09-18-structure-doctor-core-design.md`.**
+> This document is retained as design history. Do not use it as the implementation authority for OP-1371.
+
+Status: superseded
 
 Date: 2026-09-17
 

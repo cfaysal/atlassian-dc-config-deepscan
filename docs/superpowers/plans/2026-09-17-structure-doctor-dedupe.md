@@ -1,5 +1,9 @@
 # Structure Doctor De-Dupe Implementation Plan
 
+> **Blocked and superseded on 2026-09-18. Do not execute this plan.**
+> The approved scope is now defined by
+> `docs/superpowers/specs/2026-09-18-structure-doctor-core-design.md` and includes dynamic global Jira hierarchy discovery, general hierarchy health analysis, Automation rule and audit correlation, causal evidence grading, selective fail-closed behavior, atomic generator packages, and separately confirmed Jira-data repairs. A replacement implementation plan is required after review of the new specification.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Deliver an administrator-only Structure Doctor that analyzes a selected Structure without requiring a work-item key, explains every duplicate occurrence, offers opt-in and fully simulated repair proposals, and applies only fresh, supported, journaled, idempotent, verifiable, and recoverable generator changes.
