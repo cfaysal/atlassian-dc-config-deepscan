@@ -26,13 +26,15 @@ import com.onresolve.scriptrunner.runner.customisers.PluginModule
 import com.onresolve.scriptrunner.runner.customisers.WithPlugin
 import com.onresolve.scriptrunner.runner.rest.common.CustomEndpointDelegate
 import groovy.json.JsonOutput
-import groovy.json.JsonSlurper
 import groovy.transform.BaseScript
 import org.codehaus.groovy.runtime.InvokerHelper
 import structuredoctor.AnalyzeRequest
 import structuredoctor.CoreSupport
+import structuredoctor.DoctorBoundaryException
 import structuredoctor.DoctorAnalysis
 import structuredoctor.DoctorApplication
+import structuredoctor.DoctorHttpDecision
+import structuredoctor.DoctorHttpGuard
 import structuredoctor.DoctorRepairApplication
 import structuredoctor.DoctorRenderer
 import structuredoctor.DisabledRepairInfrastructure
@@ -74,7 +76,6 @@ class InspectionResult {
  * Legacy compatibility fix (not used by the Structure-wide Core UI):
  *   POST /rest/scriptrunner/latest/custom/structureIssueDoctorFix
  *   Content-Type: application/json
- *   X-Atlassian-Token: no-check
  *   {"structureId":123,"issueKey":"ABC-123","confirm":"SET_PARENT_LINK"}
  *
  * Source of truth for the only automatic fix in this version:
@@ -100,6 +101,7 @@ StructureComponents structureComponents
 final String SOURCE_FIELD_NAME = 'Strategische Ziele KPI'
 final String PARENT_LINK_TYPE_KEY = 'com.atlassian.jpo:jpo-custom-field-parent'
 final String FIX_CONFIRMATION = 'SET_PARENT_LINK'
+final Set<String> FIX_KEYS = ['structureId', 'issueKey', 'confirm'] as Set<String>
 
 IssueService issueService = ComponentAccessor.getIssueService()
 IssueManager issueManager = ComponentAccessor.getIssueManager()
@@ -120,12 +122,29 @@ Closure<Object> respond = { int status, String entity, String contentType ->
     Object builder = InvokerHelper.invokeMethod(responseClass.call(), 'status', status)
     builder = InvokerHelper.invokeMethod(builder, 'entity', entity)
     builder = InvokerHelper.invokeMethod(builder, 'type', contentType)
-    builder = InvokerHelper.invokeMethod(builder, 'header', ['Cache-Control', 'no-store'] as Object[])
+    builder = InvokerHelper.invokeMethod(builder, 'header',
+        ['Cache-Control', 'no-store, private'] as Object[])
+    builder = InvokerHelper.invokeMethod(builder, 'header',
+        ['X-Content-Type-Options', 'nosniff'] as Object[])
     InvokerHelper.invokeMethod(builder, 'build', null)
 }
 
 Closure<Object> respondJson = { int status, Object payload ->
     respond.call(status, JsonOutput.prettyPrint(JsonOutput.toJson(payload)), 'application/json;charset=UTF-8')
+}
+
+Closure<Object> requireJsonRequest = { Object httpRequest, String body ->
+    DoctorHttpDecision decision = DoctorHttpGuard.requireJson(
+        httpRequest?.getContentType(), body)
+    decision.isAllowed() ? null : respondJson.call(
+        decision.getStatus(), [ok: false, error: decision.getError()])
+}
+
+Closure<Object> requireQueryKeys = { Object queryParams, Collection<String> allowed ->
+    DoctorHttpDecision decision = DoctorHttpGuard.requireQueryKeys(
+        queryParams?.keySet(), allowed)
+    decision.isAllowed() ? null : respondJson.call(
+        decision.getStatus(), [ok: false, error: decision.getError()])
 }
 
 Closure<String> html = { Object value ->
@@ -725,7 +744,7 @@ Closure<String> renderPage = {
                     const response = await fetch(url, {
                       method: 'POST',
                       credentials: 'same-origin',
-                      headers: {'Content-Type': 'application/json', 'X-Atlassian-Token': 'no-check'},
+                      headers: {'Content-Type': 'application/json'},
                       body: ${JsonOutput.toJson(JsonOutput.toJson([structureId: structureData.get('id'), issueKey: issueData.get('key'), confirm: FIX_CONFIRMATION]))}
                     });
                     const data = await response.json();
@@ -933,6 +952,8 @@ LegacyIssueDoctor legacyIssueDoctor = new LegacyIssueDoctor(
 structureIssueDoctor(httpMethod: 'GET', groups: ["jira-administrators"]) { Object queryParams, Object ignoredBody ->
     ApplicationUser user = authenticationContext.getLoggedInUser()
     if (user == null) return respondJson.call(401, [ok: false, error: 'AUTHENTICATION_REQUIRED'])
+    Object queryRejection = requireQueryKeys.call(queryParams, ['format'])
+    if (queryRejection != null) return queryRejection
 
     String format = queryValue.call(queryParams, 'format')
     ReadResult<List<StructureChoice>> structures = doctorApplication.listStructures()
@@ -948,36 +969,45 @@ structureIssueDoctor(httpMethod: 'GET', groups: ["jira-administrators"]) { Objec
         doctorRenderer.render(structures, null, null), 'text/html;charset=UTF-8')
 }
 
-structureIssueDoctorAnalyze(httpMethod: 'POST', groups: ["jira-administrators"]) { Object ignoredQueryParams, String body ->
+structureIssueDoctorAnalyze(httpMethod: 'POST', groups: ["jira-administrators"]) { Object queryParams, String body, Object httpRequest ->
     ApplicationUser user = authenticationContext.getLoggedInUser()
     if (user == null) return respondJson.call(401, [ok: false, error: 'AUTHENTICATION_REQUIRED'])
+    Object queryRejection = requireQueryKeys.call(queryParams, [])
+    if (queryRejection != null) return queryRejection
+    Object requestRejection = requireJsonRequest.call(httpRequest, body)
+    if (requestRejection != null) return requestRejection
     try {
-        Object parsed = body?.trim() ? new JsonSlurper().parseText(body) : null
-        if (!(parsed instanceof Map)) throw new IllegalArgumentException('JSON object required')
         AnalyzeRequest request = DoctorApplication.parseAnalyzeRequest(
-            (Map<String, Object>) parsed)
+            DoctorHttpGuard.parseJsonObject(body))
         DoctorAnalysis analysis = doctorApplication.analyze(request)
         ReadResult<List<StructureChoice>> structures = doctorApplication.listStructures()
         respond.call(200, doctorRenderer.render(structures, analysis, null),
             'text/html;charset=UTF-8')
+    } catch (DoctorBoundaryException failure) {
+        respondJson.call(failure.getStatus(), [ok: false, error: failure.getCode()])
     } catch (IllegalArgumentException ignored) {
         respondJson.call(400, [ok: false, error: 'INVALID_ANALYZE_REQUEST'])
     }
 }
 
-structureIssueDoctorPlan(httpMethod: 'POST', groups: ["jira-administrators"]) { Object ignoredQueryParams, String body ->
+structureIssueDoctorPlan(httpMethod: 'POST', groups: ["jira-administrators"]) { Object queryParams, String body, Object httpRequest ->
     ApplicationUser user = authenticationContext.getLoggedInUser()
     if (user == null) return respondJson.call(401, [ok: false, error: 'AUTHENTICATION_REQUIRED'])
+    Object queryRejection = requireQueryKeys.call(queryParams, [])
+    if (queryRejection != null) return queryRejection
+    Object requestRejection = requireJsonRequest.call(httpRequest, body)
+    if (requestRejection != null) return requestRejection
     try {
-        Object parsed = body?.trim() ? new JsonSlurper().parseText(body) : null
-        if (!(parsed instanceof Map)) throw new IllegalArgumentException('JSON object required')
-        PlanRequest request = DoctorApplication.parsePlanRequest((Map<String, Object>) parsed)
+        PlanRequest request = DoctorApplication.parsePlanRequest(
+            DoctorHttpGuard.parseJsonObject(body))
         ProposalPlan plan = doctorApplication.plan(request)
         DoctorAnalysis analysis = doctorApplication.analysis(request.getSnapshotId())
         doctorRepairApplication.registerPlan(analysis, plan)
         ReadResult<List<StructureChoice>> structures = doctorApplication.listStructures()
         respond.call(analysis == null ? 404 : 200,
             doctorRenderer.render(structures, analysis, plan), 'text/html;charset=UTF-8')
+    } catch (DoctorBoundaryException failure) {
+        respondJson.call(failure.getStatus(), [ok: false, error: failure.getCode()])
     } catch (IllegalArgumentException ignored) {
         respondJson.call(400, [ok: false, error: 'INVALID_PLAN_REQUEST'])
     }
@@ -998,15 +1028,19 @@ Closure<Map<String, Object>> repairResultPayload = { RepairCoordinatorResult res
     ]
 }
 
-structureIssueDoctorApply(httpMethod: 'POST', groups: ["jira-administrators"]) { Object ignoredQueryParams, String body ->
+structureIssueDoctorApply(httpMethod: 'POST', groups: ["jira-administrators"]) { Object queryParams, String body, Object httpRequest ->
     ApplicationUser user = authenticationContext.getLoggedInUser()
     if (user == null) return respondJson.call(401, [ok: false, error: 'AUTHENTICATION_REQUIRED'])
+    Object queryRejection = requireQueryKeys.call(queryParams, [])
+    if (queryRejection != null) return queryRejection
+    Object requestRejection = requireJsonRequest.call(httpRequest, body)
+    if (requestRejection != null) return requestRejection
     try {
-        Object parsed = body?.trim() ? new JsonSlurper().parseText(body) : null
-        if (!(parsed instanceof Map)) throw new IllegalArgumentException('JSON object required')
         RepairCoordinatorResult result = doctorRepairApplication.apply(
-            (Map<String, Object>) parsed, user.getKey())
+            DoctorHttpGuard.parseJsonObject(body), user.getKey())
         respondJson.call(result.getStatus(), repairResultPayload.call(result))
+    } catch (DoctorBoundaryException failure) {
+        respondJson.call(failure.getStatus(), [ok: false, error: failure.getCode()])
     } catch (IllegalArgumentException ignored) {
         respondJson.call(400, [ok: false, error: 'INVALID_APPLY_REQUEST'])
     }
@@ -1015,6 +1049,8 @@ structureIssueDoctorApply(httpMethod: 'POST', groups: ["jira-administrators"]) {
 structureIssueDoctorStatus(httpMethod: 'GET', groups: ["jira-administrators"]) { Object queryParams, Object ignoredBody ->
     ApplicationUser user = authenticationContext.getLoggedInUser()
     if (user == null) return respondJson.call(401, [ok: false, error: 'AUTHENTICATION_REQUIRED'])
+    Object queryRejection = requireQueryKeys.call(queryParams, ['operationId'])
+    if (queryRejection != null) return queryRejection
     try {
         String operationId = queryValue.call(queryParams, 'operationId')
         RepairCoordinatorResult result = doctorRepairApplication.status(
@@ -1025,15 +1061,22 @@ structureIssueDoctorStatus(httpMethod: 'GET', groups: ["jira-administrators"]) {
     }
 }
 
-structureIssueDoctorFix(httpMethod: 'POST', groups: ["jira-administrators"]) { Object ignoredQueryParams, String body ->
+structureIssueDoctorFix(httpMethod: 'POST', groups: ["jira-administrators"]) { Object queryParams, String body, Object httpRequest ->
     ApplicationUser user = authenticationContext.getLoggedInUser()
     if (user == null) return respondJson.call(401, [ok: false, error: 'AUTHENTICATION_REQUIRED'])
+    Object queryRejection = requireQueryKeys.call(queryParams, [])
+    if (queryRejection != null) return queryRejection
+    Object requestRejection = requireJsonRequest.call(httpRequest, body)
+    if (requestRejection != null) return requestRejection
 
     Map<String, Object> request
     try {
-        request = body?.trim() ? (Map<String, Object>) new JsonSlurper().parseText(body) : [:]
-    } catch (Exception ignored) {
-        return respondJson.call(400, [ok: false, error: 'INVALID_JSON'])
+        request = DoctorHttpGuard.parseJsonObject(body)
+    } catch (DoctorBoundaryException failure) {
+        return respondJson.call(failure.getStatus(), [ok: false, error: failure.getCode()])
+    }
+    if (request.keySet() != FIX_KEYS) {
+        return respondJson.call(400, [ok: false, error: 'INVALID_FIX_REQUEST'])
     }
 
     if (String.valueOf(request.get('confirm')) != FIX_CONFIRMATION) {

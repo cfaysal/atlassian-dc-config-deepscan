@@ -510,6 +510,11 @@ identifiers. JQL, generator parameters, field values, scripts, and rule configur
 rejected at the HTTP boundary. Duplicate repair requires the administrator to choose exactly
 which physical occurrence remains. Every unselected finding is ignored.
 
+Every POST endpoint requires `application/json` and rejects bodies larger than 64 KiB before
+parsing. Unknown body and query keys are rejected. Analyze verifies that the selected
+Structure is visible before reading its forest; an unresolved optional work-item filter is
+reported as not visible without claiming that the work item does not exist globally.
+
 The Core Apply action is deliberately disabled in this version. It is enabled only after the
 installed Jira and Structure APIs have proven complete preview, revision, mutation, restore,
 cluster lock, journal, recalculation, and measured target verification on an authorized
@@ -521,8 +526,10 @@ Structure, and generator fingerprints. It journals bounded before/after state be
 first write, locks the Structure plus every affected work item, applies one atomic package at
 most once, waits for recalculation, verifies the measured target, and restores exact prior
 state after a proven mismatch. A verification timeout is `PENDING`; an unverified restoration
-is `MANUAL_RECOVERY_REQUIRED`. Replaying the same operation ID is read-only, while reusing it
-with different inputs is rejected.
+is `MANUAL_RECOVERY_REQUIRED`. GET Status reads the journal without changing it. Repeating
+the identical POST Apply for a `PENDING` operation resumes verification under the locks;
+terminal replays are read-only, while reusing an operation ID with different inputs is
+rejected.
 
 `tools/structure-doctor-mutation-probe.groovy` is a separate development probe, not a normal
 Doctor endpoint. It refuses to run without an explicitly authorized disposable Structure,

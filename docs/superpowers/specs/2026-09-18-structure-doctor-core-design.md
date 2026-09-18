@@ -427,8 +427,8 @@ The server rebuilds proposal candidates. Shared-generator changes are returned a
 
 ```text
 POST structureIssueDoctorApply
-  proposalPackageIds
-  snapshotFingerprint
+  snapshotId
+  repairPackageId
   operationId
   confirmStructureChange
   confirmJiraDataChange when required
@@ -443,7 +443,7 @@ GET structureIssueDoctorStatus
   operationId
 ```
 
-Status resumes verification of pending Structure recalculation or Jira-data verification. Closing the browser does not discard a pending operation.
+Status is read-only and returns the cluster-visible journal state. Retrying the identical POST Apply resumes verification for a pending Structure recalculation or Jira-data verification under the same locks. Closing the browser does not discard a pending operation.
 
 All endpoint declarations use `groups: ["jira-administrators"]` and all handlers independently require an authenticated user.
 

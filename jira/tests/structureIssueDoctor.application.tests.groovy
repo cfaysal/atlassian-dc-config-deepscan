@@ -3,6 +3,7 @@ import structuredoctor.AnalyzeRequest
 import structuredoctor.AutomationAuditSnapshot
 import structuredoctor.AutomationDataProvider
 import structuredoctor.AutomationRuleSnapshot
+import structuredoctor.DoctorBoundaryException
 import structuredoctor.DoctorAnalysis
 import structuredoctor.DoctorApplication
 import structuredoctor.DoctorRenderer
@@ -141,6 +142,30 @@ DoctorAnalysis focused = application.analyze(new AnalyzeRequest(
 check('display filter retained', focused.issueKeyFilter, 'DEMO-1')
 check('display filter resolved to numeric ID', focused.displayIssueId, 1000L)
 check('display filter does not trim snapshot', focused.snapshot.occurrences.size(), 2)
+
+int readsBeforeInvisible = forestReads
+DoctorBoundaryException invisibleStructure
+try {
+    application.analyze(new AnalyzeRequest(
+        structureId: 999L, issueKeyFilter: null, requestedAuditDays: 30,
+        ruleExportRef: null, auditExportRef: null))
+} catch (DoctorBoundaryException failure) {
+    invisibleStructure = failure
+}
+check('invisible Structure is indistinguishable from absent',
+    invisibleStructure?.status, 404)
+check('invisible Structure is not scanned', forestReads, readsBeforeInvisible)
+
+DoctorBoundaryException invisibleIssue
+try {
+    application.analyze(new AnalyzeRequest(
+        structureId: 9L, issueKeyFilter: 'DEMO-404', requestedAuditDays: 30,
+        ruleExportRef: null, auditExportRef: null))
+} catch (DoctorBoundaryException failure) {
+    invisibleIssue = failure
+}
+check('invisible issue filter is indistinguishable from absent',
+    invisibleIssue?.status, 404)
 
 def group = analysis.duplicates.groups[0]
 def selected = new PlanRequest(

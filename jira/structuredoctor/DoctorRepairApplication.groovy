@@ -68,7 +68,7 @@ final class DoctorRepairApplication {
     }
 
     RepairCoordinatorResult status(String operationId, String actorKey) {
-        coordinator.resume(text(operationId, 'operationId'), actor(actorKey))
+        coordinator.status(text(operationId, 'operationId'), actor(actorKey))
     }
 
     private static void validatePayload(Map<String, Object> payload) {

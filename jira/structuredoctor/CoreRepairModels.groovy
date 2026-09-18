@@ -144,6 +144,7 @@ class RepairRefresh {
     RepairPackage repairPackage
     Map<String, String> currentFingerprints
     ImpactResult impact
+    Boolean targetPermitted
 }
 
 enum MutationDisposition {

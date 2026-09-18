@@ -128,7 +128,8 @@ def infrastructureFor = {
     fake.refreshed = new RepairRefresh(
         repairPackage: structurePackage,
         currentFingerprints: fingerprints,
-        impact: safeImpact)
+        impact: safeImpact,
+        targetPermitted: true)
     fake
 }
 
@@ -251,8 +252,13 @@ RepairCoordinatorResult pending = pendingCoordinator.apply(
 check('timeout is pending', pending.status, 202)
 check('pending state', pending.operation.state, OperationState.PENDING)
 pendingInfra.verification = [VerificationDisposition.VERIFIED]
-RepairCoordinatorResult resumed = pendingCoordinator.resume(
+RepairCoordinatorResult pendingStatus = pendingCoordinator.status(
     pending.operation.operationId, 'synthetic-admin')
+check('GET-compatible status leaves pending state unchanged', pendingStatus.operation.state,
+    OperationState.PENDING)
+check('status does not resume verification', pendingInfra.verifyCalls, 1)
+RepairCoordinatorResult resumed = pendingCoordinator.apply(requestFor(
+    pending.operation.operationId))
 check('pending resumes to verified', resumed.operation.state, OperationState.VERIFIED)
 check('pending resume transitions', resumed.operation.history[-2..-1],
     [OperationState.VERIFYING, OperationState.VERIFIED])
@@ -268,12 +274,37 @@ check('pending operation is reread under the lock', resumeRace.operation.state,
 check('concurrent pending resume is a replay', resumeRace.replayed, true)
 check('concurrent pending resume does not verify twice', resumeRaceInfra.verifyCalls, 0)
 
+FakeRepairInfrastructure deniedInfra = infrastructureFor()
+deniedInfra.refreshed = deniedInfra.refreshed.copyWith(targetPermitted: false)
+RepairCoordinatorResult denied = new CoreRepairCoordinator(deniedInfra).apply(
+    requestFor('00000000-0000-4000-8000-000000000010'))
+check('missing target permission returns forbidden', denied.status, 403)
+check('missing target permission is explicit', denied.code, 'TARGET_PERMISSION_REQUIRED')
+check('missing target permission prevents mutation', deniedInfra.mutateCalls, 0)
+
+FakeRepairInfrastructure unavailableRefreshInfra = infrastructureFor()
+unavailableRefreshInfra.refreshed = null
+RepairCoordinatorResult unavailableRefresh = new CoreRepairCoordinator(
+    unavailableRefreshInfra).apply(
+        requestFor('00000000-0000-4000-8000-000000000011'))
+check('unavailable refresh is stale rather than a permission claim',
+    unavailableRefresh.code, 'STALE_PLAN')
+ok('unavailable refresh names its evidence blocker',
+    unavailableRefresh.blockers.contains('repair-refresh'))
+check('unavailable refresh prevents mutation', unavailableRefreshInfra.mutateCalls, 0)
+
 FakeRepairInfrastructure mismatchInfra = infrastructureFor()
 mismatchInfra.verification = [VerificationDisposition.MISMATCH, VerificationDisposition.VERIFIED]
 RepairCoordinatorResult rolledBack = new CoreRepairCoordinator(mismatchInfra).apply(
     requestFor('00000000-0000-4000-8000-000000000004'))
 check('proven mismatch rolls back', rolledBack.operation.state, OperationState.ROLLED_BACK)
 check('rollback called once', mismatchInfra.restoreCalls, 1)
+check('rolled-back status remains non-success',
+    new CoreRepairCoordinator(mismatchInfra).status(
+        rolledBack.operation.operationId, 'synthetic-admin').status, 409)
+check('rolled-back replay remains non-success',
+    new CoreRepairCoordinator(mismatchInfra).apply(requestFor(
+        rolledBack.operation.operationId)).status, 409)
 
 FakeRepairInfrastructure partialInfra = infrastructureFor()
 partialInfra.mutationDisposition = MutationDisposition.PARTIAL
@@ -289,6 +320,9 @@ RepairCoordinatorResult manual = new CoreRepairCoordinator(manualInfra).apply(
     requestFor('00000000-0000-4000-8000-000000000006'))
 check('unverifiable restore needs manual recovery',
     manual.operation.state, OperationState.MANUAL_RECOVERY_REQUIRED)
+check('manual-recovery status remains server failure',
+    new CoreRepairCoordinator(manualInfra).status(
+        manual.operation.operationId, 'synthetic-admin').status, 500)
 
 RepairPackage jiraPackage = structurePackage.copyWith(
     id: 'package-jira', kind: RepairKind.JIRA_DATA,

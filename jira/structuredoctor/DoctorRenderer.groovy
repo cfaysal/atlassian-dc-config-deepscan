@@ -138,7 +138,7 @@ ${blockers(analysis.blockers)}
 const post = async (endpoint, payload) => {
   const response = await fetch(window.location.pathname.replace(/structureIssueDoctor$/, endpoint), {
     method: 'POST', credentials: 'same-origin',
-    headers: {'Content-Type': 'application/json', 'X-Atlassian-Token': 'no-check'},
+    headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(payload)
   });
   const text = await response.text();

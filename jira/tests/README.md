@@ -123,10 +123,12 @@ return `UNAVAILABLE`.
 
 The repair suite exercises exact replay, conflicting replay, every dependency fingerprint,
 Structure and affected-work-item lock refusal, pending-operation blocking, both confirmations,
-partial mutation, recalculation timeout and resume, verified success, exact rollback, and
-manual recovery. The mutation-probe suite uses a synthetic adapter and proves that refusal
-happens before a write and restoration runs in `finally`. Neither suite enables or invokes a
-live writer.
+target-permission refusal, partial mutation, recalculation timeout and POST resume, read-only
+status, verified success, exact rollback, and manual recovery. The HTTP suite verifies every
+Doctor declaration, admin restriction, explicit authentication check, JSON media type and
+size boundary, query-key boundary, and absence of a mutating GET. The mutation-probe suite
+uses a synthetic adapter and proves that refusal happens before a write and restoration runs
+in `finally`. None of these suites enables or invokes a live writer.
 
 This is the larger half of the endpoint. Test against a real instance before trusting a
 change to any of it: a parse check and a green suite do not resolve a single Jira symbol.

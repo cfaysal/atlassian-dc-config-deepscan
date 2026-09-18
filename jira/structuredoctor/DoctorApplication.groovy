@@ -35,12 +35,14 @@ final class DoctorApplication {
     }
     DoctorAnalysis analyze(AnalyzeRequest request) {
         validateAnalyze(request)
+        ReadResult<List<StructureChoice>> visibleStructures = listStructures()
+        if (!visibleStructures.complete()) throw new DoctorBoundaryException(503, 'STRUCTURE_CATALOG_UNAVAILABLE')
+        boolean visible = (visibleStructures.value ?: []).any { it.id == request.structureId }
+        if (!visible) throw new DoctorBoundaryException(404, 'STRUCTURE_NOT_VISIBLE')
         int days = request.requestedAuditDays ?: DEFAULT_AUDIT_DAYS
         Long displayIssueId = request.issueKeyFilter ?
             issueKeyResolver?.call(request.issueKeyFilter) : null
-        if (request.issueKeyFilter && displayIssueId == null) {
-            throw new IllegalArgumentException('Issue key display filter could not be resolved')
-        }
+        if (request.issueKeyFilter && displayIssueId == null) throw new DoctorBoundaryException(404, 'ISSUE_NOT_VISIBLE')
         ReadResult<HierarchySnapshot> hierarchyRead = hierarchyProvider == null ?
             ReadResult.unavailable('Jira hierarchy provider is unavailable') :
             hierarchyProvider.readHierarchy()
