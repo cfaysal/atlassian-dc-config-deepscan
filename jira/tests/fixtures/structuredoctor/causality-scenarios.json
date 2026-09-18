@@ -1,0 +1,8 @@
+{
+  "scenarios": [
+    {"name": "configuration-only", "grade": "CONFIGURATION_CONFLICT", "directAudit": false},
+    {"name": "static-partial-chain", "grade": "POSSIBLE_CAUSE", "directAudit": false},
+    {"name": "aligned-without-direct-audit", "grade": "PROBABLE_CAUSE", "directAudit": false},
+    {"name": "complete-direct-chain", "grade": "CONFIRMED_CAUSE", "directAudit": true}
+  ]
+}

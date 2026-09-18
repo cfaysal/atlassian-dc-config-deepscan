@@ -191,6 +191,8 @@ jobs:
             groovy.ui.GroovyMain jira/tests/structureIssueDoctor.core.tests.groovy
           java -Dfile.encoding=UTF-8 -DrepoRoot=. -cp "$GROOVY_CP:/tmp/doctor-classes" \
             groovy.ui.GroovyMain jira/tests/structureIssueDoctor.automation.tests.groovy
+          java -Dfile.encoding=UTF-8 -DrepoRoot=. -cp "$GROOVY_CP:/tmp/doctor-classes" \
+            groovy.ui.GroovyMain jira/tests/structureIssueDoctor.causality.tests.groovy
 
           fail=0
           while IFS= read -r -d '' file; do

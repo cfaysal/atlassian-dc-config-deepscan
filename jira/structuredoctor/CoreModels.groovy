@@ -162,4 +162,7 @@ class CausalClaim {
     List<String> edgeIds
     List<String> presentEvidence
     List<String> missingEvidence
+    Coverage auditCoverage
+    List<EvidenceRequirement> requirements
+    List<String> blockers
 }
