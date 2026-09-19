@@ -1,4 +1,5 @@
 import structuredoctor.DoctorBoundaryException
+import structuredoctor.DoctorAutomationEvidence
 import structuredoctor.DoctorHttpDecision
 import structuredoctor.DoctorHttpGuard
 
@@ -39,6 +40,19 @@ check('oversized request is explicit', tooLarge.error, 'REQUEST_TOO_LARGE')
 DoctorHttpDecision exactLimit = DoctorHttpGuard.requireJson(
     'APPLICATION/JSON', 'x' * DoctorHttpGuard.MAX_JSON_BYTES)
 check('exact request limit is accepted', exactLimit.allowed, true)
+
+DoctorHttpDecision analyzeLimit = DoctorHttpGuard.requireJson(
+    'application/json', 'x' * (DoctorHttpGuard.MAX_JSON_BYTES + 1),
+    DoctorHttpGuard.MAX_ANALYZE_JSON_BYTES)
+check('Analyze accepts a bounded export payload above the normal limit',
+    analyzeLimit.allowed, true)
+DoctorHttpDecision oversizedAnalyze = DoctorHttpGuard.requireJson(
+    'application/json', 'x' * (DoctorHttpGuard.MAX_ANALYZE_JSON_BYTES + 1),
+    DoctorHttpGuard.MAX_ANALYZE_JSON_BYTES)
+check('Analyze export payload remains bounded', oversizedAnalyze.status, 413)
+ok('Analyze envelope fits two worst-case quoted 5 MiB export strings',
+    DoctorHttpGuard.MAX_ANALYZE_JSON_BYTES >=
+        (4 * DoctorAutomationEvidence.MAX_EXPORT_BYTES) + 131_072)
 
 DoctorHttpDecision queryKeys = DoctorHttpGuard.requireQueryKeys(
     ['operationId', 'unexpected'], ['operationId'])

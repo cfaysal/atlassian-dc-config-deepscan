@@ -86,7 +86,9 @@ These facts establish configuration-conflict candidates, not confirmed execution
 - Do not scrape `PortfolioHierarchy.jspa` or an Automation administration page.
 - Do not couple the core directly to Automation Active Objects database tables.
 - Do not treat every repeated issue occurrence as an accidental duplicate.
-- Do not accept free-form JQL, generator configuration, field values, or Automation configuration from the browser.
+- Do not accept free-form JQL, generator configuration, field values, or executable Automation
+  configuration from the browser. The explicit exception is bounded, read-only Automation
+  evidence JSON parsed as inert data for analysis only.
 - Do not silently remove permanent rows or generated occurrences.
 - Do not execute a repair whose complete effect is unknown.
 - Do not deploy or install the endpoint as part of design or implementation planning.
@@ -263,7 +265,11 @@ If the hierarchy cannot be read completely:
 
 If the Doctor detects a possible hierarchy-configuration problem, it reports that Jira-administrator review is required. It never offers an executable hierarchy fix.
 
-The exact supported Jira or Advanced Roadmaps service for reading this configuration is **UNKNOWN until proven against the installed version**. Implementation begins with a read-only capability probe. An unsupported version results in explicit incomplete coverage, not UI scraping or a database write path.
+On the probed Jira 11.3.11 and Advanced Roadmaps 11.3.11 installation, the read-only
+`ExportedHierarchyLevelApi` is proven with `count()` and `findAll(int,int)`. It provides the
+ordered levels and their issue-type assignments. Other installed versions remain unsupported
+until their read path is proven. An unsupported version results in explicit incomplete
+coverage, not UI scraping or a database write path.
 
 ## Automation data providers
 
@@ -277,11 +283,19 @@ AutomationDataProvider
 
 ### LiveAutomationProvider
 
-The preferred provider detects the installed Jira Automation version and uses only proven read capabilities. It reads relevant rules and available audit entries. The currently installed rule-listing and audit-listing interfaces are **UNKNOWN until probed** and must be isolated behind this adapter because Jira Automation Data Center interfaces can be version-dependent.
+The preferred provider detects the installed Jira Automation version and uses only proven
+read capabilities. The OP-1371 probe confirmed the Automation app is installed, but it did
+not expose a complete read-only rule-listing and audit-listing service. Live Automation reads
+therefore remain `UNAVAILABLE` on this installation rather than returning an empty result or
+using partial internal caches.
 
 ### JsonExportProvider
 
-The fallback provider accepts official Jira Automation rule-export JSON and audit-export JSON. It records export version, requested interval, actual interval, entry limits, and parse completeness. Import is read-only and never republishes the supplied rule JSON.
+The fallback provider accepts official Jira Automation rule-export JSON and normalized
+Structure Doctor audit-evidence JSON. It records export version, requested interval, actual
+interval, entry limits, and parse completeness. Import is bounded and read-only, and it never
+executes or republishes supplied JSON. Rule evidence can establish a configuration conflict;
+missing audit evidence prevents promotion to a confirmed historical cause.
 
 ### Selection and coverage
 
@@ -559,7 +573,8 @@ Before enabling a capability, read-only probes must prove the installed APIs for
 
 - global hierarchy reads;
 - complete Structure forest, generator, provenance, and revision reads;
-- live Automation rule and audit reads;
+- live Automation rule and audit reads, or explicit `UNAVAILABLE` coverage plus the bounded
+  JSON evidence fallback when no complete live interface is proven;
 - Jira issue history and native parent reads;
 - Structure preview or equivalent complete simulation;
 - generator mutation and restoration;

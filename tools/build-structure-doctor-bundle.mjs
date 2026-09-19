@@ -98,7 +98,9 @@ function fingerprint(sources) {
 function renderBundle(controller, modules) {
   const manifestOrder = [controller, ...modules]
   const bodyOrder = [...modules, controller]
-  const imports = [...new Set(manifestOrder.flatMap(source => source.imports))].sort()
+  const imports = [...new Set(manifestOrder.flatMap(source => source.imports))]
+    .filter(line => !line.startsWith('import structuredoctor.'))
+    .sort()
   const header = [
     '/*',
     ' * GENERATED FILE - DO NOT EDIT.',
@@ -108,7 +110,7 @@ function renderBundle(controller, modules) {
     ' */',
   ].join('\n')
   const bodies = bodyOrder.map(source => `// SOURCE: ${source.relativePath}\n${source.body}`)
-  return [header, 'package structuredoctor', imports.join('\n'), ...bodies]
+  return [header, imports.join('\n'), ...bodies]
     .filter(section => section.length > 0)
     .join('\n\n') + '\n'
 }

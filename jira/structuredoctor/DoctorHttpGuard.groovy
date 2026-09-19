@@ -14,14 +14,21 @@ class DoctorHttpDecision {
 
 final class DoctorHttpGuard {
     static final int MAX_JSON_BYTES = 65_536
+    static final int MAX_ANALYZE_JSON_BYTES = 23_068_672
 
     static DoctorHttpDecision requireJson(String contentType, String body) {
+        requireJson(contentType, body, MAX_JSON_BYTES)
+    }
+
+    static DoctorHttpDecision requireJson(String contentType, String body,
+                                          int maxBytes) {
         String mediaType = contentType?.split(';', 2)?.first()?.trim()
         if (!'application/json'.equalsIgnoreCase(mediaType)) {
             return reject(415, 'UNSUPPORTED_MEDIA_TYPE')
         }
+        if (maxBytes <= 0) return reject(413, 'REQUEST_TOO_LARGE')
         int size = (body ?: '').getBytes(StandardCharsets.UTF_8).length
-        size > MAX_JSON_BYTES ? reject(413, 'REQUEST_TOO_LARGE') : allow()
+        size > maxBytes ? reject(413, 'REQUEST_TOO_LARGE') : allow()
     }
 
     static DoctorHttpDecision requireQueryKeys(Collection<?> actual,

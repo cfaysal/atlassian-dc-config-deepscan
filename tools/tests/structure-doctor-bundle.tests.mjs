@@ -60,9 +60,10 @@ test('bundles the exact maintained sources deterministically', () => {
     assert.ok(!bundle.endsWith('\n\n'))
     assert.ok(!bundle.includes('\r'))
 
-    assert.equal(count(bundle, /^package structuredoctor$/gm), 1)
+    assert.equal(count(bundle, /^package structuredoctor$/gm), 0)
     const imports = [...bundle.matchAll(/^import(?: static)? .+$/gm)].map(match => match[0])
     assert.deepEqual(imports, [...new Set(imports)])
+    assert.equal(imports.filter(line => line.startsWith('import structuredoctor.')).length, 0)
 
     const manifestInputs = [...bundle.matchAll(/^ \* INPUT (.+)$/gm)].map(match => match[1])
     assert.deepEqual(manifestInputs, expectedInputs)

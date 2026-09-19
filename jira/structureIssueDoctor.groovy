@@ -27,8 +27,10 @@ import com.onresolve.scriptrunner.runner.customisers.WithPlugin
 import com.onresolve.scriptrunner.runner.rest.common.CustomEndpointDelegate
 import groovy.json.JsonOutput
 import groovy.transform.BaseScript
+import groovy.transform.CompileDynamic
 import org.codehaus.groovy.runtime.InvokerHelper
 import structuredoctor.AnalyzeRequest
+import structuredoctor.CoreCanonical
 import structuredoctor.CoreSupport
 import structuredoctor.DoctorBoundaryException
 import structuredoctor.DoctorAnalysis
@@ -43,6 +45,9 @@ import structuredoctor.LiveConfigurationDiscovery
 import structuredoctor.LiveJiraGateway
 import structuredoctor.LiveStructureGateway
 import structuredoctor.LegacyIssueDoctor
+import structuredoctor.GeneratorSnapshot
+import structuredoctor.HierarchySnapshot
+import structuredoctor.IssueRelationSnapshot
 import structuredoctor.PlanRequest
 import structuredoctor.ProposalPlan
 import structuredoctor.ProposalSource
@@ -50,6 +55,7 @@ import structuredoctor.ReadResult
 import structuredoctor.RepairCoordinatorResult
 import structuredoctor.RepairOperation
 import structuredoctor.StructureChoice
+import structuredoctor.StructureSnapshot
 
 class ParentUpdateCheck {
     boolean valid
@@ -61,6 +67,315 @@ class ParentUpdateCheck {
 class InspectionResult {
     int status
     Map<String, Object> payload
+}
+
+final class DoctorLiveAccess {
+    private static final String ROADMAPS_PLUGIN = 'com.atlassian.jpo'
+    private static final String HIERARCHY_API =
+        'com.atlassian.rm.portfolio.publicapi.hierarchy.ExportedHierarchyLevelApi'
+    private static final String PARENT_LINK = 'com.atlassian.jpo:jpo-custom-field-parent'
+    private static final String EPIC_LINK = 'com.pyxis.greenhopper.jira:gh-epic-link'
+    private static final int MAX_HIERARCHY_LEVELS = 1000
+    private static final int MAX_ISSUES = 100000
+
+    private DoctorLiveAccess() {
+        throw new UnsupportedOperationException('utility class')
+    }
+
+    @CompileDynamic
+    static ReadResult<HierarchySnapshot> readHierarchy() {
+        try {
+            Object hierarchyApi = resolvePluginComponent(ROADMAPS_PLUGIN, HIERARCHY_API)
+            if (hierarchyApi == null) {
+                return ReadResult.unavailable('Advanced Roadmaps hierarchy API is unavailable')
+            }
+            long count = ((Number) InvokerHelper.invokeMethod(
+                hierarchyApi, 'count', null)).longValue()
+            if (count <= 0L || count > MAX_HIERARCHY_LEVELS) {
+                return ReadResult.failed('Jira hierarchy level count is outside the supported range')
+            }
+            Collection<?> values = hierarchyPage(hierarchyApi, (int) count)
+            if (values == null) {
+                return ReadResult.incomplete(null, 'Jira hierarchy read was not complete')
+            }
+            List<Map<String, Object>> records = values.collect { Object value ->
+                Object id = partialValue(InvokerHelper.invokeMethod(value, 'getId', null), null)
+                Object title = partialValue(
+                    InvokerHelper.invokeMethod(value, 'getTitle', null), null)
+                Object issueTypeIds = partialValue(
+                    InvokerHelper.invokeMethod(value, 'getIssueTypeIds', null), [])
+                [
+                    rank: id,
+                    levelId: String.valueOf(id),
+                    name: title,
+                    issueTypeIds: ((Collection<?>) issueTypeIds).collect {
+                        Object issueTypeId -> Long.parseLong(String.valueOf(issueTypeId))
+                    }
+                ]
+            }
+            ReadResult.complete(LiveConfigurationDiscovery.mapHierarchy(records))
+        } catch (Throwable failure) {
+            ReadResult.failed('Jira hierarchy read failed: ' + failure.class.simpleName)
+        }
+    }
+
+    @CompileDynamic
+    static ReadResult<StructureSnapshot> readStructure(
+        StructureComponents components, long structureId) {
+        try {
+            components.getStructureManager().getStructure(structureId, PermissionLevel.VIEW)
+            Object latest = components.getForestService()
+                .getForestSource(ForestSpec.structure(structureId)).getLatest()
+            Forest forest = (Forest) latest.getForest()
+            List<Map<String, Object>> rows = []
+            Set<Long> generatorIds = new LinkedHashSet<Long>()
+            Map<Long, Integer> generatorOrder = [:]
+            for (int index = 0; index < forest.size(); index++) {
+                long rowId = forest.getRow(index)
+                StructureRow row = components.getRowManager().getRow(rowId)
+                ItemIdentity identity = row.getItemId()
+                Long issueId = null
+                if (CoreIdentities.isIssue(identity)) {
+                    issueId = identity.getLongId()
+                } else if (CoreIdentities.isGenerator(identity)) {
+                    long generatorId = identity.getLongId()
+                    generatorIds.add(generatorId)
+                    if (!generatorOrder.containsKey(generatorId)) {
+                        generatorOrder.put(generatorId, index)
+                    }
+                }
+                Long creatorId = null
+                try {
+                    long rawCreator = TransientRow.getCreatorId(row)
+                    if (rawCreator > 0L) {
+                        creatorId = rawCreator
+                        generatorIds.add(rawCreator)
+                        if (!generatorOrder.containsKey(rawCreator)) {
+                            generatorOrder.put(rawCreator, index)
+                        }
+                    }
+                } catch (RuntimeException ignored) {
+                    // A permanent row has no transient provenance metadata.
+                }
+                rows.add([
+                    rowId: String.valueOf(rowId), issueId: issueId,
+                    parentIndex: forest.getParentIndex(index), depth: forest.getDepth(index),
+                    position: index, creatorId: creatorId
+                ])
+            }
+
+            boolean complete = true
+            List<Map<String, Object>> generators = []
+            Map<Long, String> moduleKeys = [:]
+            for (Long generatorId : generatorIds) {
+                try {
+                    Object generator = components.getGeneratorManager().getGenerator(generatorId)
+                    String moduleKey = String.valueOf(
+                        InvokerHelper.getProperty(generator, 'moduleKey'))
+                    Object rawParameters = InvokerHelper.getProperty(generator, 'parameters')
+                    Object safeParameters = CoreSupport.jsonSafe(rawParameters)
+                    Map<String, Object> parameters = safeParameters instanceof Map ?
+                        (Map<String, Object>) safeParameters : [:]
+                    moduleKeys.put(generatorId, moduleKey)
+                    Map<String, Object> identity = [
+                        generatorId: generatorId, moduleKey: moduleKey,
+                        parameters: parameters,
+                        order: generatorOrder.get(generatorId) ?: 0
+                    ]
+                    generators.add([
+                        generatorId: generatorId, moduleKey: moduleKey,
+                        type: generatorType(moduleKey),
+                        order: generatorOrder.get(generatorId) ?: 0,
+                        enabled: true, parameters: parameters,
+                        revision: CoreCanonical.sha256(identity), complete: true
+                    ])
+                } catch (Throwable ignored) {
+                    complete = false
+                }
+            }
+            for (Map<String, Object> row : rows) {
+                Long creatorId = row.creatorId instanceof Number ?
+                    ((Number) row.creatorId).longValue() : null
+                if (creatorId == null) {
+                    row.provenance = 'PERMANENT'
+                    row.provenanceComplete = true
+                } else if (moduleKeys.containsKey(creatorId)) {
+                    row.provenance = provenance(moduleKeys.get(creatorId))
+                    row.creatorId = String.valueOf(creatorId)
+                    row.provenanceComplete = true
+                } else {
+                    row.provenance = 'UNKNOWN'
+                    row.creatorId = String.valueOf(creatorId)
+                    row.provenanceComplete = false
+                }
+            }
+            String revision = 'forest-' + CoreCanonical.sha256([
+                rows: rows, generators: generators
+            ])
+            StructureSnapshot snapshot = LiveStructureGateway.mapStructure(
+                structureId, revision, generators, rows, complete)
+            snapshot.complete ? ReadResult.complete(snapshot) :
+                ReadResult.incomplete(snapshot,
+                    'Structure snapshot has incomplete generator or provenance data')
+        } catch (Throwable failure) {
+            ReadResult.failed('Structure snapshot read failed: ' + failure.class.simpleName)
+        }
+    }
+
+    @CompileDynamic
+    static ReadResult<List<IssueRelationSnapshot>> readIssues(
+        IssueService service, CustomFieldManager fields, ApplicationUser actor,
+        Collection<Long> requestedIds) {
+        if (actor == null) return ReadResult.failed('Authenticated Jira user is required')
+        try {
+            List<CustomField> parentFields = fields.getCustomFieldObjects().findAll {
+                CustomField field ->
+                    String key = field.getCustomFieldType()?.getKey()
+                    key == PARENT_LINK || key == EPIC_LINK
+            } as List<CustomField>
+            ArrayDeque<Long> pending = new ArrayDeque<Long>()
+            (requestedIds ?: []).findAll { Long id -> id != null && id > 0L }
+                .unique().each { Long id -> pending.add(id) }
+            Set<Long> visited = new LinkedHashSet<Long>()
+            List<Map<String, Object>> records = []
+            boolean complete = true
+            while (!pending.isEmpty()) {
+                if (visited.size() >= MAX_ISSUES) {
+                    return ReadResult.incomplete(
+                        LiveJiraGateway.mapIssues(records),
+                        'Jira relationship read reached the safety limit')
+                }
+                Long issueId = pending.removeFirst()
+                if (!visited.add(issueId)) continue
+                Object issueResult = service.getIssue(actor, issueId)
+                Issue issue = issueResult?.isValid() ? (Issue) issueResult.getIssue() : null
+                if (issue == null) {
+                    complete = false
+                    continue
+                }
+                List<Long> candidates = []
+                Issue builtInParent = null
+                try {
+                    builtInParent = (Issue) InvokerHelper.invokeMethod(
+                        issue, 'getParentObject', null)
+                } catch (RuntimeException ignored) {
+                    // Non-sub-task work items have no built-in parent object.
+                }
+                if (builtInParent != null) candidates.add(builtInParent.getId())
+                List<Long> parentLinkIds = []
+                List<Long> epicLinkIds = []
+                for (CustomField field : parentFields) {
+                    Object rawParentValue = issue.getCustomFieldValue(field)
+                    List<Long> resolved = resolveIssueIds(service, actor, rawParentValue)
+                    if (hasParentValue(rawParentValue) && resolved.isEmpty()) {
+                        complete = false
+                    }
+                    String typeKey = field.getCustomFieldType()?.getKey()
+                    if (typeKey == PARENT_LINK) parentLinkIds.addAll(resolved)
+                    if (typeKey == EPIC_LINK) epicLinkIds.addAll(resolved)
+                }
+                candidates.addAll(parentLinkIds)
+                candidates.addAll(epicLinkIds)
+                candidates = candidates.unique()
+                Long nativeParentId = builtInParent?.getId() ?:
+                    (parentLinkIds ? parentLinkIds.first() :
+                        (epicLinkIds ? epicLinkIds.first() : null))
+                candidates.each { Long parentId -> pending.add(parentId) }
+                records.add([
+                    issueId: issue.getId(),
+                    issueTypeId: Long.parseLong(issue.getIssueType().getId()),
+                    nativeParentId: nativeParentId,
+                    leadingParentIds: candidates,
+                    revisions: [
+                        issue: String.valueOf(issue.getUpdated()?.getTime() ?: 0L),
+                        parents: CoreCanonical.sha256(candidates)
+                    ]
+                ])
+            }
+            List<IssueRelationSnapshot> values = LiveJiraGateway.mapIssues(records)
+            complete ? ReadResult.complete(values) :
+                ReadResult.incomplete(values,
+                    'One or more Jira work items were not visible to the logged-in user')
+        } catch (Throwable failure) {
+            ReadResult.failed('Jira relationship read failed: ' + failure.class.simpleName)
+        }
+    }
+
+    @CompileDynamic
+    private static Object resolvePluginComponent(String pluginKey, String className) {
+        Object plugin = ComponentAccessor.getPluginAccessor().getPlugin(pluginKey)
+        Object loader = plugin == null ? null :
+            InvokerHelper.invokeMethod(plugin, 'getClassLoader', null)
+        if (loader == null) return null
+        Class<?> componentClass = (Class<?>) InvokerHelper.invokeMethod(
+            loader, 'loadClass', className)
+        ComponentAccessor.getOSGiComponentInstanceOfType(componentClass)
+    }
+
+    @CompileDynamic
+    private static Object partialValue(Object field, Object defaultValue) {
+        field == null ? defaultValue :
+            InvokerHelper.invokeMethod(field, 'or', [defaultValue] as Object[])
+    }
+
+    @CompileDynamic
+    private static Collection<?> hierarchyPage(Object hierarchyApi, int pageSize) {
+        for (int page : [1, 0]) {
+            try {
+                Object value = InvokerHelper.invokeMethod(
+                    hierarchyApi, 'findAll', [page, pageSize] as Object[])
+                if (value instanceof Collection &&
+                    ((Collection<?>) value).size() == pageSize) {
+                    return (Collection<?>) value
+                }
+            } catch (RuntimeException ignored) {
+                // Public API releases have used different first-page conventions.
+            }
+        }
+        null
+    }
+
+    @CompileDynamic
+    private static List<Long> resolveIssueIds(
+        IssueService service, ApplicationUser actor, Object value) {
+        Collection<?> values = value instanceof Collection ?
+            (Collection<?>) value : (value == null ? [] : [value])
+        List<Long> result = []
+        for (Object item : values) {
+            Issue issue = item instanceof Issue ? (Issue) item : null
+            Object issueResult = null
+            if (issue == null && item instanceof Number) {
+                issueResult = service.getIssue(actor, ((Number) item).longValue())
+            } else if (issue == null && item != null) {
+                issueResult = service.getIssue(actor, String.valueOf(item))
+            }
+            if (issue == null && issueResult?.isValid()) {
+                issue = (Issue) issueResult.getIssue()
+            }
+            if (issue != null) result.add(issue.getId())
+        }
+        result.unique()
+    }
+
+    private static boolean hasParentValue(Object value) {
+        if (value == null) return false
+        if (value instanceof Collection) return !((Collection<?>) value).isEmpty()
+        !String.valueOf(value).trim().isEmpty()
+    }
+
+    private static String generatorType(String moduleKey) {
+        String key = moduleKey.toLowerCase(Locale.ROOT)
+        key.contains('duplicate') ? 'DUPLICATES_FILTER' :
+            key.contains('inserter') ? 'INSERTER' :
+            key.contains('extender') ? 'EXTENDER' :
+            key.contains('filter') ? 'FILTER' : 'OTHER'
+    }
+
+    private static String provenance(String moduleKey) {
+        String key = moduleKey.toLowerCase(Locale.ROOT)
+        key.contains('portfolio') || key.contains('roadmap') ? 'ADVANCED_ROADMAPS' :
+            key.contains('link') ? 'JIRA_LINK' : 'GENERATOR'
+    }
 }
 
 /**
@@ -133,9 +448,11 @@ Closure<Object> respondJson = { int status, Object payload ->
     respond.call(status, JsonOutput.prettyPrint(JsonOutput.toJson(payload)), 'application/json;charset=UTF-8')
 }
 
-Closure<Object> requireJsonRequest = { Object httpRequest, String body ->
-    DoctorHttpDecision decision = DoctorHttpGuard.requireJson(
-        httpRequest?.getContentType(), body)
+Closure<Object> requireJsonRequest = {
+        Object httpRequest, String body, Integer maxBytes = null ->
+    DoctorHttpDecision decision = maxBytes == null ?
+        DoctorHttpGuard.requireJson(httpRequest?.getContentType(), body) :
+        DoctorHttpGuard.requireJson(httpRequest?.getContentType(), body, maxBytes)
     decision.isAllowed() ? null : respondJson.call(
         decision.getStatus(), [ok: false, error: decision.getError()])
 }
@@ -860,9 +1177,16 @@ LiveStructureGateway doctorStructureGateway = new LiveStructureGateway({
     ReadResult.complete(values.collect { Structure item ->
         new StructureChoice(id: item.getId(), name: item.getName())
     })
-}, null)
-LiveConfigurationDiscovery doctorHierarchy = new LiveConfigurationDiscovery(null)
-LiveJiraGateway doctorJira = new LiveJiraGateway(null)
+}, { long structureId ->
+    DoctorLiveAccess.readStructure(structureComponents, structureId)
+})
+LiveConfigurationDiscovery doctorHierarchy = new LiveConfigurationDiscovery({
+    DoctorLiveAccess.readHierarchy()
+})
+LiveJiraGateway doctorJira = new LiveJiraGateway({ Collection<Long> issueIds ->
+    DoctorLiveAccess.readIssues(issueService, customFieldManager,
+        authenticationContext.getLoggedInUser(), issueIds)
+})
 LiveAutomationProvider doctorAutomation = new LiveAutomationProvider(null, null)
 ProposalSource doctorProposals = { ignored ->
     ReadResult.unavailable('Repair proposal discovery is not proven on this instance')
@@ -974,7 +1298,8 @@ structureIssueDoctorAnalyze(httpMethod: 'POST', groups: ["jira-administrators"])
     if (user == null) return respondJson.call(401, [ok: false, error: 'AUTHENTICATION_REQUIRED'])
     Object queryRejection = requireQueryKeys.call(queryParams, [])
     if (queryRejection != null) return queryRejection
-    Object requestRejection = requireJsonRequest.call(httpRequest, body)
+    Object requestRejection = requireJsonRequest.call(
+        httpRequest, body, DoctorHttpGuard.MAX_ANALYZE_JSON_BYTES)
     if (requestRejection != null) return requestRejection
     try {
         AnalyzeRequest request = DoctorApplication.parseAnalyzeRequest(

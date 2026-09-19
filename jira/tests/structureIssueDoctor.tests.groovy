@@ -64,6 +64,22 @@ if (endpoint.isFile()) {
             renderer.getText('UTF-8').contains('Work-Item-Key (optional)'))
     ok('new Core Apply is visibly disabled',
         renderer.isFile() && renderer.getText('UTF-8').contains('Apply is disabled'))
+
+    ok('global Jira hierarchy is read through the proven Roadmaps API',
+        source.contains('com.atlassian.rm.portfolio.publicapi.hierarchy.ExportedHierarchyLevelApi') &&
+            source.contains('hierarchyPage(hierarchyApi, (int) count)'))
+    ok('Structure-wide analysis has a live forest reader',
+        source.contains('LiveStructureGateway doctorStructureGateway') &&
+            source.contains('DoctorLiveAccess.readStructure'))
+    ok('Structure-wide analysis has a live Jira relationship reader',
+        source.contains('LiveJiraGateway doctorJira') &&
+            source.contains('DoctorLiveAccess.readIssues'))
+    ok('unresolved configured parent values make Jira relationship evidence incomplete',
+        source.contains('hasParentValue(rawParentValue) && resolved.isEmpty()'))
+    ok('hierarchy reader contains no hierarchy mutation invocation',
+        !['create', 'update', 'delete'].any { String verb ->
+            source.contains("invokeMethod(hierarchyApi, '${verb}'")
+        })
 }
 
 println 'PASSED: ' + passed

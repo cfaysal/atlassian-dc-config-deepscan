@@ -516,6 +516,21 @@ Do not install the modular sources or either development probe. Maintainers rebu
 with `node tools/build-structure-doctor-bundle.mjs` and verify that the committed artifact is
 current with `node tools/build-structure-doctor-bundle.mjs --check`.
 
+The generated ScriptRunner file deliberately has no `package` declaration and contains no
+package-local imports. The `structuredoctor` folder is only the installation location. This
+avoids ScriptRunner Script Editor package-resolution errors while the maintained modular
+sources keep their normal `package structuredoctor` declarations.
+
+On the proven reference installation, the Doctor reads the global hierarchy through the
+Advanced Roadmaps hierarchy API, the complete Structure forest and its generator provenance
+through Structure, and visible parent relations through Jira's user-aware issue service. The
+capability probe did not expose a complete read-only Jira Automation rule-and-audit service.
+The page therefore accepts an optional official Automation rule-export JSON and an optional
+Structure Doctor audit-evidence JSON. Uploaded JSON is bounded, parsed as inert data, retained
+only as normalized evidence for the current in-memory plan, and never executed or published.
+Without audit evidence, rule-configuration conflicts can still be reported, but a historical
+rule execution cannot be graded as a confirmed cause.
+
 The analysis reports every source separately as `COMPLETE`, `INCOMPLETE`, `FAILED`, or
 `UNAVAILABLE`. A missing installed API therefore remains visible and cannot be mistaken for
 an empty, healthy configuration. The hierarchy behind `PortfolioHierarchy.jspa` and Jira
@@ -526,10 +541,13 @@ identifiers. JQL, generator parameters, field values, scripts, and rule configur
 rejected at the HTTP boundary. Duplicate repair requires the administrator to choose exactly
 which physical occurrence remains. Every unselected finding is ignored.
 
-Every POST endpoint requires `application/json` and rejects bodies larger than 64 KiB before
-parsing. Unknown body and query keys are rejected. Analyze verifies that the selected
-Structure is visible before reading its forest; an unresolved optional work-item filter is
-reported as not visible without claiming that the work item does not exist globally.
+Every POST endpoint requires `application/json`. Plan, Apply, and the remaining POST endpoints
+reject bodies larger than 64 KiB before parsing. Analyze permits up to 22 MiB so that two
+individually bounded 5 MiB Automation evidence files still fit after JSON string escaping.
+Unknown body and query keys are rejected. Analyze verifies that the selected Structure is
+visible before reading its forest; an unresolved optional work-item filter or parent value is
+reported as incomplete or not visible without claiming that the work item does not exist
+globally.
 
 The Core Apply action is deliberately disabled in this version. It is enabled only after the
 installed Jira and Structure APIs have proven complete preview, revision, mutation, restore,

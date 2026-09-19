@@ -209,6 +209,7 @@ try {
     DoctorApplication.parseAnalyzeRequest([
         structureId: '9', issueKeyFilter: null, requestedAuditDays: 30,
         ruleExportRef: null, auditExportRef: null,
+        ruleExportJson: null, auditExportJson: null,
         generatorParameters: [enabled: false]])
 } catch (IllegalArgumentException ignored) {
     analyzeInjectionRejected = true
@@ -235,10 +236,88 @@ ok('apply visibly disabled', page.contains('Apply is disabled'))
 ok('analysis and planning endpoints present',
     page.contains('structureIssueDoctorAnalyze') && page.contains('structureIssueDoctorPlan'))
 ok('issue key is optional', page.contains('optional'))
+ok('Automation rule export can be selected in the browser',
+    page.contains('ruleExportFile'))
+ok('Automation audit export can be selected in the browser',
+    page.contains('auditExportFile'))
+
+String inlineRuleExport = new File(
+    System.getProperty('repoRoot', '.'),
+    'jira/tests/fixtures/structuredoctor/automation-rules-valid.json').getText('UTF-8')
+AnalyzeRequest parsedInlineRequest = DoctorApplication.parseAnalyzeRequest([
+    structureId: '9', issueKeyFilter: null, requestedAuditDays: 30,
+    ruleExportRef: null, auditExportRef: null,
+    ruleExportJson: inlineRuleExport, auditExportJson: null
+])
+check('inline Automation export remains inert request data',
+    parsedInlineRequest.ruleExportJson, inlineRuleExport)
+DoctorApplication inlineExportApplication = new DoctorApplication(
+    structures, configuration, structures, jira, liveAutomation, null, proposals,
+    { String ignored -> 1000L })
+DoctorAnalysis inlineExportAnalysis = inlineExportApplication.analyze(
+    parsedInlineRequest)
+check('inline Automation rules use the JSON fallback',
+    inlineExportAnalysis.coverage.find { it.source == 'automation-rules' }.provider,
+    'JSON_FALLBACK')
+check('inline Automation rules are normalized without execution',
+    inlineExportAnalysis.automation.rules*.ruleId, [541L, 562L])
 
 LiveConfigurationDiscovery unavailableConfiguration = new LiveConfigurationDiscovery(null)
 check('unproven hierarchy is unavailable',
     unavailableConfiguration.readHierarchy().state, ReadState.UNAVAILABLE)
+
+HierarchySnapshot mappedHierarchy = LiveConfigurationDiscovery.mapHierarchy([
+    [rank: 3L, levelId: '3', name: 'Ziel', issueTypeIds: [300L]],
+    [rank: 2L, levelId: '2', name: 'Aktionsfeld', issueTypeIds: [200L]]
+])
+check('live hierarchy records keep the configured order',
+    mappedHierarchy.levels*.rank, [3L, 2L])
+check('live hierarchy records keep issue type assignments',
+    mappedHierarchy.levels[1].issueTypeIds, [200L])
+ok('live hierarchy records receive a deterministic fingerprint',
+    mappedHierarchy.fingerprint ==~ /[0-9a-f]{64}/)
+
+StructureSnapshot mappedStructure = LiveStructureGateway.mapStructure(
+    9L,
+    'forest-r1',
+    [
+        [generatorId: 21L, moduleKey: 'portfolio-children', type: 'EXTENDER',
+         order: 0, enabled: true, parameters: [:], revision: 'g21', complete: true],
+        [generatorId: 22L, moduleKey: 'jql-inserter', type: 'INSERTER',
+         order: 1, enabled: true, parameters: [jql: 'project = DEMO'],
+         revision: 'g22', complete: true]
+    ],
+    [
+        [rowId: '100', issueId: 2000L, parentIndex: -1, depth: 0,
+         position: 0, creatorId: null, provenance: 'PERMANENT',
+         provenanceComplete: true],
+        [rowId: '101', issueId: 1000L, parentIndex: 0, depth: 1,
+         position: 1, creatorId: '21', provenance: 'ADVANCED_ROADMAPS',
+         provenanceComplete: true],
+        [rowId: '102', issueId: 1000L, parentIndex: -1, depth: 0,
+         position: 2, creatorId: '22', provenance: 'GENERATOR',
+         provenanceComplete: true]
+    ],
+    true)
+check('live forest mapping retains both physical occurrences',
+    mappedStructure.occurrences.findAll { it.issueId == 1000L }.size(), 2)
+check('live forest mapping resolves the nearest issue parent path',
+    mappedStructure.occurrences.find { it.rowId == '101' }.parentPath, [2000L])
+check('live forest mapping retains occurrence provenance',
+    mappedStructure.occurrences.find { it.rowId == '101' }.creatorId, '21')
+ok('live forest mapping receives a deterministic fingerprint',
+    mappedStructure.fingerprint ==~ /[0-9a-f]{64}/)
+
+List<IssueRelationSnapshot> mappedRelations = LiveJiraGateway.mapIssues([
+    [issueId: 1000L, issueTypeId: 200L, nativeParentId: 2000L,
+     leadingParentIds: [2000L], revisions: [issue: 'i1']],
+    [issueId: 2000L, issueTypeId: 300L, nativeParentId: null,
+     leadingParentIds: [], revisions: [issue: 'i2']]
+])
+check('live Jira mapping keeps native parent evidence',
+    mappedRelations[0].nativeParentId, 2000L)
+check('live Jira mapping keeps every candidate parent',
+    mappedRelations[0].leadingParentIds, [2000L])
 
 int legacyRepairs = 0
 LegacyIssueDoctor legacy = new LegacyIssueDoctor(

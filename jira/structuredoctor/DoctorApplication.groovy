@@ -10,6 +10,7 @@ final class DoctorApplication {
     private final AutomationDataProvider jsonAutomation
     private final ProposalSource proposals
     private final Closure<Long> issueKeyResolver
+    private final DoctorAutomationEvidence automationEvidence
     private final Map<String, DoctorAnalysis> analyses =
         Collections.synchronizedMap(new LinkedHashMap<String, DoctorAnalysis>())
     DoctorApplication(StructureCatalogProvider catalog,
@@ -26,6 +27,8 @@ final class DoctorApplication {
         this.jiraProvider = jiraProvider
         this.liveAutomation = liveAutomation
         this.jsonAutomation = jsonAutomation
+        this.automationEvidence = new DoctorAutomationEvidence(
+            liveAutomation, jsonAutomation)
         this.proposals = proposals
         this.issueKeyResolver = issueKeyResolver
     }
@@ -56,25 +59,10 @@ final class DoctorApplication {
         StructureSnapshot snapshot = merge(structureRead, hierarchyRead, jiraRead)
         AnalysisScope scope = scope(snapshot)
 
-        ReadResult<List<AutomationRuleSnapshot>> rules = liveAutomation == null ?
-            ReadResult.unavailable('Live Automation rules are unavailable') :
-            liveAutomation.readRules(scope)
-        String ruleProvider = 'LIVE'
-        if (!rules.complete() && request.ruleExportRef && jsonAutomation != null) {
-            rules = jsonAutomation.readRules(scope)
-            ruleProvider = 'JSON_FALLBACK'
-        }
-        AuditRequest auditRequest = new AuditRequest(
-            ruleIds: (rules.value ?: [])*.ruleId,
-            issueIds: issueIds as List<Long>, requestedDays: days)
-        ReadResult<List<AutomationAuditSnapshot>> audit = liveAutomation == null ?
-            ReadResult.unavailable('Live Automation audit is unavailable') :
-            liveAutomation.readAudit(auditRequest)
-        String auditProvider = 'LIVE'
-        if (!audit.complete() && request.auditExportRef && jsonAutomation != null) {
-            audit = jsonAutomation.readAudit(auditRequest)
-            auditProvider = 'JSON_FALLBACK'
-        }
+        DoctorAutomationReads automationReads = automationEvidence.read(
+            request, scope, issueIds, days)
+        ReadResult<List<AutomationRuleSnapshot>> rules = automationReads.rules
+        ReadResult<List<AutomationAuditSnapshot>> audit = automationReads.audit
 
         HierarchyAnalysis hierarchyAnalysis = new CoreHierarchyAnalyzer().analyze(snapshot)
         DuplicateAnalysis duplicateAnalysis = new CoreDuplicateAnalyzer().analyze(snapshot)
@@ -97,8 +85,8 @@ final class DoctorApplication {
             coverage('jira-hierarchy', hierarchyRead, 'LIVE'),
             coverage('structure-snapshot', structureRead, 'LIVE'),
             coverage('jira-data', jiraRead, 'LIVE'),
-            coverage('automation-rules', rules, ruleProvider),
-            coverage('automation-audit', audit, auditProvider)
+            coverage('automation-rules', rules, automationReads.ruleProvider),
+            coverage('automation-audit', audit, automationReads.auditProvider)
         ]
         List<String> blockers = coverage.findAll { it.state != ReadState.COMPLETE }
             .collect { SourceCoverage item -> item.source }
@@ -123,9 +111,12 @@ final class DoctorApplication {
             complete: blockers.isEmpty(), blockers: blockers.unique().sort())
         synchronized (analyses) {
             if (analyses.size() >= 100 && !analyses.containsKey(snapshotId)) {
-                analyses.remove(analyses.keySet().iterator().next())
+                String removed = analyses.keySet().iterator().next()
+                analyses.remove(removed)
+                automationEvidence.remove(removed)
             }
             analyses.put(snapshotId, result)
+            automationEvidence.remember(snapshotId, automationReads)
         }
         result
     }
@@ -153,17 +144,11 @@ final class DoctorApplication {
         boolean useJsonAudit = prior.coverage.find {
             it.source == 'automation-audit'
         }?.provider == 'JSON_FALLBACK'
-        AutomationDataProvider ruleProvider = useJsonRules ? jsonAutomation : liveAutomation
-        AutomationDataProvider auditProvider = useJsonAudit ? jsonAutomation : liveAutomation
-        ReadResult<List<AutomationRuleSnapshot>> rules = ruleProvider == null ?
-            ReadResult.unavailable('Automation rule provider is unavailable') :
-            ruleProvider.readRules(currentScope)
-        AuditRequest auditRequest = new AuditRequest(
-            ruleIds: (rules.value ?: [])*.ruleId, issueIds: ids as List<Long>,
-            requestedDays: prior.requestedAuditDays)
-        ReadResult<List<AutomationAuditSnapshot>> audit = auditProvider == null ?
-            ReadResult.unavailable('Automation audit provider is unavailable') :
-            auditProvider.readAudit(auditRequest)
+        DoctorAutomationReads automationReads = automationEvidence.readForPlan(
+            request.snapshotId, useJsonRules, useJsonAudit, currentScope, ids,
+            prior.requestedAuditDays)
+        ReadResult<List<AutomationRuleSnapshot>> rules = automationReads.rules
+        ReadResult<List<AutomationAuditSnapshot>> audit = automationReads.audit
         if (dependencyFingerprint(current, rules, audit) != prior.dependencyFingerprint) {
             return blocked('stale-snapshot')
         }

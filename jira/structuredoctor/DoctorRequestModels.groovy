@@ -15,6 +15,8 @@ class AnalyzeRequest {
     Integer requestedAuditDays
     String ruleExportRef
     String auditExportRef
+    String ruleExportJson
+    String auditExportJson
 }
 
 @Immutable(copyWith = true)
@@ -55,7 +57,7 @@ class PlanRequest {
 final class DoctorRequests {
     private static final Set<String> ANALYZE_KEYS = [
         'structureId', 'issueKeyFilter', 'requestedAuditDays',
-        'ruleExportRef', 'auditExportRef'
+        'ruleExportRef', 'auditExportRef', 'ruleExportJson', 'auditExportJson'
     ] as Set<String>
     private static final Set<String> PLAN_KEYS = [
         'snapshotId', 'findingGroupIds', 'retainOccurrenceByGroup',
@@ -80,7 +82,9 @@ final class DoctorRequests {
             issueKeyFilter: optionalText(payload.issueKeyFilter),
             requestedAuditDays: days,
             ruleExportRef: optionalReference(payload.ruleExportRef),
-            auditExportRef: optionalReference(payload.auditExportRef))
+            auditExportRef: optionalReference(payload.auditExportRef),
+            ruleExportJson: optionalPayload(payload.ruleExportJson),
+            auditExportJson: optionalPayload(payload.auditExportJson))
     }
 
     static PlanRequest parsePlan(Map<String, Object> payload) {
@@ -110,6 +114,15 @@ final class DoctorRequests {
             throw new IllegalArgumentException('Upload reference is invalid')
         }
         result
+    }
+
+    private static String optionalPayload(Object value) {
+        if (value == null) return null
+        if (!(value instanceof CharSequence)) {
+            throw new IllegalArgumentException('Automation export must be JSON text')
+        }
+        String result = value.toString()
+        result.trim().isEmpty() ? null : result
     }
 
     private static String text(Object value, String name) {

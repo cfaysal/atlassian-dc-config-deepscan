@@ -29,7 +29,9 @@ code{word-break:break-all}details{margin:10px 0}summary{cursor:pointer;font-weig
 ${catalogProblem}
 <div class="grid"><div><label for="structureId">Structure</label><select id="structureId" required><option value="">Structure w\u00e4hlen</option>${options}</select></div>
 <div><label for="issueKeyFilter">Work-Item-Key (optional)</label><input id="issueKeyFilter" placeholder="DEMO-123"></div>
-<div><label for="auditDays">Automation-Audit in Tagen</label><input id="auditDays" type="number" min="1" max="365" value="30"></div></div>
+<div><label for="auditDays">Automation-Audit in Tagen</label><input id="auditDays" type="number" min="1" max="365" value="30"></div>
+<div><label for="ruleExportFile">Automation-Regeln (JSON, optional)</label><input id="ruleExportFile" type="file" accept="application/json,.json"><p class="note">Offizieller Jira-Automation-Regel-Export. Der Inhalt wird nur gelesen und niemals ausgef\u00fchrt.</p></div>
+<div><label for="auditExportFile">Structure-Doctor Audit-Beleg (JSON, optional)</label><input id="auditExportFile" type="file" accept="application/json,.json"><p class="note">Optionales normalisiertes Doctor-Format f\u00fcr die zeitliche Ursachenanalyse, kein Automation-Regel-Export.</p></div></div>
 <button id="analyzeButton" type="button">Structure analysieren</button>
 </section>
 ${analysisHtml}${planHtml}
@@ -145,13 +147,29 @@ const post = async (endpoint, payload) => {
   if (!response.ok) throw new Error(text);
   document.open(); document.write(text); document.close();
 };
-document.getElementById('analyzeButton').addEventListener('click', () => post(
-  'structureIssueDoctorAnalyze', {
+const readExport = async id => {
+  const file = document.getElementById(id).files[0];
+  if (!file) return null;
+  if (file.size > 5242880) throw new Error('Die JSON-Datei ist gr\u00f6sser als 5 MiB.');
+  return file.text();
+};
+document.getElementById('analyzeButton').addEventListener('click', async () => {
+  const button = document.getElementById('analyzeButton');
+  button.disabled = true;
+  try {
+    await post('structureIssueDoctorAnalyze', {
     structureId: document.getElementById('structureId').value,
     issueKeyFilter: document.getElementById('issueKeyFilter').value || null,
     requestedAuditDays: Number(document.getElementById('auditDays').value),
-    ruleExportRef: null, auditExportRef: null
-  }));
+    ruleExportRef: null, auditExportRef: null,
+    ruleExportJson: await readExport('ruleExportFile'),
+    auditExportJson: await readExport('auditExportFile')
+    });
+  } catch (error) {
+    window.alert(error.message || String(error));
+    button.disabled = false;
+  }
+});
 const planButton = document.getElementById('planButton');
 if (planButton) planButton.addEventListener('click', () => {
   const snapshotId = document.querySelector('[data-snapshot-id]').dataset.snapshotId;

@@ -35,10 +35,8 @@
  * INPUT jira/structuredoctor/LiveJiraGateway.groovy
  * INPUT jira/structuredoctor/LiveRepairInfrastructure.groovy
  * INPUT jira/structuredoctor/LiveStructureGateway.groovy
- * INPUT_SHA256 b1e42acc880ec4f989234351986604558abb8ec8089efbcc5830bf487c36521d
+ * INPUT_SHA256 a569fb65851ddd4dd525e6a3c6070a46368385687eb7f98a5792e86de9532140
  */
-
-package structuredoctor
 
 import com.almworks.jira.structure.api.StructureComponents
 import com.almworks.jira.structure.api.forest.ForestSpec
@@ -70,6 +68,7 @@ import com.onresolve.scriptrunner.runner.rest.common.CustomEndpointDelegate
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import groovy.transform.BaseScript
+import groovy.transform.CompileDynamic
 import groovy.transform.CompileStatic
 import groovy.transform.Immutable
 import groovy.transform.KnownImmutable
@@ -84,28 +83,6 @@ import static structuredoctor.CoreRepairPolicy.requestFingerprint
 import static structuredoctor.CoreRepairPolicy.result
 import static structuredoctor.CoreRepairPolicy.validOperationId
 import static structuredoctor.CoreRepairPolicy.validate
-import structuredoctor.AnalyzeRequest
-import structuredoctor.CoreSupport
-import structuredoctor.DisabledRepairInfrastructure
-import structuredoctor.DoctorAnalysis
-import structuredoctor.DoctorApplication
-import structuredoctor.DoctorBoundaryException
-import structuredoctor.DoctorHttpDecision
-import structuredoctor.DoctorHttpGuard
-import structuredoctor.DoctorRenderer
-import structuredoctor.DoctorRepairApplication
-import structuredoctor.LegacyIssueDoctor
-import structuredoctor.LiveAutomationProvider
-import structuredoctor.LiveConfigurationDiscovery
-import structuredoctor.LiveJiraGateway
-import structuredoctor.LiveStructureGateway
-import structuredoctor.PlanRequest
-import structuredoctor.ProposalPlan
-import structuredoctor.ProposalSource
-import structuredoctor.ReadResult
-import structuredoctor.RepairCoordinatorResult
-import structuredoctor.RepairOperation
-import structuredoctor.StructureChoice
 
 // SOURCE: jira/structuredoctor/CoreAutomationAnalyzer.groovy
 @CompileStatic
@@ -2663,6 +2640,7 @@ final class DoctorApplication {
     private final AutomationDataProvider jsonAutomation
     private final ProposalSource proposals
     private final Closure<Long> issueKeyResolver
+    private final DoctorAutomationEvidence automationEvidence
     private final Map<String, DoctorAnalysis> analyses =
         Collections.synchronizedMap(new LinkedHashMap<String, DoctorAnalysis>())
     DoctorApplication(StructureCatalogProvider catalog,
@@ -2679,6 +2657,8 @@ final class DoctorApplication {
         this.jiraProvider = jiraProvider
         this.liveAutomation = liveAutomation
         this.jsonAutomation = jsonAutomation
+        this.automationEvidence = new DoctorAutomationEvidence(
+            liveAutomation, jsonAutomation)
         this.proposals = proposals
         this.issueKeyResolver = issueKeyResolver
     }
@@ -2709,25 +2689,10 @@ final class DoctorApplication {
         StructureSnapshot snapshot = merge(structureRead, hierarchyRead, jiraRead)
         AnalysisScope scope = scope(snapshot)
 
-        ReadResult<List<AutomationRuleSnapshot>> rules = liveAutomation == null ?
-            ReadResult.unavailable('Live Automation rules are unavailable') :
-            liveAutomation.readRules(scope)
-        String ruleProvider = 'LIVE'
-        if (!rules.complete() && request.ruleExportRef && jsonAutomation != null) {
-            rules = jsonAutomation.readRules(scope)
-            ruleProvider = 'JSON_FALLBACK'
-        }
-        AuditRequest auditRequest = new AuditRequest(
-            ruleIds: (rules.value ?: [])*.ruleId,
-            issueIds: issueIds as List<Long>, requestedDays: days)
-        ReadResult<List<AutomationAuditSnapshot>> audit = liveAutomation == null ?
-            ReadResult.unavailable('Live Automation audit is unavailable') :
-            liveAutomation.readAudit(auditRequest)
-        String auditProvider = 'LIVE'
-        if (!audit.complete() && request.auditExportRef && jsonAutomation != null) {
-            audit = jsonAutomation.readAudit(auditRequest)
-            auditProvider = 'JSON_FALLBACK'
-        }
+        DoctorAutomationReads automationReads = automationEvidence.read(
+            request, scope, issueIds, days)
+        ReadResult<List<AutomationRuleSnapshot>> rules = automationReads.rules
+        ReadResult<List<AutomationAuditSnapshot>> audit = automationReads.audit
 
         HierarchyAnalysis hierarchyAnalysis = new CoreHierarchyAnalyzer().analyze(snapshot)
         DuplicateAnalysis duplicateAnalysis = new CoreDuplicateAnalyzer().analyze(snapshot)
@@ -2750,8 +2715,8 @@ final class DoctorApplication {
             coverage('jira-hierarchy', hierarchyRead, 'LIVE'),
             coverage('structure-snapshot', structureRead, 'LIVE'),
             coverage('jira-data', jiraRead, 'LIVE'),
-            coverage('automation-rules', rules, ruleProvider),
-            coverage('automation-audit', audit, auditProvider)
+            coverage('automation-rules', rules, automationReads.ruleProvider),
+            coverage('automation-audit', audit, automationReads.auditProvider)
         ]
         List<String> blockers = coverage.findAll { it.state != ReadState.COMPLETE }
             .collect { SourceCoverage item -> item.source }
@@ -2776,9 +2741,12 @@ final class DoctorApplication {
             complete: blockers.isEmpty(), blockers: blockers.unique().sort())
         synchronized (analyses) {
             if (analyses.size() >= 100 && !analyses.containsKey(snapshotId)) {
-                analyses.remove(analyses.keySet().iterator().next())
+                String removed = analyses.keySet().iterator().next()
+                analyses.remove(removed)
+                automationEvidence.remove(removed)
             }
             analyses.put(snapshotId, result)
+            automationEvidence.remember(snapshotId, automationReads)
         }
         result
     }
@@ -2806,17 +2774,11 @@ final class DoctorApplication {
         boolean useJsonAudit = prior.coverage.find {
             it.source == 'automation-audit'
         }?.provider == 'JSON_FALLBACK'
-        AutomationDataProvider ruleProvider = useJsonRules ? jsonAutomation : liveAutomation
-        AutomationDataProvider auditProvider = useJsonAudit ? jsonAutomation : liveAutomation
-        ReadResult<List<AutomationRuleSnapshot>> rules = ruleProvider == null ?
-            ReadResult.unavailable('Automation rule provider is unavailable') :
-            ruleProvider.readRules(currentScope)
-        AuditRequest auditRequest = new AuditRequest(
-            ruleIds: (rules.value ?: [])*.ruleId, issueIds: ids as List<Long>,
-            requestedDays: prior.requestedAuditDays)
-        ReadResult<List<AutomationAuditSnapshot>> audit = auditProvider == null ?
-            ReadResult.unavailable('Automation audit provider is unavailable') :
-            auditProvider.readAudit(auditRequest)
+        DoctorAutomationReads automationReads = automationEvidence.readForPlan(
+            request.snapshotId, useJsonRules, useJsonAudit, currentScope, ids,
+            prior.requestedAuditDays)
+        ReadResult<List<AutomationRuleSnapshot>> rules = automationReads.rules
+        ReadResult<List<AutomationAuditSnapshot>> audit = automationReads.audit
         if (dependencyFingerprint(current, rules, audit) != prior.dependencyFingerprint) {
             return blocked('stale-snapshot')
         }
@@ -2974,14 +2936,21 @@ class DoctorHttpDecision {
 
 final class DoctorHttpGuard {
     static final int MAX_JSON_BYTES = 65_536
+    static final int MAX_ANALYZE_JSON_BYTES = 23_068_672
 
     static DoctorHttpDecision requireJson(String contentType, String body) {
+        requireJson(contentType, body, MAX_JSON_BYTES)
+    }
+
+    static DoctorHttpDecision requireJson(String contentType, String body,
+                                          int maxBytes) {
         String mediaType = contentType?.split(';', 2)?.first()?.trim()
         if (!'application/json'.equalsIgnoreCase(mediaType)) {
             return reject(415, 'UNSUPPORTED_MEDIA_TYPE')
         }
+        if (maxBytes <= 0) return reject(413, 'REQUEST_TOO_LARGE')
         int size = (body ?: '').getBytes(StandardCharsets.UTF_8).length
-        size > MAX_JSON_BYTES ? reject(413, 'REQUEST_TOO_LARGE') : allow()
+        size > maxBytes ? reject(413, 'REQUEST_TOO_LARGE') : allow()
     }
 
     static DoctorHttpDecision requireQueryKeys(Collection<?> actual,
@@ -3051,7 +3020,9 @@ code{word-break:break-all}details{margin:10px 0}summary{cursor:pointer;font-weig
 ${catalogProblem}
 <div class="grid"><div><label for="structureId">Structure</label><select id="structureId" required><option value="">Structure w\u00e4hlen</option>${options}</select></div>
 <div><label for="issueKeyFilter">Work-Item-Key (optional)</label><input id="issueKeyFilter" placeholder="DEMO-123"></div>
-<div><label for="auditDays">Automation-Audit in Tagen</label><input id="auditDays" type="number" min="1" max="365" value="30"></div></div>
+<div><label for="auditDays">Automation-Audit in Tagen</label><input id="auditDays" type="number" min="1" max="365" value="30"></div>
+<div><label for="ruleExportFile">Automation-Regeln (JSON, optional)</label><input id="ruleExportFile" type="file" accept="application/json,.json"><p class="note">Offizieller Jira-Automation-Regel-Export. Der Inhalt wird nur gelesen und niemals ausgef\u00fchrt.</p></div>
+<div><label for="auditExportFile">Structure-Doctor Audit-Beleg (JSON, optional)</label><input id="auditExportFile" type="file" accept="application/json,.json"><p class="note">Optionales normalisiertes Doctor-Format f\u00fcr die zeitliche Ursachenanalyse, kein Automation-Regel-Export.</p></div></div>
 <button id="analyzeButton" type="button">Structure analysieren</button>
 </section>
 ${analysisHtml}${planHtml}
@@ -3167,13 +3138,29 @@ const post = async (endpoint, payload) => {
   if (!response.ok) throw new Error(text);
   document.open(); document.write(text); document.close();
 };
-document.getElementById('analyzeButton').addEventListener('click', () => post(
-  'structureIssueDoctorAnalyze', {
+const readExport = async id => {
+  const file = document.getElementById(id).files[0];
+  if (!file) return null;
+  if (file.size > 5242880) throw new Error('Die JSON-Datei ist gr\u00f6sser als 5 MiB.');
+  return file.text();
+};
+document.getElementById('analyzeButton').addEventListener('click', async () => {
+  const button = document.getElementById('analyzeButton');
+  button.disabled = true;
+  try {
+    await post('structureIssueDoctorAnalyze', {
     structureId: document.getElementById('structureId').value,
     issueKeyFilter: document.getElementById('issueKeyFilter').value || null,
     requestedAuditDays: Number(document.getElementById('auditDays').value),
-    ruleExportRef: null, auditExportRef: null
-  }));
+    ruleExportRef: null, auditExportRef: null,
+    ruleExportJson: await readExport('ruleExportFile'),
+    auditExportJson: await readExport('auditExportFile')
+    });
+  } catch (error) {
+    window.alert(error.message || String(error));
+    button.disabled = false;
+  }
+});
 const planButton = document.getElementById('planButton');
 if (planButton) planButton.addEventListener('click', () => {
   const snapshotId = document.querySelector('[data-snapshot-id]').dataset.snapshotId;
@@ -3313,6 +3300,8 @@ class AnalyzeRequest {
     Integer requestedAuditDays
     String ruleExportRef
     String auditExportRef
+    String ruleExportJson
+    String auditExportJson
 }
 
 @Immutable(copyWith = true)
@@ -3353,7 +3342,7 @@ class PlanRequest {
 final class DoctorRequests {
     private static final Set<String> ANALYZE_KEYS = [
         'structureId', 'issueKeyFilter', 'requestedAuditDays',
-        'ruleExportRef', 'auditExportRef'
+        'ruleExportRef', 'auditExportRef', 'ruleExportJson', 'auditExportJson'
     ] as Set<String>
     private static final Set<String> PLAN_KEYS = [
         'snapshotId', 'findingGroupIds', 'retainOccurrenceByGroup',
@@ -3378,7 +3367,9 @@ final class DoctorRequests {
             issueKeyFilter: optionalText(payload.issueKeyFilter),
             requestedAuditDays: days,
             ruleExportRef: optionalReference(payload.ruleExportRef),
-            auditExportRef: optionalReference(payload.auditExportRef))
+            auditExportRef: optionalReference(payload.auditExportRef),
+            ruleExportJson: optionalPayload(payload.ruleExportJson),
+            auditExportJson: optionalPayload(payload.auditExportJson))
     }
 
     static PlanRequest parsePlan(Map<String, Object> payload) {
@@ -3408,6 +3399,15 @@ final class DoctorRequests {
             throw new IllegalArgumentException('Upload reference is invalid')
         }
         result
+    }
+
+    private static String optionalPayload(Object value) {
+        if (value == null) return null
+        if (!(value instanceof CharSequence)) {
+            throw new IllegalArgumentException('Automation export must be JSON text')
+        }
+        String result = value.toString()
+        result.trim().isEmpty() ? null : result
     }
 
     private static String text(Object value, String name) {
@@ -3634,6 +3634,104 @@ final class LiveAutomationProvider implements AutomationDataProvider {
     }
 }
 
+final class DoctorAutomationReads {
+    ReadResult<List<AutomationRuleSnapshot>> rules
+    ReadResult<List<AutomationAuditSnapshot>> audit
+    String ruleProvider
+    String auditProvider
+    boolean inlineExport
+}
+
+final class DoctorAutomationEvidence {
+    static final int MAX_EXPORT_BYTES = 5_242_880
+
+    private final AutomationDataProvider live
+    private final AutomationDataProvider configuredJson
+    private final Map<String, DoctorAutomationReads> remembered =
+        Collections.synchronizedMap(new LinkedHashMap<String, DoctorAutomationReads>())
+
+    DoctorAutomationEvidence(AutomationDataProvider live,
+                             AutomationDataProvider configuredJson) {
+        this.live = live
+        this.configuredJson = configuredJson
+    }
+
+    DoctorAutomationReads read(AnalyzeRequest request, AnalysisScope scope,
+                               Collection<Long> issueIds, int days) {
+        boolean inline = request.ruleExportJson != null || request.auditExportJson != null
+        AutomationDataProvider requestJson = inline ? new JsonAutomationProvider(
+            bytes(request.ruleExportJson), bytes(request.auditExportJson),
+            MAX_EXPORT_BYTES) : configuredJson
+        ReadResult<List<AutomationRuleSnapshot>> rules = live == null ?
+            ReadResult.unavailable('Live Automation rules are unavailable') :
+            live.readRules(scope)
+        String ruleProvider = 'LIVE'
+        if (!rules.complete() && (request.ruleExportRef || request.ruleExportJson) &&
+            requestJson != null) {
+            rules = requestJson.readRules(scope)
+            ruleProvider = 'JSON_FALLBACK'
+        }
+        AuditRequest auditRequest = auditRequest(rules, issueIds, days)
+        ReadResult<List<AutomationAuditSnapshot>> audit = live == null ?
+            ReadResult.unavailable('Live Automation audit is unavailable') :
+            live.readAudit(auditRequest)
+        String auditProvider = 'LIVE'
+        if (!audit.complete() && (request.auditExportRef || request.auditExportJson) &&
+            requestJson != null) {
+            audit = requestJson.readAudit(auditRequest)
+            auditProvider = 'JSON_FALLBACK'
+        }
+        new DoctorAutomationReads(
+            rules: rules, audit: audit, ruleProvider: ruleProvider,
+            auditProvider: auditProvider, inlineExport: inline)
+    }
+
+    void remember(String snapshotId, DoctorAutomationReads reads) {
+        remembered.put(snapshotId, reads)
+    }
+
+    void remove(String snapshotId) {
+        remembered.remove(snapshotId)
+    }
+
+    DoctorAutomationReads readForPlan(String snapshotId,
+                                      boolean useJsonRules,
+                                      boolean useJsonAudit,
+                                      AnalysisScope scope,
+                                      Collection<Long> issueIds,
+                                      int days) {
+        DoctorAutomationReads prior = remembered.get(snapshotId)
+        boolean inline = prior?.inlineExport == true
+        AutomationDataProvider ruleSource = useJsonRules ? configuredJson : live
+        AutomationDataProvider auditSource = useJsonAudit ? configuredJson : live
+        ReadResult<List<AutomationRuleSnapshot>> rules = useJsonRules && inline ?
+            prior.rules : (ruleSource == null ?
+                ReadResult.unavailable('Automation rule provider is unavailable') :
+                ruleSource.readRules(scope))
+        AuditRequest auditRequest = auditRequest(rules, issueIds, days)
+        ReadResult<List<AutomationAuditSnapshot>> audit = useJsonAudit && inline ?
+            prior.audit : (auditSource == null ?
+                ReadResult.unavailable('Automation audit provider is unavailable') :
+                auditSource.readAudit(auditRequest))
+        new DoctorAutomationReads(
+            rules: rules, audit: audit,
+            ruleProvider: useJsonRules ? 'JSON_FALLBACK' : 'LIVE',
+            auditProvider: useJsonAudit ? 'JSON_FALLBACK' : 'LIVE',
+            inlineExport: inline)
+    }
+
+    private static AuditRequest auditRequest(
+        ReadResult<List<AutomationRuleSnapshot>> rules,
+        Collection<Long> issueIds, int days) {
+        new AuditRequest(ruleIds: (rules.value ?: [])*.ruleId,
+            issueIds: (issueIds ?: []) as List<Long>, requestedDays: days)
+    }
+
+    private static byte[] bytes(String value) {
+        value == null ? null : value.getBytes(StandardCharsets.UTF_8)
+    }
+}
+
 // SOURCE: jira/structuredoctor/LiveConfigurationDiscovery.groovy
 final class LiveConfigurationDiscovery implements HierarchyProvider {
     private final Closure<ReadResult<HierarchySnapshot>> hierarchyReader
@@ -3654,6 +3752,50 @@ final class LiveConfigurationDiscovery implements HierarchyProvider {
         } catch (Exception ignored) {
             ReadResult.failed('The Jira hierarchy read failed')
         }
+    }
+
+    static HierarchySnapshot mapHierarchy(Collection<Map<String, Object>> records) {
+        if (records == null || records.isEmpty()) {
+            throw new IllegalArgumentException('Jira hierarchy is empty')
+        }
+        List<HierarchyLevel> levels = records.collect { Map<String, Object> record ->
+            long rank = number(record.rank, 'rank')
+            String levelId = text(record.levelId, 'levelId')
+            String name = text(record.name, 'name')
+            List<Long> issueTypeIds = ((Collection<?>) (record.issueTypeIds ?: []))
+                .collect { Object value -> number(value, 'issueTypeId') }
+                .unique()
+                .sort()
+            if (issueTypeIds.isEmpty()) {
+                throw new IllegalArgumentException('Hierarchy level has no issue types')
+            }
+            new HierarchyLevel(rank: rank, levelId: levelId, name: name,
+                issueTypeIds: issueTypeIds)
+        }.sort { HierarchyLevel left, HierarchyLevel right ->
+            right.rank <=> left.rank
+        }
+        if (levels*.rank.unique().size() != levels.size()) {
+            throw new IllegalArgumentException('Hierarchy ranks are not unique')
+        }
+        Map<String, Object> canonical = [levels: levels.collect { HierarchyLevel level ->
+            [rank: level.rank, levelId: level.levelId, name: level.name,
+             issueTypeIds: level.issueTypeIds]
+        }]
+        new HierarchySnapshot(levels: levels,
+            fingerprint: CoreCanonical.sha256(canonical))
+    }
+
+    private static long number(Object value, String name) {
+        if (!(value instanceof Number) && !(String.valueOf(value) ==~ /-?[0-9]+/)) {
+            throw new IllegalArgumentException(name + ' is invalid')
+        }
+        Long.parseLong(String.valueOf(value))
+    }
+
+    private static String text(Object value, String name) {
+        String result = value == null ? null : String.valueOf(value).trim()
+        if (!result) throw new IllegalArgumentException(name + ' is required')
+        result
     }
 }
 
@@ -3676,6 +3818,36 @@ final class LiveJiraGateway implements JiraDataProvider {
         } catch (Exception ignored) {
             ReadResult.failed('The Jira relationship read failed')
         }
+    }
+
+    static List<IssueRelationSnapshot> mapIssues(
+        Collection<Map<String, Object>> records) {
+        if (records == null) {
+            throw new IllegalArgumentException('Jira issue records are required')
+        }
+        records.collect { Map<String, Object> record ->
+            List<Long> parents = ((Collection<?>) (record.leadingParentIds ?: []))
+                .collect { Object value -> number(value, 'leadingParentId') }
+                .unique()
+                .sort()
+            new IssueRelationSnapshot(
+                issueId: number(record.issueId, 'issueId'),
+                issueTypeId: number(record.issueTypeId, 'issueTypeId'),
+                nativeParentId: record.nativeParentId == null ? null :
+                    number(record.nativeParentId, 'nativeParentId'),
+                leadingParentIds: parents,
+                revisions: ((Map<?, ?>) (record.revisions ?: [:])).collectEntries {
+                    Object key, Object value ->
+                        [(String.valueOf(key)): String.valueOf(value)]
+                } as Map<String, String>)
+        }
+    }
+
+    private static long number(Object value, String name) {
+        if (!(value instanceof Number) && !(String.valueOf(value) ==~ /-?[0-9]+/)) {
+            throw new IllegalArgumentException(name + ' is invalid')
+        }
+        Long.parseLong(String.valueOf(value))
     }
 }
 
@@ -3810,6 +3982,112 @@ final class LiveStructureGateway implements StructureCatalogProvider, StructureS
             ReadResult.failed('The Structure snapshot read failed')
         }
     }
+
+    static StructureSnapshot mapStructure(long structureId,
+                                          String revision,
+                                          Collection<Map<String, Object>> generatorRecords,
+                                          Collection<Map<String, Object>> rowRecords,
+                                          boolean sourceComplete) {
+        if (structureId <= 0L || !revision || rowRecords == null) {
+            throw new IllegalArgumentException('Structure snapshot input is invalid')
+        }
+        List<GeneratorSnapshot> generators = (generatorRecords ?: []).collect {
+            Map<String, Object> record ->
+                new GeneratorSnapshot(
+                    generatorId: number(record.generatorId, 'generatorId'),
+                    moduleKey: text(record.moduleKey, 'moduleKey'),
+                    type: text(record.type, 'type'),
+                    order: integer(record.order, 'order'),
+                    enabled: Boolean.TRUE == record.enabled,
+                    parameters: (Map<String, Object>) (record.parameters ?: [:]),
+                    revision: text(record.revision, 'revision'),
+                    complete: Boolean.TRUE == record.complete)
+        }.sort { GeneratorSnapshot left, GeneratorSnapshot right ->
+            left.order <=> right.order ?: left.generatorId <=> right.generatorId
+        }
+        List<Map<String, Object>> rows = new ArrayList<>(rowRecords)
+        boolean traversalComplete = true
+        List<OccurrenceSnapshot> occurrences = []
+        for (int index = 0; index < rows.size(); index++) {
+            Map<String, Object> row = rows[index]
+            if (row.issueId == null) continue
+            List<Long> path = []
+            Set<Integer> visited = [] as Set<Integer>
+            int parentIndex = integer(row.parentIndex, 'parentIndex')
+            while (parentIndex >= 0) {
+                if (parentIndex >= rows.size() || !visited.add(parentIndex)) {
+                    traversalComplete = false
+                    break
+                }
+                Map<String, Object> parent = rows[parentIndex]
+                if (parent.issueId != null) {
+                    path.add(0, number(parent.issueId, 'parentIssueId'))
+                }
+                parentIndex = integer(parent.parentIndex, 'parentIndex')
+            }
+            long issueId = number(row.issueId, 'issueId')
+            String rowId = text(row.rowId, 'rowId')
+            String provenance = text(row.provenance, 'provenance')
+            String creatorId = row.creatorId == null ? null : String.valueOf(row.creatorId)
+            boolean provenanceComplete = Boolean.TRUE == row.provenanceComplete
+            String occurrenceId = CoreCanonical.deterministicId('occurrence', [
+                structureId: structureId, issueId: issueId, rowId: rowId,
+                parentPath: path, provenance: provenance, creatorId: creatorId
+            ])
+            occurrences.add(new OccurrenceSnapshot(
+                occurrenceId: occurrenceId, issueId: issueId, rowId: rowId,
+                parentPath: path, parentIssueId: path.isEmpty() ? null : path.last(),
+                depth: integer(row.depth, 'depth'),
+                position: integer(row.position, 'position'),
+                provenance: provenance, creatorId: creatorId,
+                provenanceComplete: provenanceComplete))
+        }
+        boolean complete = sourceComplete && traversalComplete &&
+            generators.every { GeneratorSnapshot generator -> generator.complete } &&
+            occurrences.every { OccurrenceSnapshot occurrence -> occurrence.provenanceComplete }
+        Map<String, Object> canonical = [
+            structureId: structureId, revision: revision,
+            generators: generators.collect { GeneratorSnapshot generator -> [
+                generatorId: generator.generatorId, moduleKey: generator.moduleKey,
+                type: generator.type, order: generator.order, enabled: generator.enabled,
+                parameters: generator.parameters, revision: generator.revision,
+                complete: generator.complete
+            ] },
+            occurrences: occurrences.collect { OccurrenceSnapshot occurrence -> [
+                occurrenceId: occurrence.occurrenceId, issueId: occurrence.issueId,
+                rowId: occurrence.rowId, parentPath: occurrence.parentPath,
+                parentIssueId: occurrence.parentIssueId, depth: occurrence.depth,
+                position: occurrence.position, provenance: occurrence.provenance,
+                creatorId: occurrence.creatorId,
+                provenanceComplete: occurrence.provenanceComplete
+            ] }
+        ]
+        new StructureSnapshot(
+            structureId: structureId, revision: revision, hierarchy: null,
+            generators: generators, occurrences: occurrences, relations: [],
+            fingerprint: CoreCanonical.sha256(canonical), complete: complete)
+    }
+
+    private static long number(Object value, String name) {
+        if (!(value instanceof Number) && !(String.valueOf(value) ==~ /-?[0-9]+/)) {
+            throw new IllegalArgumentException(name + ' is invalid')
+        }
+        Long.parseLong(String.valueOf(value))
+    }
+
+    private static int integer(Object value, String name) {
+        long result = number(value, name)
+        if (result < Integer.MIN_VALUE || result > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(name + ' is outside the supported range')
+        }
+        (int) result
+    }
+
+    private static String text(Object value, String name) {
+        String result = value == null ? null : String.valueOf(value).trim()
+        if (!result) throw new IllegalArgumentException(name + ' is required')
+        result
+    }
 }
 
 // SOURCE: jira/structureIssueDoctor.groovy
@@ -3823,6 +4101,315 @@ class ParentUpdateCheck {
 class InspectionResult {
     int status
     Map<String, Object> payload
+}
+
+final class DoctorLiveAccess {
+    private static final String ROADMAPS_PLUGIN = 'com.atlassian.jpo'
+    private static final String HIERARCHY_API =
+        'com.atlassian.rm.portfolio.publicapi.hierarchy.ExportedHierarchyLevelApi'
+    private static final String PARENT_LINK = 'com.atlassian.jpo:jpo-custom-field-parent'
+    private static final String EPIC_LINK = 'com.pyxis.greenhopper.jira:gh-epic-link'
+    private static final int MAX_HIERARCHY_LEVELS = 1000
+    private static final int MAX_ISSUES = 100000
+
+    private DoctorLiveAccess() {
+        throw new UnsupportedOperationException('utility class')
+    }
+
+    @CompileDynamic
+    static ReadResult<HierarchySnapshot> readHierarchy() {
+        try {
+            Object hierarchyApi = resolvePluginComponent(ROADMAPS_PLUGIN, HIERARCHY_API)
+            if (hierarchyApi == null) {
+                return ReadResult.unavailable('Advanced Roadmaps hierarchy API is unavailable')
+            }
+            long count = ((Number) InvokerHelper.invokeMethod(
+                hierarchyApi, 'count', null)).longValue()
+            if (count <= 0L || count > MAX_HIERARCHY_LEVELS) {
+                return ReadResult.failed('Jira hierarchy level count is outside the supported range')
+            }
+            Collection<?> values = hierarchyPage(hierarchyApi, (int) count)
+            if (values == null) {
+                return ReadResult.incomplete(null, 'Jira hierarchy read was not complete')
+            }
+            List<Map<String, Object>> records = values.collect { Object value ->
+                Object id = partialValue(InvokerHelper.invokeMethod(value, 'getId', null), null)
+                Object title = partialValue(
+                    InvokerHelper.invokeMethod(value, 'getTitle', null), null)
+                Object issueTypeIds = partialValue(
+                    InvokerHelper.invokeMethod(value, 'getIssueTypeIds', null), [])
+                [
+                    rank: id,
+                    levelId: String.valueOf(id),
+                    name: title,
+                    issueTypeIds: ((Collection<?>) issueTypeIds).collect {
+                        Object issueTypeId -> Long.parseLong(String.valueOf(issueTypeId))
+                    }
+                ]
+            }
+            ReadResult.complete(LiveConfigurationDiscovery.mapHierarchy(records))
+        } catch (Throwable failure) {
+            ReadResult.failed('Jira hierarchy read failed: ' + failure.class.simpleName)
+        }
+    }
+
+    @CompileDynamic
+    static ReadResult<StructureSnapshot> readStructure(
+        StructureComponents components, long structureId) {
+        try {
+            components.getStructureManager().getStructure(structureId, PermissionLevel.VIEW)
+            Object latest = components.getForestService()
+                .getForestSource(ForestSpec.structure(structureId)).getLatest()
+            Forest forest = (Forest) latest.getForest()
+            List<Map<String, Object>> rows = []
+            Set<Long> generatorIds = new LinkedHashSet<Long>()
+            Map<Long, Integer> generatorOrder = [:]
+            for (int index = 0; index < forest.size(); index++) {
+                long rowId = forest.getRow(index)
+                StructureRow row = components.getRowManager().getRow(rowId)
+                ItemIdentity identity = row.getItemId()
+                Long issueId = null
+                if (CoreIdentities.isIssue(identity)) {
+                    issueId = identity.getLongId()
+                } else if (CoreIdentities.isGenerator(identity)) {
+                    long generatorId = identity.getLongId()
+                    generatorIds.add(generatorId)
+                    if (!generatorOrder.containsKey(generatorId)) {
+                        generatorOrder.put(generatorId, index)
+                    }
+                }
+                Long creatorId = null
+                try {
+                    long rawCreator = TransientRow.getCreatorId(row)
+                    if (rawCreator > 0L) {
+                        creatorId = rawCreator
+                        generatorIds.add(rawCreator)
+                        if (!generatorOrder.containsKey(rawCreator)) {
+                            generatorOrder.put(rawCreator, index)
+                        }
+                    }
+                } catch (RuntimeException ignored) {
+                    // A permanent row has no transient provenance metadata.
+                }
+                rows.add([
+                    rowId: String.valueOf(rowId), issueId: issueId,
+                    parentIndex: forest.getParentIndex(index), depth: forest.getDepth(index),
+                    position: index, creatorId: creatorId
+                ])
+            }
+
+            boolean complete = true
+            List<Map<String, Object>> generators = []
+            Map<Long, String> moduleKeys = [:]
+            for (Long generatorId : generatorIds) {
+                try {
+                    Object generator = components.getGeneratorManager().getGenerator(generatorId)
+                    String moduleKey = String.valueOf(
+                        InvokerHelper.getProperty(generator, 'moduleKey'))
+                    Object rawParameters = InvokerHelper.getProperty(generator, 'parameters')
+                    Object safeParameters = CoreSupport.jsonSafe(rawParameters)
+                    Map<String, Object> parameters = safeParameters instanceof Map ?
+                        (Map<String, Object>) safeParameters : [:]
+                    moduleKeys.put(generatorId, moduleKey)
+                    Map<String, Object> identity = [
+                        generatorId: generatorId, moduleKey: moduleKey,
+                        parameters: parameters,
+                        order: generatorOrder.get(generatorId) ?: 0
+                    ]
+                    generators.add([
+                        generatorId: generatorId, moduleKey: moduleKey,
+                        type: generatorType(moduleKey),
+                        order: generatorOrder.get(generatorId) ?: 0,
+                        enabled: true, parameters: parameters,
+                        revision: CoreCanonical.sha256(identity), complete: true
+                    ])
+                } catch (Throwable ignored) {
+                    complete = false
+                }
+            }
+            for (Map<String, Object> row : rows) {
+                Long creatorId = row.creatorId instanceof Number ?
+                    ((Number) row.creatorId).longValue() : null
+                if (creatorId == null) {
+                    row.provenance = 'PERMANENT'
+                    row.provenanceComplete = true
+                } else if (moduleKeys.containsKey(creatorId)) {
+                    row.provenance = provenance(moduleKeys.get(creatorId))
+                    row.creatorId = String.valueOf(creatorId)
+                    row.provenanceComplete = true
+                } else {
+                    row.provenance = 'UNKNOWN'
+                    row.creatorId = String.valueOf(creatorId)
+                    row.provenanceComplete = false
+                }
+            }
+            String revision = 'forest-' + CoreCanonical.sha256([
+                rows: rows, generators: generators
+            ])
+            StructureSnapshot snapshot = LiveStructureGateway.mapStructure(
+                structureId, revision, generators, rows, complete)
+            snapshot.complete ? ReadResult.complete(snapshot) :
+                ReadResult.incomplete(snapshot,
+                    'Structure snapshot has incomplete generator or provenance data')
+        } catch (Throwable failure) {
+            ReadResult.failed('Structure snapshot read failed: ' + failure.class.simpleName)
+        }
+    }
+
+    @CompileDynamic
+    static ReadResult<List<IssueRelationSnapshot>> readIssues(
+        IssueService service, CustomFieldManager fields, ApplicationUser actor,
+        Collection<Long> requestedIds) {
+        if (actor == null) return ReadResult.failed('Authenticated Jira user is required')
+        try {
+            List<CustomField> parentFields = fields.getCustomFieldObjects().findAll {
+                CustomField field ->
+                    String key = field.getCustomFieldType()?.getKey()
+                    key == PARENT_LINK || key == EPIC_LINK
+            } as List<CustomField>
+            ArrayDeque<Long> pending = new ArrayDeque<Long>()
+            (requestedIds ?: []).findAll { Long id -> id != null && id > 0L }
+                .unique().each { Long id -> pending.add(id) }
+            Set<Long> visited = new LinkedHashSet<Long>()
+            List<Map<String, Object>> records = []
+            boolean complete = true
+            while (!pending.isEmpty()) {
+                if (visited.size() >= MAX_ISSUES) {
+                    return ReadResult.incomplete(
+                        LiveJiraGateway.mapIssues(records),
+                        'Jira relationship read reached the safety limit')
+                }
+                Long issueId = pending.removeFirst()
+                if (!visited.add(issueId)) continue
+                Object issueResult = service.getIssue(actor, issueId)
+                Issue issue = issueResult?.isValid() ? (Issue) issueResult.getIssue() : null
+                if (issue == null) {
+                    complete = false
+                    continue
+                }
+                List<Long> candidates = []
+                Issue builtInParent = null
+                try {
+                    builtInParent = (Issue) InvokerHelper.invokeMethod(
+                        issue, 'getParentObject', null)
+                } catch (RuntimeException ignored) {
+                    // Non-sub-task work items have no built-in parent object.
+                }
+                if (builtInParent != null) candidates.add(builtInParent.getId())
+                List<Long> parentLinkIds = []
+                List<Long> epicLinkIds = []
+                for (CustomField field : parentFields) {
+                    Object rawParentValue = issue.getCustomFieldValue(field)
+                    List<Long> resolved = resolveIssueIds(service, actor, rawParentValue)
+                    if (hasParentValue(rawParentValue) && resolved.isEmpty()) {
+                        complete = false
+                    }
+                    String typeKey = field.getCustomFieldType()?.getKey()
+                    if (typeKey == PARENT_LINK) parentLinkIds.addAll(resolved)
+                    if (typeKey == EPIC_LINK) epicLinkIds.addAll(resolved)
+                }
+                candidates.addAll(parentLinkIds)
+                candidates.addAll(epicLinkIds)
+                candidates = candidates.unique()
+                Long nativeParentId = builtInParent?.getId() ?:
+                    (parentLinkIds ? parentLinkIds.first() :
+                        (epicLinkIds ? epicLinkIds.first() : null))
+                candidates.each { Long parentId -> pending.add(parentId) }
+                records.add([
+                    issueId: issue.getId(),
+                    issueTypeId: Long.parseLong(issue.getIssueType().getId()),
+                    nativeParentId: nativeParentId,
+                    leadingParentIds: candidates,
+                    revisions: [
+                        issue: String.valueOf(issue.getUpdated()?.getTime() ?: 0L),
+                        parents: CoreCanonical.sha256(candidates)
+                    ]
+                ])
+            }
+            List<IssueRelationSnapshot> values = LiveJiraGateway.mapIssues(records)
+            complete ? ReadResult.complete(values) :
+                ReadResult.incomplete(values,
+                    'One or more Jira work items were not visible to the logged-in user')
+        } catch (Throwable failure) {
+            ReadResult.failed('Jira relationship read failed: ' + failure.class.simpleName)
+        }
+    }
+
+    @CompileDynamic
+    private static Object resolvePluginComponent(String pluginKey, String className) {
+        Object plugin = ComponentAccessor.getPluginAccessor().getPlugin(pluginKey)
+        Object loader = plugin == null ? null :
+            InvokerHelper.invokeMethod(plugin, 'getClassLoader', null)
+        if (loader == null) return null
+        Class<?> componentClass = (Class<?>) InvokerHelper.invokeMethod(
+            loader, 'loadClass', className)
+        ComponentAccessor.getOSGiComponentInstanceOfType(componentClass)
+    }
+
+    @CompileDynamic
+    private static Object partialValue(Object field, Object defaultValue) {
+        field == null ? defaultValue :
+            InvokerHelper.invokeMethod(field, 'or', [defaultValue] as Object[])
+    }
+
+    @CompileDynamic
+    private static Collection<?> hierarchyPage(Object hierarchyApi, int pageSize) {
+        for (int page : [1, 0]) {
+            try {
+                Object value = InvokerHelper.invokeMethod(
+                    hierarchyApi, 'findAll', [page, pageSize] as Object[])
+                if (value instanceof Collection &&
+                    ((Collection<?>) value).size() == pageSize) {
+                    return (Collection<?>) value
+                }
+            } catch (RuntimeException ignored) {
+                // Public API releases have used different first-page conventions.
+            }
+        }
+        null
+    }
+
+    @CompileDynamic
+    private static List<Long> resolveIssueIds(
+        IssueService service, ApplicationUser actor, Object value) {
+        Collection<?> values = value instanceof Collection ?
+            (Collection<?>) value : (value == null ? [] : [value])
+        List<Long> result = []
+        for (Object item : values) {
+            Issue issue = item instanceof Issue ? (Issue) item : null
+            Object issueResult = null
+            if (issue == null && item instanceof Number) {
+                issueResult = service.getIssue(actor, ((Number) item).longValue())
+            } else if (issue == null && item != null) {
+                issueResult = service.getIssue(actor, String.valueOf(item))
+            }
+            if (issue == null && issueResult?.isValid()) {
+                issue = (Issue) issueResult.getIssue()
+            }
+            if (issue != null) result.add(issue.getId())
+        }
+        result.unique()
+    }
+
+    private static boolean hasParentValue(Object value) {
+        if (value == null) return false
+        if (value instanceof Collection) return !((Collection<?>) value).isEmpty()
+        !String.valueOf(value).trim().isEmpty()
+    }
+
+    private static String generatorType(String moduleKey) {
+        String key = moduleKey.toLowerCase(Locale.ROOT)
+        key.contains('duplicate') ? 'DUPLICATES_FILTER' :
+            key.contains('inserter') ? 'INSERTER' :
+            key.contains('extender') ? 'EXTENDER' :
+            key.contains('filter') ? 'FILTER' : 'OTHER'
+    }
+
+    private static String provenance(String moduleKey) {
+        String key = moduleKey.toLowerCase(Locale.ROOT)
+        key.contains('portfolio') || key.contains('roadmap') ? 'ADVANCED_ROADMAPS' :
+            key.contains('link') ? 'JIRA_LINK' : 'GENERATOR'
+    }
 }
 
 /**
@@ -3895,9 +4482,11 @@ Closure<Object> respondJson = { int status, Object payload ->
     respond.call(status, JsonOutput.prettyPrint(JsonOutput.toJson(payload)), 'application/json;charset=UTF-8')
 }
 
-Closure<Object> requireJsonRequest = { Object httpRequest, String body ->
-    DoctorHttpDecision decision = DoctorHttpGuard.requireJson(
-        httpRequest?.getContentType(), body)
+Closure<Object> requireJsonRequest = {
+        Object httpRequest, String body, Integer maxBytes = null ->
+    DoctorHttpDecision decision = maxBytes == null ?
+        DoctorHttpGuard.requireJson(httpRequest?.getContentType(), body) :
+        DoctorHttpGuard.requireJson(httpRequest?.getContentType(), body, maxBytes)
     decision.isAllowed() ? null : respondJson.call(
         decision.getStatus(), [ok: false, error: decision.getError()])
 }
@@ -4622,9 +5211,16 @@ LiveStructureGateway doctorStructureGateway = new LiveStructureGateway({
     ReadResult.complete(values.collect { Structure item ->
         new StructureChoice(id: item.getId(), name: item.getName())
     })
-}, null)
-LiveConfigurationDiscovery doctorHierarchy = new LiveConfigurationDiscovery(null)
-LiveJiraGateway doctorJira = new LiveJiraGateway(null)
+}, { long structureId ->
+    DoctorLiveAccess.readStructure(structureComponents, structureId)
+})
+LiveConfigurationDiscovery doctorHierarchy = new LiveConfigurationDiscovery({
+    DoctorLiveAccess.readHierarchy()
+})
+LiveJiraGateway doctorJira = new LiveJiraGateway({ Collection<Long> issueIds ->
+    DoctorLiveAccess.readIssues(issueService, customFieldManager,
+        authenticationContext.getLoggedInUser(), issueIds)
+})
 LiveAutomationProvider doctorAutomation = new LiveAutomationProvider(null, null)
 ProposalSource doctorProposals = { ignored ->
     ReadResult.unavailable('Repair proposal discovery is not proven on this instance')
@@ -4736,7 +5332,8 @@ structureIssueDoctorAnalyze(httpMethod: 'POST', groups: ["jira-administrators"])
     if (user == null) return respondJson.call(401, [ok: false, error: 'AUTHENTICATION_REQUIRED'])
     Object queryRejection = requireQueryKeys.call(queryParams, [])
     if (queryRejection != null) return queryRejection
-    Object requestRejection = requireJsonRequest.call(httpRequest, body)
+    Object requestRejection = requireJsonRequest.call(
+        httpRequest, body, DoctorHttpGuard.MAX_ANALYZE_JSON_BYTES)
     if (requestRejection != null) return requestRejection
     try {
         AnalyzeRequest request = DoctorApplication.parseAnalyzeRequest(

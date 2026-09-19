@@ -2,7 +2,7 @@
 
 **Work item:** OP-1371  
 **Date:** 2026-09-18  
-**Status:** Approved approach, implementation pending
+**Status:** Implemented and locally verified; live ScriptRunner acceptance pending
 
 ## Problem
 
@@ -12,7 +12,7 @@ Script Editor has no bulk directory import. A Jira administrator with UI access 
 otherwise have to create and paste 34 files individually.
 
 The deployable form must therefore be one Groovy file without turning the maintained source
-back into a 4,861-line monolith.
+back into a hand-edited, multi-thousand-line monolith.
 
 ## Decision
 
@@ -36,8 +36,9 @@ The administrator performs one paste in ScriptRunner's Script Editor:
 4. Configure or rescan the REST endpoint using
    `structuredoctor/structureIssueDoctor.groovy`.
 
-The bundle declares `package structuredoctor`, so its relative file path must match that
-package. No other Doctor source file is installed.
+The bundle deliberately declares no package. The `structuredoctor` folder is an operational
+installation location, not a Groovy package requirement. No other Doctor source file is
+installed.
 
 ## Generator
 
@@ -50,8 +51,8 @@ The generator:
 
 1. reads the Core files in stable lexical order;
 2. collects and de-duplicates normal and static imports;
-3. emits one `package structuredoctor` declaration;
-4. removes per-file package and import declarations;
+3. emits no package declaration;
+4. removes per-file package declarations and package-local imports;
 5. emits the complete Core definitions followed by the REST controller body;
 6. preserves source markers naming every contributing file;
 7. writes normalized LF output with a final newline; and
@@ -74,8 +75,9 @@ The single-file artifact must preserve the modular implementation without changi
 - the legacy Parent Link confirmation remains `SET_PARENT_LINK`; and
 - no new credentials, outbound calls, scopes, or permissions are introduced.
 
-The generator is packaging only. It does not enable a live provider, writer, deployment, or
-mutation probe.
+The generator is packaging only. It does not change which maintained live providers are
+wired, and it does not enable a writer, deployment, or mutation probe. The maintained source
+currently includes the read-only providers proven by the OP-1371 capability probe.
 
 ## Verification
 
@@ -84,7 +86,8 @@ Automated checks must prove:
 - two consecutive builds are byte-identical;
 - rebuilding the committed artifact produces no diff;
 - the embedded manifest covers the controller and all Core inputs exactly once;
-- the artifact contains no residual per-file `package` declarations or missing imports;
+- the artifact contains no `package` declaration, no package-local import, and no missing
+  external import;
 - Groovy conversion-phase parsing succeeds;
 - endpoint count, administrator groups, authentication checks, confirmation constant, and
   disabled-writer contract match the maintained sources;
