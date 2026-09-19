@@ -39,6 +39,12 @@ if (probe.isFile()) {
     ok('probe reports failed reads', source.contains('FAILED'))
     ok('probe reports empty signature matches', source.contains('NO_MATCHING_METHODS'))
     ok('probe does not import HTTP clients', !source.matches('(?s).*import\\s+(java\\.net|groovyx\\.net|org\\.apache\\.http).*'))
+    ok('probe avoids proprietary compile-time imports',
+        !source.contains('import com.almworks.jira.structure'))
+    ok('probe avoids ScriptRunner plugin annotations',
+        !source.contains('@WithPlugin') && !source.contains('@PluginModule'))
+    ok('probe returns its JSON to the Script Console',
+        source.contains('return JsonOutput.prettyPrint'))
 }
 
 println 'PASSED: ' + passed
