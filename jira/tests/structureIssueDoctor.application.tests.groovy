@@ -277,6 +277,19 @@ check('live hierarchy records keep issue type assignments',
 ok('live hierarchy records receive a deterministic fingerprint',
     mappedHierarchy.fingerprint ==~ /[0-9a-f]{64}/)
 
+check('transient creator row resolves to its generator item ID',
+    LiveStructureGateway.resolveGeneratorId(
+        9001L, [(9001L): 21L], [21L] as Set<Long>),
+    21L)
+check('direct generator ID remains compatible',
+    LiveStructureGateway.resolveGeneratorId(
+        21L, [(9001L): 21L], [21L] as Set<Long>),
+    21L)
+check('unknown creator reference is not guessed',
+    LiveStructureGateway.resolveGeneratorId(
+        9999L, [(9001L): 21L], [21L] as Set<Long>),
+    null)
+
 StructureSnapshot mappedStructure = LiveStructureGateway.mapStructure(
     9L,
     'forest-r1',

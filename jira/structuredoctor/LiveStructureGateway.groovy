@@ -39,6 +39,15 @@ final class LiveStructureGateway implements StructureCatalogProvider, StructureS
         }
     }
 
+    static Long resolveGeneratorId(Long creatorReference,
+                                   Map<Long, Long> generatorIdsByRow,
+                                   Collection<Long> generatorIds) {
+        if (creatorReference == null || creatorReference <= 0L) return null
+        Long mapped = generatorIdsByRow?.get(creatorReference)
+        if (mapped != null) return mapped
+        generatorIds?.contains(creatorReference) ? creatorReference : null
+    }
+
     static StructureSnapshot mapStructure(long structureId,
                                           String revision,
                                           Collection<Map<String, Object>> generatorRecords,

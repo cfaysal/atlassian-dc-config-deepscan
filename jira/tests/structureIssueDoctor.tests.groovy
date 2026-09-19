@@ -68,6 +68,11 @@ if (endpoint.isFile()) {
     ok('global Jira hierarchy is read through the proven Roadmaps API',
         source.contains('com.atlassian.rm.portfolio.publicapi.hierarchy.ExportedHierarchyLevelApi') &&
             source.contains('hierarchyPage(hierarchyApi, (int) count)'))
+    ok('Roadmaps hierarchy service uses the proven plugin-bundle fallback',
+        source.contains("getAllServiceReferences") &&
+            source.contains("getService") &&
+            source.contains("ungetService") &&
+            source ==~ /(?s).*withPluginService\(\s*ROADMAPS_PLUGIN,\s*HIERARCHY_API.*/)
     ok('Structure-wide analysis has a live forest reader',
         source.contains('LiveStructureGateway doctorStructureGateway') &&
             source.contains('DoctorLiveAccess.readStructure'))

@@ -35,7 +35,7 @@
  * INPUT jira/structuredoctor/LiveJiraGateway.groovy
  * INPUT jira/structuredoctor/LiveRepairInfrastructure.groovy
  * INPUT jira/structuredoctor/LiveStructureGateway.groovy
- * INPUT_SHA256 a569fb65851ddd4dd525e6a3c6070a46368385687eb7f98a5792e86de9532140
+ * INPUT_SHA256 59c0193d684cb110c6af57d14cca88831df5da6a2a1c9b23e455a210d95688dd
  */
 
 import com.almworks.jira.structure.api.StructureComponents
@@ -3983,6 +3983,15 @@ final class LiveStructureGateway implements StructureCatalogProvider, StructureS
         }
     }
 
+    static Long resolveGeneratorId(Long creatorReference,
+                                   Map<Long, Long> generatorIdsByRow,
+                                   Collection<Long> generatorIds) {
+        if (creatorReference == null || creatorReference <= 0L) return null
+        Long mapped = generatorIdsByRow?.get(creatorReference)
+        if (mapped != null) return mapped
+        generatorIds?.contains(creatorReference) ? creatorReference : null
+    }
+
     static StructureSnapshot mapStructure(long structureId,
                                           String revision,
                                           Collection<Map<String, Object>> generatorRecords,
@@ -4119,38 +4128,45 @@ final class DoctorLiveAccess {
     @CompileDynamic
     static ReadResult<HierarchySnapshot> readHierarchy() {
         try {
-            Object hierarchyApi = resolvePluginComponent(ROADMAPS_PLUGIN, HIERARCHY_API)
-            if (hierarchyApi == null) {
-                return ReadResult.unavailable('Advanced Roadmaps hierarchy API is unavailable')
-            }
-            long count = ((Number) InvokerHelper.invokeMethod(
-                hierarchyApi, 'count', null)).longValue()
-            if (count <= 0L || count > MAX_HIERARCHY_LEVELS) {
-                return ReadResult.failed('Jira hierarchy level count is outside the supported range')
-            }
-            Collection<?> values = hierarchyPage(hierarchyApi, (int) count)
-            if (values == null) {
-                return ReadResult.incomplete(null, 'Jira hierarchy read was not complete')
-            }
-            List<Map<String, Object>> records = values.collect { Object value ->
-                Object id = partialValue(InvokerHelper.invokeMethod(value, 'getId', null), null)
-                Object title = partialValue(
-                    InvokerHelper.invokeMethod(value, 'getTitle', null), null)
-                Object issueTypeIds = partialValue(
-                    InvokerHelper.invokeMethod(value, 'getIssueTypeIds', null), [])
-                [
-                    rank: id,
-                    levelId: String.valueOf(id),
-                    name: title,
-                    issueTypeIds: ((Collection<?>) issueTypeIds).collect {
-                        Object issueTypeId -> Long.parseLong(String.valueOf(issueTypeId))
+            ReadResult<HierarchySnapshot> result =
+                (ReadResult<HierarchySnapshot>) withPluginService(
+                    ROADMAPS_PLUGIN, HIERARCHY_API) { Object hierarchyApi ->
+                        readHierarchy(hierarchyApi)
                     }
-                ]
-            }
-            ReadResult.complete(LiveConfigurationDiscovery.mapHierarchy(records))
+            result ?: ReadResult.unavailable(
+                'Advanced Roadmaps hierarchy API is unavailable')
         } catch (Throwable failure) {
             ReadResult.failed('Jira hierarchy read failed: ' + failure.class.simpleName)
         }
+    }
+
+    @CompileDynamic
+    private static ReadResult<HierarchySnapshot> readHierarchy(Object hierarchyApi) {
+        long count = ((Number) InvokerHelper.invokeMethod(
+            hierarchyApi, 'count', null)).longValue()
+        if (count <= 0L || count > MAX_HIERARCHY_LEVELS) {
+            return ReadResult.failed('Jira hierarchy level count is outside the supported range')
+        }
+        Collection<?> values = hierarchyPage(hierarchyApi, (int) count)
+        if (values == null) {
+            return ReadResult.incomplete(null, 'Jira hierarchy read was not complete')
+        }
+        List<Map<String, Object>> records = values.collect { Object value ->
+            Object id = partialValue(InvokerHelper.invokeMethod(value, 'getId', null), null)
+            Object title = partialValue(
+                InvokerHelper.invokeMethod(value, 'getTitle', null), null)
+            Object issueTypeIds = partialValue(
+                InvokerHelper.invokeMethod(value, 'getIssueTypeIds', null), [])
+            [
+                rank: id,
+                levelId: String.valueOf(id),
+                name: title,
+                issueTypeIds: ((Collection<?>) issueTypeIds).collect {
+                    Object issueTypeId -> Long.parseLong(String.valueOf(issueTypeId))
+                }
+            ]
+        }
+        ReadResult.complete(LiveConfigurationDiscovery.mapHierarchy(records))
     }
 
     @CompileDynamic
@@ -4163,6 +4179,7 @@ final class DoctorLiveAccess {
             Forest forest = (Forest) latest.getForest()
             List<Map<String, Object>> rows = []
             Set<Long> generatorIds = new LinkedHashSet<Long>()
+            Map<Long, Long> generatorIdsByRow = [:]
             Map<Long, Integer> generatorOrder = [:]
             for (int index = 0; index < forest.size(); index++) {
                 long rowId = forest.getRow(index)
@@ -4174,19 +4191,16 @@ final class DoctorLiveAccess {
                 } else if (CoreIdentities.isGenerator(identity)) {
                     long generatorId = identity.getLongId()
                     generatorIds.add(generatorId)
+                    generatorIdsByRow.put(rowId, generatorId)
                     if (!generatorOrder.containsKey(generatorId)) {
                         generatorOrder.put(generatorId, index)
                     }
                 }
-                Long creatorId = null
+                Long creatorReference = null
                 try {
                     long rawCreator = TransientRow.getCreatorId(row)
                     if (rawCreator > 0L) {
-                        creatorId = rawCreator
-                        generatorIds.add(rawCreator)
-                        if (!generatorOrder.containsKey(rawCreator)) {
-                            generatorOrder.put(rawCreator, index)
-                        }
+                        creatorReference = rawCreator
                     }
                 } catch (RuntimeException ignored) {
                     // A permanent row has no transient provenance metadata.
@@ -4194,13 +4208,25 @@ final class DoctorLiveAccess {
                 rows.add([
                     rowId: String.valueOf(rowId), issueId: issueId,
                     parentIndex: forest.getParentIndex(index), depth: forest.getDepth(index),
-                    position: index, creatorId: creatorId
+                    position: index, creatorReference: creatorReference
                 ])
             }
 
             boolean complete = true
+            int unresolvedCreatorReferences = 0
+            for (Map<String, Object> row : rows) {
+                Long creatorReference = (Long) row.creatorReference
+                Long generatorId = LiveStructureGateway.resolveGeneratorId(
+                    creatorReference, generatorIdsByRow, generatorIds)
+                row.creatorId = generatorId
+                if (creatorReference != null && generatorId == null) {
+                    unresolvedCreatorReferences++
+                    complete = false
+                }
+            }
             List<Map<String, Object>> generators = []
             Map<Long, String> moduleKeys = [:]
+            int unreadableGenerators = 0
             for (Long generatorId : generatorIds) {
                 try {
                     Object generator = components.getGeneratorManager().getGenerator(generatorId)
@@ -4224,24 +4250,26 @@ final class DoctorLiveAccess {
                         revision: CoreCanonical.sha256(identity), complete: true
                     ])
                 } catch (Throwable ignored) {
+                    unreadableGenerators++
                     complete = false
                 }
             }
             for (Map<String, Object> row : rows) {
-                Long creatorId = row.creatorId instanceof Number ?
-                    ((Number) row.creatorId).longValue() : null
-                if (creatorId == null) {
+                Long creatorReference = (Long) row.creatorReference
+                Long creatorId = (Long) row.creatorId
+                if (creatorReference == null) {
                     row.provenance = 'PERMANENT'
                     row.provenanceComplete = true
-                } else if (moduleKeys.containsKey(creatorId)) {
+                } else if (creatorId != null && moduleKeys.containsKey(creatorId)) {
                     row.provenance = provenance(moduleKeys.get(creatorId))
                     row.creatorId = String.valueOf(creatorId)
                     row.provenanceComplete = true
                 } else {
                     row.provenance = 'UNKNOWN'
-                    row.creatorId = String.valueOf(creatorId)
+                    row.creatorId = creatorId == null ? null : String.valueOf(creatorId)
                     row.provenanceComplete = false
                 }
+                row.remove('creatorReference')
             }
             String revision = 'forest-' + CoreCanonical.sha256([
                 rows: rows, generators: generators
@@ -4250,7 +4278,8 @@ final class DoctorLiveAccess {
                 structureId, revision, generators, rows, complete)
             snapshot.complete ? ReadResult.complete(snapshot) :
                 ReadResult.incomplete(snapshot,
-                    'Structure snapshot has incomplete generator or provenance data')
+                    incompleteStructureReason(
+                        unresolvedCreatorReferences, unreadableGenerators))
         } catch (Throwable failure) {
             ReadResult.failed('Structure snapshot read failed: ' + failure.class.simpleName)
         }
@@ -4336,14 +4365,61 @@ final class DoctorLiveAccess {
     }
 
     @CompileDynamic
-    private static Object resolvePluginComponent(String pluginKey, String className) {
+    private static Object withPluginService(String pluginKey, String className,
+                                            Closure<?> reader) {
         Object plugin = ComponentAccessor.getPluginAccessor().getPlugin(pluginKey)
         Object loader = plugin == null ? null :
             InvokerHelper.invokeMethod(plugin, 'getClassLoader', null)
         if (loader == null) return null
         Class<?> componentClass = (Class<?>) InvokerHelper.invokeMethod(
             loader, 'loadClass', className)
-        ComponentAccessor.getOSGiComponentInstanceOfType(componentClass)
+        Object direct = ComponentAccessor.getOSGiComponentInstanceOfType(componentClass)
+        if (direct != null) return reader.call(direct)
+
+        Object bundle = InvokerHelper.invokeMethod(plugin, 'getBundle', null)
+        Object context = bundle == null ? null :
+            InvokerHelper.invokeMethod(bundle, 'getBundleContext', null)
+        if (context == null) return null
+        Object rawReferences = InvokerHelper.invokeMethod(
+            context, 'getAllServiceReferences', [null, null] as Object[])
+        Collection<?> references = []
+        if (rawReferences instanceof Collection) {
+            references = (Collection<?>) rawReferences
+        } else if (rawReferences instanceof Object[]) {
+            references = Arrays.asList((Object[]) rawReferences)
+        }
+        for (Object reference : references) {
+            Object owner = InvokerHelper.invokeMethod(reference, 'getBundle', null)
+            if (owner != bundle) continue
+            Object service = InvokerHelper.invokeMethod(
+                context, 'getService', [reference] as Object[])
+            if (service == null) continue
+            try {
+                if (componentClass.isInstance(service) ||
+                    service.class.name == className) {
+                    return reader.call(service)
+                }
+            } finally {
+                InvokerHelper.invokeMethod(
+                    context, 'ungetService', [reference] as Object[])
+            }
+        }
+        null
+    }
+
+    private static String incompleteStructureReason(int unresolvedCreatorReferences,
+                                                    int unreadableGenerators) {
+        List<String> reasons = []
+        if (unresolvedCreatorReferences > 0) {
+            reasons.add(unresolvedCreatorReferences +
+                ' transient creator reference(s) could not be resolved')
+        }
+        if (unreadableGenerators > 0) {
+            reasons.add(unreadableGenerators + ' generator definition(s) could not be read')
+        }
+        reasons.isEmpty() ?
+            'Structure snapshot has incomplete generator or provenance data' :
+            'Structure snapshot is incomplete: ' + reasons.join('; ')
     }
 
     @CompileDynamic
