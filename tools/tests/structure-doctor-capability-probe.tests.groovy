@@ -48,6 +48,12 @@ if (probe.isFile()) {
     ok('reflective probe is isolated from ScriptRunner static checking',
         source.contains('import groovy.transform.CompileDynamic') &&
             source.contains('@CompileDynamic'))
+    ok('plugin service reads are scoped to the registering bundle',
+        source.contains('reference.getBundle() == bundle'))
+    ok('plugin service rows identify their product',
+        source.contains('product: product.name'))
+    ok('plugin services expose complete public signatures',
+        source.contains('tokens.isEmpty()'))
 }
 
 println 'PASSED: ' + passed

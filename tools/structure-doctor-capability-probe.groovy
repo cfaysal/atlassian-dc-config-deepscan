@@ -22,7 +22,10 @@ def publicReadSignatures = { service, tokens ->
     service.class.methods
         .findAll { method ->
             Modifier.isPublic(method.modifiers) &&
-                tokens.any { token -> method.name.toLowerCase(Locale.ROOT).contains(token) }
+                method.declaringClass != Object &&
+                (tokens.isEmpty() || tokens.any { token ->
+                    method.name.toLowerCase(Locale.ROOT).contains(token)
+                })
         }
         .collect { method ->
             method.name + '(' + method.parameterTypes*.name.join(',') + '):' +
@@ -89,14 +92,18 @@ def readPluginServices = { pluginAccessor, pluginKey ->
     if (context == null) return []
     def references = context.getAllServiceReferences(null, null)
     if (references == null) return []
-    references.collect { reference -> context.getService(reference) }.findAll { it != null }
+    references
+        .findAll { reference -> reference.getBundle() == bundle }
+        .collect { reference -> context.getService(reference) }
+        .findAll { it != null }
 }
 
 def relevantPluginServices = { pluginAccessor, product, tokens ->
     try {
         def matches = readPluginServices.call(pluginAccessor, product.key).collect { service ->
-            def signatures = publicReadSignatures.call(service, tokens)
+            def signatures = publicReadSignatures.call(service, [])
             signatures.isEmpty() ? null : [
+                product: product.name,
                 serviceClass: service.class.name,
                 signatures: signatures
             ]
