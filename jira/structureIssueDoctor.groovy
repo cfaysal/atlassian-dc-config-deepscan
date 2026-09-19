@@ -88,7 +88,7 @@ final class DoctorLiveAccess {
             ReadResult<HierarchySnapshot> result =
                 (ReadResult<HierarchySnapshot>) withPluginService(
                     ROADMAPS_PLUGIN, HIERARCHY_API) { Object hierarchyApi ->
-                        readHierarchy(hierarchyApi)
+                        readHierarchyService(hierarchyApi)
                     }
             result ?: ReadResult.unavailable(
                 'Advanced Roadmaps hierarchy API is unavailable')
@@ -98,7 +98,7 @@ final class DoctorLiveAccess {
     }
 
     @CompileDynamic
-    private static ReadResult<HierarchySnapshot> readHierarchy(Object hierarchyApi) {
+    private static ReadResult<HierarchySnapshot> readHierarchyService(Object hierarchyApi) {
         long count = ((Number) InvokerHelper.invokeMethod(
             hierarchyApi, 'count', null)).longValue()
         if (count <= 0L || count > MAX_HIERARCHY_LEVELS) {

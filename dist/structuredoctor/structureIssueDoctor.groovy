@@ -35,7 +35,7 @@
  * INPUT jira/structuredoctor/LiveJiraGateway.groovy
  * INPUT jira/structuredoctor/LiveRepairInfrastructure.groovy
  * INPUT jira/structuredoctor/LiveStructureGateway.groovy
- * INPUT_SHA256 59c0193d684cb110c6af57d14cca88831df5da6a2a1c9b23e455a210d95688dd
+ * INPUT_SHA256 b57533486ad496daaa9bc7a9c37304c3f46f700f1d6878a2dd6bf202b004c84f
  */
 
 import com.almworks.jira.structure.api.StructureComponents
@@ -4131,7 +4131,7 @@ final class DoctorLiveAccess {
             ReadResult<HierarchySnapshot> result =
                 (ReadResult<HierarchySnapshot>) withPluginService(
                     ROADMAPS_PLUGIN, HIERARCHY_API) { Object hierarchyApi ->
-                        readHierarchy(hierarchyApi)
+                        readHierarchyService(hierarchyApi)
                     }
             result ?: ReadResult.unavailable(
                 'Advanced Roadmaps hierarchy API is unavailable')
@@ -4141,7 +4141,7 @@ final class DoctorLiveAccess {
     }
 
     @CompileDynamic
-    private static ReadResult<HierarchySnapshot> readHierarchy(Object hierarchyApi) {
+    private static ReadResult<HierarchySnapshot> readHierarchyService(Object hierarchyApi) {
         long count = ((Number) InvokerHelper.invokeMethod(
             hierarchyApi, 'count', null)).longValue()
         if (count <= 0L || count > MAX_HIERARCHY_LEVELS) {

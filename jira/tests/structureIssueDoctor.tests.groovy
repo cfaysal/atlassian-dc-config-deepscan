@@ -73,6 +73,10 @@ if (endpoint.isFile()) {
             source.contains("getService") &&
             source.contains("ungetService") &&
             source ==~ /(?s).*withPluginService\(\s*ROADMAPS_PLUGIN,\s*HIERARCHY_API.*/)
+    ok('hierarchy service helper does not collide with the public Groovy method',
+        source.contains('readHierarchyService(hierarchyApi)') &&
+            !source.contains(
+                'private static ReadResult<HierarchySnapshot> readHierarchy('))
     ok('Structure-wide analysis has a live forest reader',
         source.contains('LiveStructureGateway doctorStructureGateway') &&
             source.contains('DoctorLiveAccess.readStructure'))

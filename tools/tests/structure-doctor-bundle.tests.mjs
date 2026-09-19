@@ -99,6 +99,15 @@ test('preserves endpoint and repair security boundaries', () => {
     assert.equal(count(bundle, authenticationGate), count(readFileSync(controller, 'utf8'), authenticationGate))
     assert.match(bundle, /new DisabledRepairInfrastructure\(\)/)
     assert.match(bundle, /SET_PARENT_LINK/)
+    assert.equal(
+      count(bundle, /static ReadResult<HierarchySnapshot> readHierarchy\(/g),
+      1,
+      'Groovy forbids mixing private and non-private overloads of readHierarchy',
+    )
+    assert.match(
+      bundle,
+      /private static ReadResult<HierarchySnapshot> readHierarchyService\(/,
+    )
     assert.doesNotMatch(bundle, /structure-doctor-(?:capability|mutation)-probe/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
