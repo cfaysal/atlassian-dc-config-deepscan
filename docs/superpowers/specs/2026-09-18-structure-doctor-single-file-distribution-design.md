@@ -52,7 +52,8 @@ The generator:
 1. reads the Core files in stable lexical order;
 2. collects and de-duplicates normal and static imports;
 3. emits no package declaration;
-4. removes per-file package declarations and package-local imports;
+4. removes per-file package declarations and normal package-local imports, and rewrites
+   package-local static imports for the package-free bundle;
 5. emits the complete Core definitions followed by the REST controller body;
 6. preserves source markers naming every contributing file;
 7. writes normalized LF output with a final newline; and
@@ -86,8 +87,9 @@ Automated checks must prove:
 - two consecutive builds are byte-identical;
 - rebuilding the committed artifact produces no diff;
 - the embedded manifest covers the controller and all Core inputs exactly once;
-- the artifact contains no `package` declaration, no package-local import, and no missing
-  external import;
+- the artifact contains no `package` declaration, no import qualified with `structuredoctor.`,
+  no missing external import, and every required local static import targets the default
+  package;
 - Groovy conversion-phase parsing succeeds;
 - endpoint count, administrator groups, authentication checks, confirmation constant, and
   disabled-writer contract match the maintained sources;

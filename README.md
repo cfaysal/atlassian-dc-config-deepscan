@@ -517,7 +517,8 @@ with `node tools/build-structure-doctor-bundle.mjs` and verify that the committe
 current with `node tools/build-structure-doctor-bundle.mjs --check`.
 
 The generated ScriptRunner file deliberately has no `package` declaration and contains no
-package-local imports. The `structuredoctor` folder is only the installation location. This
+imports qualified with `structuredoctor.`. Required local static imports are rewritten for
+the default package. The `structuredoctor` folder is only the installation location. This
 avoids ScriptRunner Script Editor package-resolution errors while the maintained modular
 sources keep their normal `package structuredoctor` declarations.
 

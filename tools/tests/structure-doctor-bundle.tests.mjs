@@ -63,7 +63,14 @@ test('bundles the exact maintained sources deterministically', () => {
     assert.equal(count(bundle, /^package structuredoctor$/gm), 0)
     const imports = [...bundle.matchAll(/^import(?: static)? .+$/gm)].map(match => match[0])
     assert.deepEqual(imports, [...new Set(imports)])
-    assert.equal(imports.filter(line => line.startsWith('import structuredoctor.')).length, 0)
+    assert.equal(imports.filter(line => /^import(?: static)? structuredoctor\./.test(line)).length, 0)
+    assert.deepEqual(
+      imports.filter(line => line.startsWith('import static CoreRepairPolicy.')),
+      [
+        'confirmationBlockers', 'freshnessBlockers', 'operationStatus',
+        'requestFingerprint', 'result', 'validOperationId', 'validate',
+      ].map(name => `import static CoreRepairPolicy.${name}`),
+    )
 
     const manifestInputs = [...bundle.matchAll(/^ \* INPUT (.+)$/gm)].map(match => match[1])
     assert.deepEqual(manifestInputs, expectedInputs)

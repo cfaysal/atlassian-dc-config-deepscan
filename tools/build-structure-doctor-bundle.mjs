@@ -99,6 +99,9 @@ function renderBundle(controller, modules) {
   const manifestOrder = [controller, ...modules]
   const bodyOrder = [...modules, controller]
   const imports = [...new Set(manifestOrder.flatMap(source => source.imports))]
+    .map(line => line.startsWith('import static structuredoctor.')
+      ? line.replace('import static structuredoctor.', 'import static ')
+      : line)
     .filter(line => !line.startsWith('import structuredoctor.'))
     .sort()
   const header = [

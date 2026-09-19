@@ -76,13 +76,13 @@ import java.lang.reflect.Array
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import org.codehaus.groovy.runtime.InvokerHelper
-import static structuredoctor.CoreRepairPolicy.confirmationBlockers
-import static structuredoctor.CoreRepairPolicy.freshnessBlockers
-import static structuredoctor.CoreRepairPolicy.operationStatus
-import static structuredoctor.CoreRepairPolicy.requestFingerprint
-import static structuredoctor.CoreRepairPolicy.result
-import static structuredoctor.CoreRepairPolicy.validOperationId
-import static structuredoctor.CoreRepairPolicy.validate
+import static CoreRepairPolicy.confirmationBlockers
+import static CoreRepairPolicy.freshnessBlockers
+import static CoreRepairPolicy.operationStatus
+import static CoreRepairPolicy.requestFingerprint
+import static CoreRepairPolicy.result
+import static CoreRepairPolicy.validOperationId
+import static CoreRepairPolicy.validate
 
 // SOURCE: jira/structuredoctor/CoreAutomationAnalyzer.groovy
 @CompileStatic
