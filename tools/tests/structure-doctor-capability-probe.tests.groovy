@@ -45,6 +45,9 @@ if (probe.isFile()) {
         !source.contains('@WithPlugin') && !source.contains('@PluginModule'))
     ok('probe returns its JSON to the Script Console',
         source.contains('return JsonOutput.prettyPrint'))
+    ok('reflective probe is isolated from ScriptRunner static checking',
+        source.contains('import groovy.transform.CompileDynamic') &&
+            source.contains('@CompileDynamic'))
 }
 
 println 'PASSED: ' + passed

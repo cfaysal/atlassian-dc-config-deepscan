@@ -1,8 +1,11 @@
 import com.atlassian.jira.component.ComponentAccessor
 import groovy.json.JsonOutput
+import groovy.transform.CompileDynamic
 
 import java.lang.reflect.Modifier
 
+@CompileDynamic
+String runCapabilityProbe() {
 def readTokens = [
     'hierarchy', 'level', 'forest', 'generator', 'provenance', 'revision',
     'rule', 'audit', 'history', 'preview', 'lock', 'setting'
@@ -34,7 +37,13 @@ def safeInvoke = { target, methodName ->
     def method = target.class.methods.find { candidate ->
         candidate.name == methodName && candidate.parameterCount == 0
     }
-    method == null ? null : method.invoke(target)
+    if (method == null) return null
+    try {
+        method.setAccessible(true)
+    } catch (RuntimeException ignored) {
+        // Invocation below still succeeds when the declaring type is public.
+    }
+    method.invoke(target)
 }
 
 def serviceReport = { label, resolver, tokens ->
@@ -155,3 +164,6 @@ def report = [
 ]
 
 return JsonOutput.prettyPrint(JsonOutput.toJson(report))
+}
+
+return runCapabilityProbe()
