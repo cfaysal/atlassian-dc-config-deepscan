@@ -15,7 +15,11 @@ const toRepoPath = file => relative(repoRoot, file).split(sep).join('/')
 const modules = readdirSync(moduleDir, { withFileTypes: true })
   .filter(entry => entry.isFile() && entry.name.endsWith('.groovy'))
   .map(entry => join(moduleDir, entry.name))
-  .sort((left, right) => basename(left).localeCompare(basename(right), 'en'))
+  .sort((left, right) => {
+    const leftName = basename(left)
+    const rightName = basename(right)
+    return leftName < rightName ? -1 : leftName > rightName ? 1 : 0
+  })
 const expectedInputs = [controller, ...modules].map(toRepoPath)
 
 function runGenerator(args) {
@@ -27,6 +31,14 @@ function runGenerator(args) {
 
 function count(text, pattern) {
   return [...text.matchAll(pattern)].length
+}
+
+function expectedBody(file) {
+  const lines = readFileSync(file, 'utf8').replace(/\r\n?/g, '\n').split('\n')
+    .filter(line => !/^\s*(?:package|import)\s+/.test(line))
+  while (lines.length && !lines[0].trim()) lines.shift()
+  while (lines.length && !lines.at(-1).trim()) lines.pop()
+  return lines.join('\n')
 }
 
 test('bundles the exact maintained sources deterministically', () => {
@@ -57,6 +69,9 @@ test('bundles the exact maintained sources deterministically', () => {
     assert.equal(count(bundle, /^ \* INPUT_SHA256 [a-f0-9]{64}$/gm), 1)
     const sourceMarkers = [...bundle.matchAll(/^\/\/ SOURCE: (.+)$/gm)].map(match => match[1])
     assert.deepEqual(sourceMarkers, [...expectedInputs.slice(1), expectedInputs[0]])
+    for (const file of [...modules, controller]) {
+      assert.ok(bundle.includes(`// SOURCE: ${toRepoPath(file)}\n${expectedBody(file)}`))
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -72,7 +87,8 @@ test('preserves endpoint and repair security boundaries', () => {
 
     assert.equal(count(bundle, /^structureIssueDoctor\w*\(httpMethod:/gm), 6)
     assert.equal(count(bundle, /groups: \["jira-administrators"\]/g), 6)
-    assert.equal(count(bundle, /if \(user == null\) return respondJson\.call\(401, \[ok: false, error: 'AUTHENTICATION_REQUIRED'\]\)/g), 6)
+    const authenticationGate = /if \(user == null\) return respondJson\.call\(401, \[ok: false, error: 'AUTHENTICATION_REQUIRED'\]\)/g
+    assert.equal(count(bundle, authenticationGate), count(readFileSync(controller, 'utf8'), authenticationGate))
     assert.match(bundle, /new DisabledRepairInfrastructure\(\)/)
     assert.match(bundle, /SET_PARENT_LINK/)
     assert.doesNotMatch(bundle, /structure-doctor-(?:capability|mutation)-probe/)
