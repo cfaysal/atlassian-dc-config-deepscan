@@ -503,7 +503,7 @@ Automation audit window is 30 days.
 ### Single-file ScriptRunner installation
 
 Install only `dist/structuredoctor/structureIssueDoctor.groovy`. It is generated from the
-maintained controller plus all 35 files in `jira/structuredoctor/` and must not be edited by
+maintained controller plus all 38 files in `jira/structuredoctor/` and must not be edited by
 hand.
 
 1. In a configured ScriptRunner Script Root, create the `structuredoctor` folder.
@@ -525,8 +525,19 @@ sources keep their normal `package structuredoctor` declarations.
 On the proven reference installation, the Doctor reads the global hierarchy through the
 Advanced Roadmaps hierarchy API, the complete Structure forest and its generator provenance
 through Structure, and visible parent relations through Jira's user-aware issue service. The
-capability probe did not expose a complete read-only Jira Automation rule-and-audit service.
-The page therefore accepts an optional official Automation rule-export JSON and an optional
+new Automation adapter resolves `AutomationConfigService` and `AuditService` from the
+Automation plugin, including its own Spring context when the beans are not OSGi-exported.
+It reads rules for the projects of permission-checked work items, including global rules,
+and pages through audit entries using the native Data Center tenant and a fixed time window.
+Rule reads are limited to 100 projects and 500 rules; audit reads to 300 executions. Retention limits,
+missing details, repeated or changing pages and unsupported schemas remain explicit gaps.
+Only read methods are used; access is independently checked against `jira-administrators`.
+Current disabled rules remain in the audit scope for historical evidence, but are not listed
+as active rules. If no current rule IDs are available, the audit reader uses a bounded all-rule
+time-filtered query and retains only associations to the permission-checked work items. An
+empty current configuration is never treated as proof that no historic execution occurred.
+
+The page also accepts an optional official Automation rule-export JSON and an optional
 Structure Doctor audit-evidence JSON. Uploaded JSON is bounded, parsed as inert data, retained
 only as normalized evidence for the current in-memory plan, and never executed or published.
 Without audit evidence, rule-configuration conflicts can still be reported, but a historical
@@ -558,10 +569,28 @@ successful check with no findings and retains the Structure, key filter and audi
 
 The live repair-proposal reader is still unavailable, and Core Apply remains disabled. The
 selection checks plan prerequisites but cannot deliver an executable live repair. Live
-Automation rule/audit integration also remains unavailable; the existing explicit JSON
-fallback is separate from it. Report usability changes do not complete these integrations.
+Automation rule/audit readers are implemented and tested against synthetic API contracts,
+but installed-instance verification remains outstanding. Embedded Groovy actions remain
+opaque: their payloads are never executed, and loading a rule does not establish its field
+effects. Audit associations show rule executions, not confirmed causes or field writes.
+The existing explicit JSON fallback remains separate from the live adapter.
 The single-file artifact still needs compilation and acceptance on the target ScriptRunner
 classpath. Offline checks and a synthetic browser run are not that acceptance.
+
+Repeated analysis replaces the complete response document. The browser script uses a local
+function scope so replacement does not redeclare global `const` variables. The regression
+covers Structure A, Structure B, planning, another analysis, and retry after an HTTP error.
+
+A yellow `Failed type checking` marker on the first character is a file-level ScriptRunner
+static-check failure, not evidence of an error in the comment or first import. Moving the
+first token does not fix it. The internal reason requires the checker exception from the
+target instance; it is not proven by local compilation. Do not disable checks or remove
+security gates to hide the warning.
+
+API references: [AutomationConfigService](https://docs.atlassian.com/software/jira/docs/api/11.0.0/com/codebarrel/automation/api/service/AutomationConfigService.html),
+[AuditService](https://docs.atlassian.com/software/jira/docs/api/11.0.0/com/codebarrel/automation/api/service/AuditService.html),
+[NativeTenant](https://docs.atlassian.com/software/jira/docs/api/11.0.0/com/codebarrel/jira/NativeTenant.html),
+[ScriptRunner static type checking](https://docs.adaptavist.com/sr4js/latest/best-practices/write-code/static-type-checking/).
 
 Every POST endpoint requires `application/json`. Plan, Apply, and the remaining POST endpoints
 reject bodies larger than 64 KiB before parsing. Analyze permits up to 22 MiB so that two

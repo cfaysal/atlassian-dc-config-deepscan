@@ -40,7 +40,7 @@ import structuredoctor.DoctorHttpGuard
 import structuredoctor.DoctorRepairApplication
 import structuredoctor.DoctorRenderer
 import structuredoctor.DisabledRepairInfrastructure
-import structuredoctor.LiveAutomationProvider
+import structuredoctor.DcAutomationProvider
 import structuredoctor.LiveConfigurationDiscovery
 import structuredoctor.LiveJiraGateway
 import structuredoctor.LiveStructureGateway
@@ -304,6 +304,7 @@ final class DoctorLiveAccess {
                 records.add([
                     issueId: issue.getId(),
                     issueTypeId: Long.parseLong(issue.getIssueType().getId()),
+                    projectId: issue.getProjectId(),
                     issueKey: issue.getKey(),
                     summary: issue.getSummary(),
                     issueTypeName: issue.getIssueType().getName(),
@@ -359,12 +360,49 @@ final class DoctorLiveAccess {
                     service.class.name == className) {
                     return reader.call(service)
                 }
+                // Automation services are Spring beans, not necessarily exported OSGi services.
+                Class<?> applicationContext = pluginKey == 'com.codebarrel.addons.automation' ?
+                    (Class<?>) InvokerHelper.invokeMethod(loader, 'loadClass',
+                        'org.springframework.context.ApplicationContext') : null
+                if (applicationContext != null && applicationContext.isInstance(service)) {
+                    Map<?, ?> beans = (Map<?, ?>) applicationContext.getMethod(
+                        'getBeansOfType', Class, Boolean.TYPE, Boolean.TYPE)
+                        .invoke(service, componentClass, false, false)
+                    if (beans.size() == 1) return reader.call(beans.values().iterator().next())
+                    if (beans.size() > 1) throw new IllegalStateException('Ambiguous Automation service')
+                }
             } finally {
                 InvokerHelper.invokeMethod(
                     context, 'ungetService', [reference] as Object[])
             }
         }
         null
+    }
+
+    @CompileDynamic
+    static Object withAutomationService(String api, Closure<?> reader) {
+        ApplicationUser actor = ComponentAccessor.getJiraAuthenticationContext().getLoggedInUser()
+        if (actor == null || !ComponentAccessor.getGroupManager().isUserInGroup(actor, 'jira-administrators')) {
+            throw new SecurityException('Jira administrators only')
+        }
+        if (!(api in ['com.codebarrel.automation.api.service.AutomationConfigService',
+            'com.codebarrel.automation.api.service.AuditService'])) throw new IllegalArgumentException('Unsupported read API')
+        withPluginService('com.codebarrel.addons.automation', api, { service ->
+            ClassLoader loader = ComponentAccessor.getPluginAccessor()
+                .getPlugin('com.codebarrel.addons.automation').getClassLoader()
+            Object tenant = loader.loadClass('com.codebarrel.jira.NativeTenant').getField('GLOBAL_TENANT').get(null)
+            reader.call(service, tenant)
+        })
+    }
+
+    @CompileDynamic
+    static Object automationAuditFilter(Long ruleId, java.time.Instant from, java.time.Instant to) {
+        ClassLoader loader = ComponentAccessor.getPluginAccessor()
+            .getPlugin('com.codebarrel.addons.automation').getClassLoader()
+        Class<?> filter = loader.loadClass('com.codebarrel.automation.api.audit.AuditItemFilter')
+        filter.getConstructor(Set, Long, Set, java.time.LocalDate, java.time.LocalDate,
+            java.time.Instant, java.time.Instant).newInstance([
+                Collections.emptySet(), ruleId, Collections.emptySet(), null, null, from, to] as Object[])
     }
 
     private static String incompleteStructureReason(int unresolvedCreatorReferences,
@@ -1257,7 +1295,9 @@ LiveJiraGateway doctorJira = new LiveJiraGateway({ Collection<Long> issueIds ->
     DoctorLiveAccess.readIssues(issueService, customFieldManager,
         authenticationContext.getLoggedInUser(), issueIds)
 })
-LiveAutomationProvider doctorAutomation = new LiveAutomationProvider(null, null)
+DcAutomationProvider doctorAutomation = new DcAutomationProvider(
+    { String api, Closure<?> reader -> DoctorLiveAccess.withAutomationService(api, reader) },
+    { Long ruleId, java.time.Instant from, java.time.Instant to -> DoctorLiveAccess.automationAuditFilter(ruleId, from, to) })
 ProposalSource doctorProposals = { ignored ->
     ReadResult.unavailable('Repair proposal discovery is not proven on this instance')
 } as ProposalSource

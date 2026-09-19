@@ -107,7 +107,7 @@ final class DoctorApplication {
             snapshot: snapshot, dependencyFingerprint: dependencyFingerprint,
             coverage: coverage,
             hierarchy: hierarchyAnalysis, duplicates: duplicateAnalysis,
-            automation: automationAnalysis, causalClaims: causalClaims,
+            automation: automationAnalysis, auditEntries: audit.value ?: [], causalClaims: causalClaims,
             complete: blockers.isEmpty(), blockers: blockers.unique().sort())
         synchronized (analyses) {
             if (analyses.size() >= 100 && !analyses.containsKey(snapshotId)) {
@@ -184,7 +184,7 @@ final class DoctorApplication {
     }
 
     private static AnalysisScope scope(StructureSnapshot snapshot) {
-        new AnalysisScope(projectIds: [],
+        new AnalysisScope(projectIds: (snapshot?.relations ?: [])*.projectId.findAll { it != null }.unique().sort(),
             issueTypeIds: (snapshot?.relations ?: [])*.issueTypeId.unique().sort(),
             fieldIds: [], linkTypeIds: [])
     }

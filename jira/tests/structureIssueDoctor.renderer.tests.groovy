@@ -51,6 +51,8 @@ check('orphan is not equated with invalid Jira data', page.contains('nicht autom
 check('read-only investigation is distinguished from repair', page.contains('Prüfschritt, keine automatische Reparatur'))
 check('missing automation is not a clean bill of health', page.contains('Nicht geprüft: Automation-Regeln'))
 check('false negative conflict message absent', !page.contains('Keine belegten Konflikte.'))
+check('unavailable rules do not become a total of zero', page.contains('Gesamtzahl aktiver Regeln unbekannt'))
+check('unavailable audit does not become an absence claim', page.contains('kein Nachweis für ausgebliebene Ausführungen'))
 check('duplicate choice is opt-in', page.contains('De-Dupe für diese Gruppe'))
 check('duplicate evidence remains understandable', page.contains('Die Vorkommen liegen auf unterschiedlichen Structure-Pfaden.'))
 check('only duplicate groups have finding checkboxes', (page =~ /class="finding"/).count == 1)
@@ -84,6 +86,26 @@ String unnormalized = renderer.render(catalogue, analysis.copyWith(
     coverage: coverage.collect { it.source == 'automation-rules' ? it.copyWith(state: ReadState.COMPLETE) : it },
     automation: new AutomationAnalysis(findings: [], rules: [], complete: false, blockers: ['automation-rule-normalization'])), null)
 check('unsupported rule normalization cannot report no conflicts', !unnormalized.contains('Keine Konflikte nach den implementierten Regelprüfungen erkannt.'))
+def execution = new AutomationAuditSnapshot(ruleId: 9001L, issueId: 3L,
+    occurredAt: '2026-09-20T12:00:00Z', action: 'RULE_EXECUTION', target: 'UNPROVEN_FIELD_EFFECT', successful: true, revision: 'r1')
+String auditEvidence = renderer.render(catalogue, analysis.copyWith(auditEntries: [execution]), null)
+check('audit association is visible', auditEvidence.contains('Erfolg protokolliert') && auditEvidence.contains('9001'))
+check('audit association is not field-change proof', auditEvidence.contains('belegt keine konkrete Parent-Änderung'))
+check('partial audit does not claim globally newest entries', auditEvidence.contains('höchstens 20 der gelesenen Zuordnungen, nach Zeitpunkt sortiert'))
+String auditFiltered = renderer.render(catalogue, analysis.copyWith(auditEntries: [execution], displayIssueId: 4L), null)
+check('audit follows display-only issue filter', !auditFiltered.contains('Erfolg protokolliert'))
+def movedRelations = relations.collect { it.copyWith(projectId: 99L) }
+check('project scope affects repair fingerprint', snapshot.planningFingerprint() != snapshot.copyWith(relations: movedRelations).planningFingerprint())
+def activeRule = new AutomationRuleSnapshot(ruleId: 9001L, enabled: true, projectIds: [], issueTypeIds: [],
+    reads: [], writes: [], clears: [], sourcesByTarget: [:], trigger: 'test-trigger', orderedComponents: [],
+    conditions: [], asynchronous: false, allowOtherRuleTrigger: false, actor: 'test', revision: 'r1', complete: false)
+def activeAnalysis = new CoreAutomationAnalyzer().analyze(ReadResult.complete([
+    activeRule, activeRule.copyWith(ruleId: 9002L, enabled: false)]), ReadResult.complete([]),
+    new AutomationAnalysisContext(scope: new AnalysisScope(projectIds: [], issueTypeIds: [], fieldIds: [], linkTypeIds: []),
+        hierarchy: hierarchy, hierarchyTargets: [], structureConsumedValues: []))
+String activeEvidence = renderer.render(catalogue, analysis.copyWith(automation: activeAnalysis,
+    coverage: coverage.collect { it.copyWith(state: ReadState.COMPLETE) }), null)
+check('only enabled rules appear as active', activeEvidence.contains('1 aktive Regeln') && !activeEvidence.contains('<td>9002</td>'))
 if (System.getProperty('previewOutput')) new File(System.getProperty('previewOutput')).setText(page, 'UTF-8')
 println "Structure Doctor renderer tests: ${passed} passed, ${failures.size()} failed"
 failures.each { println 'FAIL: ' + it }

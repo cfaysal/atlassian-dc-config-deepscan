@@ -130,7 +130,7 @@ final class CoreCanonical {
                  provenance: occurrence.provenance, creatorId: occurrence.creatorId]
             },
             relations: snapshot.relations.collect { IssueRelationSnapshot relation ->
-                [issueId: relation.issueId, issueTypeId: relation.issueTypeId,
+                [issueId: relation.issueId, issueTypeId: relation.issueTypeId, projectId: relation.projectId,
                  nativeParentId: relation.nativeParentId, leadingParentIds: relation.leadingParentIds,
                  revisions: relation.revisions]
             }

@@ -21,8 +21,11 @@
  * INPUT jira/structuredoctor/CoreRepairModels.groovy
  * INPUT jira/structuredoctor/CoreRepairPolicy.groovy
  * INPUT jira/structuredoctor/CoreSupport.groovy
+ * INPUT jira/structuredoctor/DcAutomationMapping.groovy
+ * INPUT jira/structuredoctor/DcAutomationProvider.groovy
  * INPUT jira/structuredoctor/DisabledRepairInfrastructure.groovy
  * INPUT jira/structuredoctor/DoctorApplication.groovy
+ * INPUT jira/structuredoctor/DoctorAutomationRenderer.groovy
  * INPUT jira/structuredoctor/DoctorContracts.groovy
  * INPUT jira/structuredoctor/DoctorFindingRenderer.groovy
  * INPUT jira/structuredoctor/DoctorHttpGuard.groovy
@@ -37,7 +40,7 @@
  * INPUT jira/structuredoctor/LiveJiraGateway.groovy
  * INPUT jira/structuredoctor/LiveRepairInfrastructure.groovy
  * INPUT jira/structuredoctor/LiveStructureGateway.groovy
- * INPUT_SHA256 26556f827672c30e410485791a3ddf88c5caedb3cdb04dec56475ef3fa373e51
+ * INPUT_SHA256 82e3fae81ba73ab75b60b0577c168ddef75fcbfc0cd48241ea8a3da6bf387bd5
  */
 
 import com.almworks.jira.structure.api.StructureComponents
@@ -77,6 +80,8 @@ import groovy.transform.KnownImmutable
 import java.lang.reflect.Array
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.time.Instant
+import java.time.temporal.ChronoUnit
 import org.codehaus.groovy.runtime.InvokerHelper
 import static CoreRepairPolicy.confirmationBlockers
 import static CoreRepairPolicy.freshnessBlockers
@@ -694,7 +699,7 @@ final class CoreCanonical {
                  provenance: occurrence.provenance, creatorId: occurrence.creatorId]
             },
             relations: snapshot.relations.collect { IssueRelationSnapshot relation ->
-                [issueId: relation.issueId, issueTypeId: relation.issueTypeId,
+                [issueId: relation.issueId, issueTypeId: relation.issueTypeId, projectId: relation.projectId,
                  nativeParentId: relation.nativeParentId, leadingParentIds: relation.leadingParentIds,
                  revisions: relation.revisions]
             }
@@ -1573,6 +1578,7 @@ class OccurrenceSnapshot {
 class IssueRelationSnapshot {
     long issueId
     long issueTypeId
+    Long projectId
     String issueKey
     String summary
     String issueTypeName
@@ -2603,6 +2609,218 @@ final class CoreSupport {
     }
 }
 
+// SOURCE: jira/structuredoctor/DcAutomationMapping.groovy
+/** Project only known read properties. Never evaluate action payloads or serialize entire beans. */
+@CompileDynamic
+final class DcAutomationMapping {
+    static Object property(Object bean, String name) {
+        if (bean == null) throw new IllegalArgumentException('Missing Automation bean')
+        InvokerHelper.getProperty(bean, name)
+    }
+
+    static List list(Object value) {
+        if (!(value instanceof Collection)) throw new IllegalArgumentException('Missing Automation collection')
+        new ArrayList((Collection) value)
+    }
+
+    static AutomationRuleSnapshot rule(Object bean) {
+        Object updated = property(bean, 'updated')
+        Map data = [id: property(bean, 'id'), state: String.valueOf(property(bean, 'state')),
+            updated: updated instanceof Date ? updated.toInstant().toString() : updated,
+            trigger: component(property(bean, 'trigger'), 0),
+            components: list(property(bean, 'components')).collect { component(it, 0) },
+            projects: list(property(bean, 'projects')).collect { [projectId: property(it, 'projectId')] },
+            canOtherRuleTrigger: property(bean, 'canOtherRuleTrigger')]
+        CoreAutomationJsonSupport.officialRule(data)
+    }
+
+    private static Map component(Object bean, int depth) {
+        if (depth > 50) throw new IllegalArgumentException('Automation component depth limit')
+        Object value = property(bean, 'value')
+        // Some DC bean versions expose the JSON value as text, exports expose it as an object.
+        if (value instanceof String && value.trim().startsWith('{')) {
+            if (value.length() > 1_048_576) throw new IllegalArgumentException('Automation component size limit')
+            value = new JsonSlurper().parseText(value)
+        }
+        [id: property(bean, 'id'), component: String.valueOf(property(bean, 'component')),
+            type: String.valueOf(property(bean, 'type')), schemaVersion: property(bean, 'schemaVersion'),
+            value: value, children: list(property(bean, 'children')).collect { component(it, depth + 1) },
+            conditions: list(property(bean, 'conditions')).collect { component(it, depth + 1) }]
+    }
+
+    static Map audit(Object bean, Set<Long> requestedIssueIds, Long expectedRuleId) {
+        long ruleId = CoreAutomationJsonSupport.flexibleLong(property(property(bean, 'objectItem'), 'id'), 'ruleId')
+        if (expectedRuleId != null && ruleId != expectedRuleId) throw new IllegalArgumentException('Audit rule mismatch')
+        Object created = property(bean, 'created')
+        if (!(created instanceof Date)) throw new IllegalArgumentException('Missing audit date')
+        List associated = list(property(bean, 'globalAssociatedItems'))
+        boolean complete = true
+        for (Object component : list(property(bean, 'componentChanges'))) {
+            Object page = property(component, 'associatedItems')
+            List results = list(property(page, 'results'))
+            long total = CoreAutomationJsonSupport.flexibleLong(property(page, 'total'), 'total')
+            long offset = CoreAutomationJsonSupport.flexibleLong(property(page, 'offset'), 'offset')
+            if (offset != 0L || total != results.size()) complete = false
+            associated.addAll(results)
+        }
+        Set<Long> issueIds = new LinkedHashSet<>()
+        for (Object item : associated) {
+            String type = String.valueOf(property(item, 'typeName'))
+            if (type.equalsIgnoreCase('issue')) {
+                Object id = property(item, 'id')
+                if (!(String.valueOf(id) ==~ /[0-9]+/)) { complete = false; continue }
+                long issueId = Long.parseLong(String.valueOf(id))
+                if (requestedIssueIds.contains(issueId)) issueIds.add(issueId)
+            } else if (!(type.toUpperCase(Locale.ROOT) in ['USER', 'AUTOMATION_SYSTEM'])) {
+                complete = false
+            }
+        }
+        String category = String.valueOf(property(bean, 'category'))
+        String occurredAt = ((Date) created).toInstant().toString()
+        String revision = CoreCanonical.sha256([id: property(bean, 'id'), ruleId: ruleId,
+            occurredAt: occurredAt, category: category, issueIds: issueIds])
+        [complete: complete, occurredAt: occurredAt, entries: issueIds.collect { Long issueId ->
+            new AutomationAuditSnapshot(ruleId: ruleId, issueId: issueId, occurredAt: occurredAt,
+                action: 'RULE_EXECUTION', target: 'UNPROVEN_FIELD_EFFECT',
+                successful: category == 'SUCCESS', revision: revision)
+        }]
+    }
+}
+
+// SOURCE: jira/structuredoctor/DcAutomationProvider.groovy
+/** Read-only DC Automation adapter. Service resolution is scoped to the authenticated request. */
+@CompileDynamic
+final class DcAutomationProvider implements AutomationDataProvider {
+    private static final String CONFIG_API = 'com.codebarrel.automation.api.service.AutomationConfigService'
+    private static final String AUDIT_API = 'com.codebarrel.automation.api.service.AuditService'
+    private static final int MAX_PROJECTS = 100
+    private static final int MAX_RULES = 500
+    private static final int AUDIT_PAGE_SIZE = 50
+    private final Closure connection
+    private final Closure filterFactory
+    private final Closure clock
+    private final int auditLimit
+
+    DcAutomationProvider(Closure connection, Closure filterFactory,
+                         Closure clock = { Instant.now() }, int auditLimit = 300) {
+        this.connection = connection
+        this.filterFactory = filterFactory
+        this.clock = clock
+        this.auditLimit = auditLimit
+    }
+
+    @Override
+    ReadResult<List<AutomationRuleSnapshot>> readRules(AnalysisScope scope) {
+        if (!scope?.projectIds) return ReadResult.incomplete([], 'Automation: Projektumfang nicht vollständig ermittelt')
+        try {
+            Object result = connection.call(CONFIG_API, { service, tenant ->
+                Map<Long, AutomationRuleSnapshot> rules = [:]
+                List<Long> projects = scope.projectIds.unique(false)
+                boolean complete = projects.size() <= MAX_PROJECTS
+                for (Long projectId : projects.take(MAX_PROJECTS)) {
+                    List beans = DcAutomationMapping.list(service.getRules(tenant, String.valueOf(projectId)))
+                    if (beans.size() > MAX_RULES) complete = false
+                    for (Object bean : beans.take(MAX_RULES)) {
+                        try {
+                            AutomationRuleSnapshot rule = DcAutomationMapping.rule(bean)
+                            if (rules.containsKey(rule.ruleId) && rules[rule.ruleId].revision != rule.revision) complete = false
+                            rules[rule.ruleId] = rule
+                        } catch (RuntimeException ignored) { complete = false }
+                    }
+                    if (rules.size() > MAX_RULES) { complete = false; break }
+                }
+                List values = rules.values().take(MAX_RULES).sort { it.ruleId }
+                complete ? ReadResult.complete(values) : ReadResult.incomplete(values,
+                    'Automation-Regeln nur teilweise gelesen: Leselimit, geänderte Revision oder unbekanntes Datenformat')
+            })
+            result == null ? ReadResult.unavailable('AutomationConfigService im installierten Plugin nicht erreichbar') : result
+        } catch (Exception failure) {
+            ReadResult.failed('Automation-Regeln konnten nicht gelesen werden (' + failure.class.simpleName + ')')
+        }
+    }
+
+    @Override
+    ReadResult<List<AutomationAuditSnapshot>> readAudit(AuditRequest request) {
+        if (request == null || request.requestedDays < 1 || request.requestedDays > 365 ||
+            !request.issueIds) {
+            return ReadResult.incomplete([], 'Automation-Audit: Vorgangsumfang oder gültiges Zeitfenster fehlt')
+        }
+        try {
+            Object result = connection.call(AUDIT_API, { service, tenant -> readAuditPages(service, tenant, request) })
+            result == null ? ReadResult.unavailable('AuditService im installierten Plugin nicht erreichbar') : result
+        } catch (Exception failure) {
+            ReadResult.failed('Automation-Audit konnte nicht gelesen werden (' + failure.class.simpleName + ')')
+        }
+    }
+
+    private ReadResult readAuditPages(Object service, Object tenant, AuditRequest request) {
+        Instant to = (Instant) clock.call()
+        long retention = service.getAuditLogRetentionPeriodDays(DcAutomationMapping.property(tenant, 'environment'))
+        if (retention < -1) throw new IllegalArgumentException('Unknown audit retention')
+        long days = retention == -1 ? request.requestedDays : Math.min(request.requestedDays as long, retention)
+        Instant from = to.minus(days, ChronoUnit.DAYS)
+        List<AutomationAuditSnapshot> entries = []
+        Set<Long> requestedIssueIds = new HashSet<>(request.issueIds)
+        Set<Long> seen = new LinkedHashSet<>()
+        List<String> gaps = []
+        if (days < request.requestedDays) gaps.add('Aufbewahrung nur ' + days + ' Tage')
+        boolean capped = false
+        // No current rules does not prove no historic (e.g. deleted-rule) executions.
+        List<Long> ruleIds = request.ruleIds ? request.ruleIds.unique(false) : [null]
+        for (Long ruleId : ruleIds) {
+            Object filter = filterFactory.call(ruleId, from, to)
+            long offset = 0
+            Long previousTotal = null
+            while (true) {
+                if (seen.size() >= auditLimit) {
+                    gaps.add('Audit-Leselimit erreicht (' + auditLimit + ' Einträge)'); capped = true; break
+                }
+                long limit = Math.min(AUDIT_PAGE_SIZE, auditLimit - seen.size())
+                Object page = service.getItems(tenant, filter, offset, limit)
+                List items = DcAutomationMapping.list(DcAutomationMapping.property(page, 'items'))
+                long total = CoreAutomationJsonSupport.flexibleLong(DcAutomationMapping.property(page, 'total'), 'total')
+                String pageProblem = null
+                if (total < 0) pageProblem = 'Audit-Gesamtzahl nicht verfügbar'
+                else if (items.size() > limit) pageProblem = 'Audit-Seite überschreitet angefragte Seitengröße'
+                else if (offset + items.size() > total) pageProblem = 'Audit-Seite überschreitet gemeldete Gesamtzahl'
+                else if (previousTotal != null && total != previousTotal) pageProblem = 'Audit-Gesamtzahl zwischen Seiten geändert'
+                if (pageProblem != null) {
+                    gaps.add(pageProblem + ' (' + (previousTotal == null ? '' : 'vorher=' + previousTotal + ', ') +
+                        'total=' + total + ', offset=' + offset + ', gelesen=' + items.size() + ', limit=' + limit + ')')
+                    capped = true; break
+                }
+                previousTotal = total
+                if (items.empty && offset < total) { gaps.add('Audit-Seite fehlt'); capped = true; break }
+                for (Object item : items) {
+                    long id = CoreAutomationJsonSupport.flexibleLong(DcAutomationMapping.property(item, 'id'), 'auditId')
+                    if (!seen.add(id)) { gaps.add('Audit-Seite wiederholt'); capped = true; break }
+                    Object detail = service.getItem(tenant, filter, id)
+                    if (!(detail instanceof Optional) || !detail.present) {
+                        gaps.add('Audit-Details fehlen'); capped = true; continue
+                    }
+                    try {
+                        Map normalized = DcAutomationMapping.audit(detail.get(), requestedIssueIds, ruleId)
+                        Instant occurredAt = Instant.parse(normalized.occurredAt)
+                        if (occurredAt.isBefore(from) || occurredAt.isAfter(to)) {
+                            gaps.add('Audit-Zeitfilter nicht eingehalten'); capped = true; continue
+                        }
+                        entries.addAll(normalized.entries)
+                        if (!normalized.complete) { gaps.add('Audit-Vorgangszuordnung unvollständig'); capped = true }
+                    } catch (RuntimeException failure) {
+                        gaps.add('Audit-Datenformat nicht vollständig lesbar (' + failure.class.simpleName + ')'); capped = true
+                    }
+                }
+                offset += items.size()
+                if (capped || offset >= total) break
+            }
+            if (capped) break
+        }
+        Coverage coverage = Coverage.bounded(request.requestedDays, days, capped, from.toString(), to.toString())
+        coverage.complete() ? ReadResult.complete(entries, coverage) : ReadResult.incomplete(entries,
+            gaps.unique().join('; '), coverage)
+    }
+}
+
 // SOURCE: jira/structuredoctor/DisabledRepairInfrastructure.groovy
 final class DisabledRepairInfrastructure implements RepairInfrastructure {
     private final RepairAvailability state
@@ -2742,7 +2960,7 @@ final class DoctorApplication {
             snapshot: snapshot, dependencyFingerprint: dependencyFingerprint,
             coverage: coverage,
             hierarchy: hierarchyAnalysis, duplicates: duplicateAnalysis,
-            automation: automationAnalysis, causalClaims: causalClaims,
+            automation: automationAnalysis, auditEntries: audit.value ?: [], causalClaims: causalClaims,
             complete: blockers.isEmpty(), blockers: blockers.unique().sort())
         synchronized (analyses) {
             if (analyses.size() >= 100 && !analyses.containsKey(snapshotId)) {
@@ -2819,7 +3037,7 @@ final class DoctorApplication {
     }
 
     private static AnalysisScope scope(StructureSnapshot snapshot) {
-        new AnalysisScope(projectIds: [],
+        new AnalysisScope(projectIds: (snapshot?.relations ?: [])*.projectId.findAll { it != null }.unique().sort(),
             issueTypeIds: (snapshot?.relations ?: [])*.issueTypeId.unique().sort(),
             fieldIds: [], linkTypeIds: [])
     }
@@ -2867,6 +3085,44 @@ final class DoctorApplication {
         }
     }
 
+}
+
+// SOURCE: jira/structuredoctor/DoctorAutomationRenderer.groovy
+/** Read evidence only. An associated issue is not proof of a particular field change. */
+final class DoctorAutomationRenderer {
+    static String evidence(DoctorReportSupport report) {
+        DoctorAnalysis analysis = report.analysis
+        List<AutomationRuleSnapshot> rules = analysis.automation?.rules ?: []
+        List<AutomationAuditSnapshot> audit = (analysis.auditEntries ?: []).findAll {
+            analysis.displayIssueId == null || it.issueId == analysis.displayIssueId
+        }
+        String ruleCount = report.sourceComplete('automation-rules') ?
+            rules.size() + ' aktive Regeln im gelesenen Analyseumfang.' :
+            'Gesamtzahl aktiver Regeln unbekannt; bisher ' + rules.size() + ' Regeln aus dem Teilergebnis verfügbar.'
+        String auditCount = report.sourceComplete('automation-audit') ?
+            audit.size() + ' protokollierte Regel-/Vorgangszuordnungen in dieser Anzeige.' :
+            'Ausführungshistorie unvollständig; bisher ' + audit.size() +
+                ' Zuordnungen verfügbar. Das ist kein Nachweis für ausgebliebene Ausführungen.'
+        String ruleRows = rules.collect { AutomationRuleSnapshot rule ->
+            '<tr><td>' + rule.ruleId + '</td><td>' + CoreSupport.html(rule.trigger) +
+                '</td><td>' + CoreSupport.html((rule.projectIds ?: []).join(', ') ?: 'Global') +
+                '</td><td>' + (rule.complete ? 'Nach unterstütztem Schema auswertbar' :
+                    'Nicht vollständig auswertbar: Aktion oder Script benötigt eine gesonderte Codeprüfung') + '</td></tr>'
+        }.join('')
+        String auditRows = audit.sort(false) { a, b -> b.occurredAt <=> a.occurredAt }.take(20).collect { item ->
+            '<tr><td>' + CoreSupport.html(item.occurredAt) + '</td><td>' + item.ruleId + '</td><td>' +
+                report.issue(item.issueId) + '</td><td>' + (item.successful ? 'Erfolg protokolliert' :
+                    'Kein erfolgreicher Abschluss belegt') + '</td></tr>'
+        }.join('')
+        '<p><strong>' + ruleCount + '</strong> ' +
+            'Globale Regeln werden mitgelesen. Eine Regel kann weitere Projekte oder Vorgänge betreffen. ' +
+            'Unbekannte Aktionen und eingebettete Groovy-Scripte werden niemals ausgeführt und nicht als unproblematisch bewertet.</p>' +
+            (ruleRows ? '<details><summary>Gelesene aktive Regeln</summary><table><thead><tr><th>Regel-ID</th><th>Auslöser</th><th>Projekt-IDs</th><th>Auswertbarkeit</th></tr></thead><tbody>' + ruleRows + '</tbody></table></details>' : '') +
+            '<p><strong>' + auditCount + '</strong> ' +
+            'Angezeigt werden höchstens 20 der gelesenen Zuordnungen, nach Zeitpunkt sortiert. Eine Zuordnung belegt keine konkrete Parent-Änderung und keine Ursache des Structure-Problems. ' +
+            'Gelesen werden vorhandene Protokolle innerhalb der konfigurierten Aufbewahrung; bereits gelöschte Historie ist nicht rekonstruierbar.</p>' +
+            (auditRows ? '<details open><summary>Ausführungsbelege</summary><table><thead><tr><th>Zeitpunkt (UTC)</th><th>Regel-ID</th><th>Vorgang</th><th>Ergebnis</th></tr></thead><tbody>' + auditRows + '</tbody></table></details>' : '')
+    }
 }
 
 // SOURCE: jira/structuredoctor/DoctorContracts.groovy
@@ -3205,7 +3461,7 @@ ${blockers(analysis.blockers)}
 <details open><summary>Datenquellen und Prüfgrenzen</summary>${report.coverageTable()}</details>
 <details open><summary>Hierarchie-Hinweise</summary>${analysis.hierarchy?.complete ? '' : '<p class="blockers">Hierarchie nicht vollständig geprüft. Aufgeführte Hinweise sind ein Teilergebnis.</p>'}<div>${hierarchyItems ?: '<p>Keine Hinweise in dieser Anzeige. Bei unvollständiger Prüfung ist das keine Entwarnung.</p>'}</div></details>
 <details open><summary>Duplikate: Vorkommen vergleichen und Auswahl treffen</summary>${analysis.duplicates?.complete ? '' : '<p class="blockers">Duplikate nicht vollständig geprüft. Die Anzeige kann unvollständig sein.</p>'}<div>${duplicateItems ?: '<p>Keine Duplikatgruppen in dieser Anzeige. Der Anzeigefilter und die Lesedeckung sind zu beachten.</p>'}</div></details>
-<details open><summary>Automation-Prüfung</summary>${automationStatus}<ul>${automationItems}</ul></details>
+<details open><summary>Automation-Prüfung</summary>${automationStatus}${DoctorAutomationRenderer.evidence(report)}<ul>${automationItems}</ul></details>
 <details><summary>Ursachen und Beleglage</summary><ul>${claims ?: '<li>Keine vollständige Ursachenkette belegt.</li>'}</ul></details>
 ${visibleDuplicates ? '<button id="planButton" type="button">Duplikatauswahl prüfen</button>' : ''}</section>"""
     }
@@ -3234,6 +3490,7 @@ ${visibleDuplicates ? '<button id="planButton" type="button">Duplikatauswahl pr�
 
     private static String browserScript() {
         '''
+(() => {
 const post = async (endpoint, payload) => {
   const response = await fetch(window.location.pathname.replace(/structureIssueDoctor(?:Analyze|Plan)?\\/?$/, endpoint), {
     method: 'POST', credentials: 'same-origin',
@@ -3305,6 +3562,7 @@ if (planButton) planButton.addEventListener('click', async () => {
     planButton.disabled = false;
   }
 });
+})();
 '''
     }
 }
@@ -3568,6 +3826,7 @@ class DoctorAnalysis {
     HierarchyAnalysis hierarchy
     DuplicateAnalysis duplicates
     AutomationAnalysis automation
+    List<AutomationAuditSnapshot> auditEntries
     List<CausalClaim> causalClaims
     boolean complete
     List<String> blockers
@@ -4075,6 +4334,7 @@ final class LiveJiraGateway implements JiraDataProvider {
             new IssueRelationSnapshot(
                 issueId: number(record.issueId, 'issueId'),
                 issueTypeId: number(record.issueTypeId, 'issueTypeId'),
+                projectId: record.projectId == null ? null : number(record.projectId, 'projectId'),
                 issueKey: record.issueKey == null ? null : String.valueOf(record.issueKey),
                 summary: record.summary == null ? null : String.valueOf(record.summary),
                 issueTypeName: record.issueTypeName == null ? null : String.valueOf(record.issueTypeName),
@@ -4592,6 +4852,7 @@ final class DoctorLiveAccess {
                 records.add([
                     issueId: issue.getId(),
                     issueTypeId: Long.parseLong(issue.getIssueType().getId()),
+                    projectId: issue.getProjectId(),
                     issueKey: issue.getKey(),
                     summary: issue.getSummary(),
                     issueTypeName: issue.getIssueType().getName(),
@@ -4647,12 +4908,49 @@ final class DoctorLiveAccess {
                     service.class.name == className) {
                     return reader.call(service)
                 }
+                // Automation services are Spring beans, not necessarily exported OSGi services.
+                Class<?> applicationContext = pluginKey == 'com.codebarrel.addons.automation' ?
+                    (Class<?>) InvokerHelper.invokeMethod(loader, 'loadClass',
+                        'org.springframework.context.ApplicationContext') : null
+                if (applicationContext != null && applicationContext.isInstance(service)) {
+                    Map<?, ?> beans = (Map<?, ?>) applicationContext.getMethod(
+                        'getBeansOfType', Class, Boolean.TYPE, Boolean.TYPE)
+                        .invoke(service, componentClass, false, false)
+                    if (beans.size() == 1) return reader.call(beans.values().iterator().next())
+                    if (beans.size() > 1) throw new IllegalStateException('Ambiguous Automation service')
+                }
             } finally {
                 InvokerHelper.invokeMethod(
                     context, 'ungetService', [reference] as Object[])
             }
         }
         null
+    }
+
+    @CompileDynamic
+    static Object withAutomationService(String api, Closure<?> reader) {
+        ApplicationUser actor = ComponentAccessor.getJiraAuthenticationContext().getLoggedInUser()
+        if (actor == null || !ComponentAccessor.getGroupManager().isUserInGroup(actor, 'jira-administrators')) {
+            throw new SecurityException('Jira administrators only')
+        }
+        if (!(api in ['com.codebarrel.automation.api.service.AutomationConfigService',
+            'com.codebarrel.automation.api.service.AuditService'])) throw new IllegalArgumentException('Unsupported read API')
+        withPluginService('com.codebarrel.addons.automation', api, { service ->
+            ClassLoader loader = ComponentAccessor.getPluginAccessor()
+                .getPlugin('com.codebarrel.addons.automation').getClassLoader()
+            Object tenant = loader.loadClass('com.codebarrel.jira.NativeTenant').getField('GLOBAL_TENANT').get(null)
+            reader.call(service, tenant)
+        })
+    }
+
+    @CompileDynamic
+    static Object automationAuditFilter(Long ruleId, java.time.Instant from, java.time.Instant to) {
+        ClassLoader loader = ComponentAccessor.getPluginAccessor()
+            .getPlugin('com.codebarrel.addons.automation').getClassLoader()
+        Class<?> filter = loader.loadClass('com.codebarrel.automation.api.audit.AuditItemFilter')
+        filter.getConstructor(Set, Long, Set, java.time.LocalDate, java.time.LocalDate,
+            java.time.Instant, java.time.Instant).newInstance([
+                Collections.emptySet(), ruleId, Collections.emptySet(), null, null, from, to] as Object[])
     }
 
     private static String incompleteStructureReason(int unresolvedCreatorReferences,
@@ -5545,7 +5843,9 @@ LiveJiraGateway doctorJira = new LiveJiraGateway({ Collection<Long> issueIds ->
     DoctorLiveAccess.readIssues(issueService, customFieldManager,
         authenticationContext.getLoggedInUser(), issueIds)
 })
-LiveAutomationProvider doctorAutomation = new LiveAutomationProvider(null, null)
+DcAutomationProvider doctorAutomation = new DcAutomationProvider(
+    { String api, Closure<?> reader -> DoctorLiveAccess.withAutomationService(api, reader) },
+    { Long ruleId, java.time.Instant from, java.time.Instant to -> DoctorLiveAccess.automationAuditFilter(ruleId, from, to) })
 ProposalSource doctorProposals = { ignored ->
     ReadResult.unavailable('Repair proposal discovery is not proven on this instance')
 } as ProposalSource

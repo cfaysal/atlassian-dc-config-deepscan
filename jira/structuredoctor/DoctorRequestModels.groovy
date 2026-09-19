@@ -41,6 +41,7 @@ class DoctorAnalysis {
     HierarchyAnalysis hierarchy
     DuplicateAnalysis duplicates
     AutomationAnalysis automation
+    List<AutomationAuditSnapshot> auditEntries
     List<CausalClaim> causalClaims
     boolean complete
     List<String> blockers

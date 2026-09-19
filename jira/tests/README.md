@@ -196,6 +196,18 @@ see. More than those two is a real finding.
 
 ### Structure Doctor report regression
 
+`structureIssueDoctor.liveAutomation.tests.groovy` exercises the read-only Data Center
+adapter with synthetic service contracts: project scope and query budget, rule deduplication,
+opaque actions, service/permission failures, audit pagination and detail reads, association
+coverage, inconsistent totals, retention, and fixed time-window validation. No Jira service
+is called and no action payload is executed. These contracts do not replace a target-instance
+integration run.
+
+`node --test tools/tests/structure-doctor-browser.tests.mjs` re-executes the production browser
+script in the same document global context, including full response replacement. It covers
+Structure A -> B -> Plan -> A and HTTP-error retry. A real-browser synthetic-server run also
+confirmed four POSTs and no JavaScript error through the A -> B -> Plan -> A cycle.
+
 `structureIssueDoctor.renderer.tests.groovy` exercises the real Jira-record mapper, hierarchy
 and duplicate analyzers, and report renderer with synthetic records. Compile all
 `jira/structuredoctor/*.groovy` files using Groovy 3.0.21 plus `groovy-json`, then run this

@@ -103,7 +103,7 @@ ${blockers(analysis.blockers)}
 <details open><summary>Datenquellen und Prüfgrenzen</summary>${report.coverageTable()}</details>
 <details open><summary>Hierarchie-Hinweise</summary>${analysis.hierarchy?.complete ? '' : '<p class="blockers">Hierarchie nicht vollständig geprüft. Aufgeführte Hinweise sind ein Teilergebnis.</p>'}<div>${hierarchyItems ?: '<p>Keine Hinweise in dieser Anzeige. Bei unvollständiger Prüfung ist das keine Entwarnung.</p>'}</div></details>
 <details open><summary>Duplikate: Vorkommen vergleichen und Auswahl treffen</summary>${analysis.duplicates?.complete ? '' : '<p class="blockers">Duplikate nicht vollständig geprüft. Die Anzeige kann unvollständig sein.</p>'}<div>${duplicateItems ?: '<p>Keine Duplikatgruppen in dieser Anzeige. Der Anzeigefilter und die Lesedeckung sind zu beachten.</p>'}</div></details>
-<details open><summary>Automation-Prüfung</summary>${automationStatus}<ul>${automationItems}</ul></details>
+<details open><summary>Automation-Prüfung</summary>${automationStatus}${DoctorAutomationRenderer.evidence(report)}<ul>${automationItems}</ul></details>
 <details><summary>Ursachen und Beleglage</summary><ul>${claims ?: '<li>Keine vollständige Ursachenkette belegt.</li>'}</ul></details>
 ${visibleDuplicates ? '<button id="planButton" type="button">Duplikatauswahl prüfen</button>' : ''}</section>"""
     }
@@ -132,6 +132,7 @@ ${visibleDuplicates ? '<button id="planButton" type="button">Duplikatauswahl pr�
 
     private static String browserScript() {
         '''
+(() => {
 const post = async (endpoint, payload) => {
   const response = await fetch(window.location.pathname.replace(/structureIssueDoctor(?:Analyze|Plan)?\\/?$/, endpoint), {
     method: 'POST', credentials: 'same-origin',
@@ -203,6 +204,7 @@ if (planButton) planButton.addEventListener('click', async () => {
     planButton.disabled = false;
   }
 });
+})();
 '''
     }
 }

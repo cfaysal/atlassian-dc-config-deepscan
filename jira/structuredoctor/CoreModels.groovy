@@ -46,6 +46,7 @@ class OccurrenceSnapshot {
 class IssueRelationSnapshot {
     long issueId
     long issueTypeId
+    Long projectId
     String issueKey
     String summary
     String issueTypeName
