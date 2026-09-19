@@ -503,7 +503,7 @@ Automation audit window is 30 days.
 ### Single-file ScriptRunner installation
 
 Install only `dist/structuredoctor/structureIssueDoctor.groovy`. It is generated from the
-maintained controller plus all 33 files in `jira/structuredoctor/` and must not be edited by
+maintained controller plus all 35 files in `jira/structuredoctor/` and must not be edited by
 hand.
 
 1. In a configured ScriptRunner Script Root, create the `structuredoctor` folder.
@@ -541,6 +541,27 @@ Planning accepts only snapshot, finding-group, retain-occurrence, and selected p
 identifiers. JQL, generator parameters, field values, scripts, and rule configuration are
 rejected at the HTTP boundary. Duplicate repair requires the administrator to choose exactly
 which physical occurrence remains. Every unselected finding is ignored.
+
+### Reading the analysis report
+
+Each hierarchy observation identifies the work item by key, escaped summary and type. It
+compares the actual Structure parent/path with the permission-checked Jira parent and shows
+the configured parent level, provenance and physical row. Missing display metadata is named
+explicitly; the renderer never performs extra privileged reads. `ORPHAN` is presented as an
+unassigned-parent observation, not as proof that Jira requires a parent. Each observation has
+its own explanatory investigation step, not a nonfunctional repair checkbox.
+
+Only duplicate groups offer opt-in **De-Dupe** controls. No occurrence is selected by default.
+Disabling a group clears its retained occurrence and permanent-row selections; retaining a
+permanent row excludes its removal. The page differentiates missing Automation reads from a
+successful check with no findings and retains the Structure, key filter and audit window.
+
+The live repair-proposal reader is still unavailable, and Core Apply remains disabled. The
+selection checks plan prerequisites but cannot deliver an executable live repair. Live
+Automation rule/audit integration also remains unavailable; the existing explicit JSON
+fallback is separate from it. Report usability changes do not complete these integrations.
+The single-file artifact still needs compilation and acceptance on the target ScriptRunner
+classpath. Offline checks and a synthetic browser run are not that acceptance.
 
 Every POST endpoint requires `application/json`. Plan, Apply, and the remaining POST endpoints
 reject bodies larger than 64 KiB before parsing. Analyze permits up to 22 MiB so that two

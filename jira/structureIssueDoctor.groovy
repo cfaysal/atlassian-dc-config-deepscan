@@ -304,6 +304,9 @@ final class DoctorLiveAccess {
                 records.add([
                     issueId: issue.getId(),
                     issueTypeId: Long.parseLong(issue.getIssueType().getId()),
+                    issueKey: issue.getKey(),
+                    summary: issue.getSummary(),
+                    issueTypeName: issue.getIssueType().getName(),
                     nativeParentId: nativeParentId,
                     leadingParentIds: candidates,
                     revisions: [

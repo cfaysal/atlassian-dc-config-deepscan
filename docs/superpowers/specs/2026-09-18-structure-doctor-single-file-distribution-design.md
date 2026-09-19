@@ -6,10 +6,11 @@
 
 ## Problem
 
-The maintained Structure Doctor consists of one ScriptRunner REST controller and 33 focused
+The maintained Structure Doctor consists of one ScriptRunner REST controller and 35 focused
 Core source files. That layout is appropriate for development and testing, but ScriptRunner's
 Script Editor has no bulk directory import. A Jira administrator with UI access only would
-otherwise have to create and paste 34 files individually.
+otherwise have to create and paste 36 files individually. The two report-rendering helpers
+were added on 2026-09-20; the distribution still requires only one paste.
 
 The deployable form must therefore be one Groovy file without turning the maintained source
 back into a hand-edited, multi-thousand-line monolith.

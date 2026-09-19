@@ -46,6 +46,9 @@ class OccurrenceSnapshot {
 class IssueRelationSnapshot {
     long issueId
     long issueTypeId
+    String issueKey
+    String summary
+    String issueTypeName
     Long nativeParentId
     List<Long> leadingParentIds
     Map<String, String> revisions

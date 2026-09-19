@@ -42,7 +42,7 @@ function expectedBody(file) {
 }
 
 test('bundles the exact maintained sources deterministically', () => {
-  assert.equal(modules.length, 33, 'the maintained module inventory changed')
+  assert.equal(modules.length, 35, 'the maintained module inventory changed')
   const dir = mkdtempSync(join(tmpdir(), 'structure-doctor-bundle-'))
   try {
     const first = join(dir, 'first.groovy')

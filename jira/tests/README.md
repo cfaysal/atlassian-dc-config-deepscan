@@ -194,5 +194,20 @@ see. More than those two is a real finding.
 
 ## Last recorded run
 
+### Structure Doctor report regression
+
+`structureIssueDoctor.renderer.tests.groovy` exercises the real Jira-record mapper, hierarchy
+and duplicate analyzers, and report renderer with synthetic records. Compile all
+`jira/structuredoctor/*.groovy` files using Groovy 3.0.21 plus `groovy-json`, then run this
+suite with the compiled directory on the classpath, alongside the existing Doctor suites.
+An optional JVM property `previewOutput` writes the synthetic HTML for a localhost browser
+check. This is a development artifact, not customer data or a deployment.
+
+Checks cover key/type/title display and escaping, actual versus expected parent, optional
+parent semantics, honest incomplete-source reporting, duplicate-only opt-in controls,
+preserved form values, context-relative work-item links, filtering and unchanged repair
+fingerprints when only display metadata changes. Browser acceptance must additionally check
+retain/remove exclusion, cleared selections on ignored groups, and the actual POST payload.
+
 2026-08-27: 353 assertions green, parse check green, compiled clean against Jira 11.3.8 with
 ScriptRunner 10.14.0, static type check at the expected two entry-point errors.

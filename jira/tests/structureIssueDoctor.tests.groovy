@@ -63,7 +63,7 @@ if (endpoint.isFile()) {
         !source.contains('STRUCTURE_AND_ISSUE_REQUIRED') && renderer.isFile() &&
             renderer.getText('UTF-8').contains('Work-Item-Key (optional)'))
     ok('new Core Apply is visibly disabled',
-        renderer.isFile() && renderer.getText('UTF-8').contains('Apply is disabled'))
+        renderer.isFile() && renderer.getText('UTF-8').contains('Automatische Reparaturen sind deaktiviert'))
 
     ok('global Jira hierarchy is read through the proven Roadmaps API',
         source.contains('com.atlassian.rm.portfolio.publicapi.hierarchy.ExportedHierarchyLevelApi') &&

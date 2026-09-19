@@ -232,7 +232,7 @@ DoctorRenderer renderer = new DoctorRenderer()
 String page = renderer.render(application.listStructures(), analysis, null)
 ok('customer structure name escaped', page.contains('&lt;Portfolio&gt;'))
 ok('raw customer structure name absent', !page.contains('<Portfolio>'))
-ok('apply visibly disabled', page.contains('Apply is disabled'))
+ok('apply visibly disabled', page.contains('Automatische Reparaturen sind deaktiviert'))
 ok('analysis and planning endpoints present',
     page.contains('structureIssueDoctorAnalyze') && page.contains('structureIssueDoctorPlan'))
 ok('issue key is optional', page.contains('optional'))

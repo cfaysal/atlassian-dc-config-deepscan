@@ -616,4 +616,28 @@ Focused helper classes belong under `jira/structuredoctor/`. Tests and synthetic
 
 ## Implementation gate
 
+### Report usability correction, 2026-09-20
+
+The reported LIVE analysis displayed finding codes without identifying the affected work
+items. The presentation now carries the key, summary and type from the existing
+permission-checked Jira read through to the report. Each hierarchy observation compares
+Structure parent/path, native Jira parent, configured parent level, source and physical row.
+Its own explanation and investigation step must remain distinct from an executable repair.
+An absent parent alone is not proof of invalid Jira data or a mandatory-parent rule.
+
+Hierarchy observations have no selection checkbox until an actual planner consumes those
+selections. Duplicate selection remains opt-in with an explicit retained occurrence;
+disabling a group clears every dependent choice. Retained permanent rows cannot be selected
+for removal. Unknown Automation sources must read as not checked, not as no conflicts.
+Display metadata does not participate in the repair planning fingerprint.
+
+This correction is not acceptance of the full Core. The live Automation readers, live
+repair-proposal discovery and Core mutation infrastructure remain unwired/disabled. The
+JSON Automation evidence fallback remains available. Actual target-classpath compilation,
+live end-to-end acceptance and the separate repair safety proofs are still required.
+
+Local evidence: synthetic mapper/analyzer/renderer regression, complete offline Core suites,
+single-file generation/security checks, and browser selection/payload verification. No
+customer Jira or Structure configuration is modified by this correction.
+
 The earlier De-Dupe implementation plan does not cover this approved Core scope and must not be executed. A replacement plan may be written only after this specification is reviewed. No implementation, deployment, Jira mutation, Structure mutation, hierarchy mutation, or Automation mutation is authorized by this document.

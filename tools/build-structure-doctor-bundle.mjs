@@ -47,8 +47,8 @@ function discoverSources() {
     })
 
   if (!statSync(controllerPath).isFile()) throw new Error('Controller is not a regular file')
-  if (modulePaths.length !== 33) {
-    throw new Error(`Expected 33 Structure Doctor modules, found ${modulePaths.length}`)
+  if (modulePaths.length !== 35) {
+    throw new Error(`Expected 35 Structure Doctor modules, found ${modulePaths.length}`)
   }
   return { controllerPath, modulePaths }
 }

@@ -33,6 +33,9 @@ final class LiveJiraGateway implements JiraDataProvider {
             new IssueRelationSnapshot(
                 issueId: number(record.issueId, 'issueId'),
                 issueTypeId: number(record.issueTypeId, 'issueTypeId'),
+                issueKey: record.issueKey == null ? null : String.valueOf(record.issueKey),
+                summary: record.summary == null ? null : String.valueOf(record.summary),
+                issueTypeName: record.issueTypeName == null ? null : String.valueOf(record.issueTypeName),
                 nativeParentId: record.nativeParentId == null ? null :
                     number(record.nativeParentId, 'nativeParentId'),
                 leadingParentIds: parents,
