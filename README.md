@@ -500,6 +500,22 @@ and explicitly chooses **Structure analysieren**. A work-item key is optional an
 the displayed result; it never limits the snapshot used for safety decisions. The default
 Automation audit window is 30 days.
 
+### Single-file ScriptRunner installation
+
+Install only `dist/structuredoctor/structureIssueDoctor.groovy`. It is generated from the
+maintained controller plus all 33 files in `jira/structuredoctor/` and must not be edited by
+hand.
+
+1. In a configured ScriptRunner Script Root, create the `structuredoctor` folder.
+2. Create `structureIssueDoctor.groovy` in that folder.
+3. Paste the complete generated file and save it.
+4. Configure or rescan the REST endpoint from
+   `structuredoctor/structureIssueDoctor.groovy`.
+
+Do not install the modular sources or either development probe. Maintainers rebuild the file
+with `node tools/build-structure-doctor-bundle.mjs` and verify that the committed artifact is
+current with `node tools/build-structure-doctor-bundle.mjs --check`.
+
 The analysis reports every source separately as `COMPLETE`, `INCOMPLETE`, `FAILED`, or
 `UNAVAILABLE`. A missing installed API therefore remains visible and cannot be mistaken for
 an empty, healthy configuration. The hierarchy behind `PortfolioHierarchy.jspa` and Jira
