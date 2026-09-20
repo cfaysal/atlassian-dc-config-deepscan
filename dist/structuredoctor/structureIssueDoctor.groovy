@@ -40,7 +40,7 @@
  * INPUT jira/structuredoctor/LiveJiraGateway.groovy
  * INPUT jira/structuredoctor/LiveRepairInfrastructure.groovy
  * INPUT jira/structuredoctor/LiveStructureGateway.groovy
- * INPUT_SHA256 82e3fae81ba73ab75b60b0577c168ddef75fcbfc0cd48241ea8a3da6bf387bd5
+ * INPUT_SHA256 12a3f6a2088e37b0f54fb96963db126152a431f544436b3eab3cb797efac57f4
  */
 
 import com.almworks.jira.structure.api.StructureComponents
@@ -3717,7 +3717,7 @@ final class DoctorReportSupport {
     }
 
     String path(List<Long> parents, long childId) {
-        ((parents ?: []) + [childId]).collect { issue(it) }.join(' <span aria-hidden="true"> → </span> ')
+        ((parents ?: []) + [childId]).collect { issue(it) }.join(' <span aria-hidden="true"> &gt; </span> ')
     }
 
     String structureParent(Long id) {

@@ -42,7 +42,7 @@ final class DoctorReportSupport {
     }
 
     String path(List<Long> parents, long childId) {
-        ((parents ?: []) + [childId]).collect { issue(it) }.join(' <span aria-hidden="true"> → </span> ')
+        ((parents ?: []) + [childId]).collect { issue(it) }.join(' <span aria-hidden="true"> &gt; </span> ')
     }
 
     String structureParent(Long id) {

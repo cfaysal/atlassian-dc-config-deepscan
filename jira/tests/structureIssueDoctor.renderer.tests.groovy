@@ -61,6 +61,16 @@ check('no selection is prechecked', !(page =~ /<input[^>]+\schecked(?:\s|>)/).fi
 check('selected structure is preserved', page.contains('value="9" selected'))
 check('audit window is preserved', page.contains('max="365" value="7"'))
 check('issue link has safe context-relative destination', page.contains('href="../../../../browse/DEMO-3"'))
+def report = new DoctorReportSupport(analysis)
+String structurePath = report.path([1L, 2L], 3L)
+check('path separators use an HTML-encoded ASCII chevron',
+    (structurePath =~ /<span aria-hidden="true"> &gt; <\/span>/).count == 2)
+check('path separator survives a Latin-1 encoding round trip',
+    new String(structurePath.getBytes('ISO-8859-1'), 'ISO-8859-1') == structurePath)
+check('path keeps all work-item links in order',
+    structurePath.indexOf('DEMO-1') < structurePath.indexOf('DEMO-2') &&
+        structurePath.indexOf('DEMO-2') < structurePath.indexOf('DEMO-3'))
+check('root-only path has no separator', report.path([], 1L) == report.issue(1L))
 def incomplete = analysis.copyWith(snapshot: snapshot.copyWith(complete: false),
     hierarchy: new HierarchyAnalysis(findings: [], complete: false, blockers: ['jira-hierarchy']),
     duplicates: new DuplicateAnalysis(groups: [], findings: [], complete: false, blockers: ['structure-snapshot']),
