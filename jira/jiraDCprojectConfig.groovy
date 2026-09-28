@@ -1473,7 +1473,7 @@ class Render {
         }
         for (Nd branch : branches) {
             out.append(recordOpen(0, expandAll))
-            out.append(tableHeading(Pc.orNa(branch.label), 0, branch.countDescendants()))
+            out.append(tableHeading(branch, 0))
             emitTables(branch.children, 0, branch.kind, expandAll, out)
             out.append("</details>")
         }
@@ -1568,7 +1568,7 @@ class Render {
              * the one table that happened to follow the heading. */
             int level = depth + 1
             out.append(recordOpen(level, expandAll))
-            out.append(tableHeading(Pc.orNa(member.label), level, member.countDescendants()))
+            out.append(tableHeading(member, level))
             emitTables(member.children, level, member.kind, expandAll, out)
             out.append("</details>")
         }
@@ -1596,7 +1596,7 @@ class Render {
      * heading element inside it, so the document still has an outline for anyone
      * navigating by structure. Capped at h6 because HTML has no deeper heading and a
      * fabricated one would not be one. */
-    private static String tableHeading(String label, int depth, int items) {
+    private static String tableHeading(Nd node, int depth) {
         int level = 4 + depth
         String tag = "h" + String.valueOf(level > 6 ? 6 : level)
         StringBuilder out = new StringBuilder()
@@ -1604,9 +1604,66 @@ class Render {
         out.append(String.valueOf(depth > 2 ? 2 : depth)).append("\">")
         out.append("<span class=\"twisty tw-closed\">&#9656;</span>")
         out.append("<span class=\"twisty tw-open\">&#9662;</span>")
-        out.append("<").append(tag).append(">").append(Pc.html(label))
-        out.append(" <span class=\"muted\">").append(Pc.plural(items, "item")).append("</span>")
-        out.append("</").append(tag).append("></summary>")
+        out.append("<").append(tag).append(">").append(Pc.html(Pc.orNa(node.label)))
+        out.append(" <span class=\"muted\">").append(Pc.plural(node.countDescendants(), "item")).append("</span>")
+        out.append("</").append(tag).append(">")
+        /* A container is a node like any other: the tree prints its value, state,
+         * id, link and notes beside its label, and a heading that showed only the
+         * label made the table the poorer of two views of the same data. Inline
+         * after the heading element, so the outline stays a list of names. */
+        if (node.value != null) {
+            out.append(" <span class=\"node-value\">")
+            out.append(valueHtml(node.value, SECTION_VALUE_CLAMP)).append("</span>")
+        }
+        out.append(tableState(node))
+        if (node.id != null) {
+            out.append(" <span class=\"node-id mono\">id ").append(Pc.html(node.id)).append("</span>")
+        }
+        out.append(tableLink(node))
+        out.append(tableRemarks(node, true))
+        out.append("</summary>")
+        return out.toString()
+    }
+
+    /* The link of a node as the tree prints it: the deep link under its label, or
+     * the reason there is none. Leading space included, empty when neither. */
+    private static String tableLink(Nd node) {
+        StringBuilder out = new StringBuilder()
+        if (node.deepLink != null) {
+            out.append(" <a href=\"").append(Pc.html(node.deepLink))
+            out.append("\" target=\"_blank\" rel=\"noreferrer\">")
+            out.append(Pc.html(node.linkLabel == null ? "open" : node.linkLabel)).append("</a>")
+        } else if (node.linkNote != null) {
+            out.append(" <span class=\"node-nolink\" title=\"").append(Pc.html(node.linkNote))
+            out.append("\">no link</span>")
+        }
+        return out.toString()
+    }
+
+    /* The state badge, only for a node that was not read. */
+    private static String tableState(Nd node) {
+        if (node.isReadable()) {
+            return ""
+        }
+        StringBuilder out = new StringBuilder()
+        out.append(" <span class=\"state state-").append(Pc.html(node.state)).append("\">")
+        out.append(Pc.html(stateLabel(node.state))).append("</span>")
+        return out.toString()
+    }
+
+    /* Diagnostics and notes, muted beneath the value. Spans, not divs: a heading
+     * lives in a summary, which may only hold phrasing content. withDiagnostics is
+     * false where the diagnostics already stand in for a missing value. */
+    private static String tableRemarks(Nd node, boolean withDiagnostics) {
+        StringBuilder out = new StringBuilder()
+        if (withDiagnostics) {
+            for (String entry : node.diagnostics) {
+                out.append("<span class=\"node-diag table-remark\">").append(Pc.html(entry)).append("</span>")
+            }
+        }
+        for (String entry : node.notes) {
+            out.append("<span class=\"node-note table-remark\">").append(Pc.html(entry)).append("</span>")
+        }
         return out.toString()
     }
 
@@ -1636,9 +1693,22 @@ class Render {
             out.append("<th class=\"col-level\">")
             out.append(Pc.html(levelHeader(chains, level, ownerKind))).append("</th>")
         }
+        /* A column that is empty on every row says nothing and reads like a
+         * measurement, so State and the link column appear only when some row in
+         * this table has something to put there. */
+        boolean anyState = false
+        boolean anyLink = false
+        for (Nd row : rows) {
+            anyState = anyState || !row.isReadable()
+            anyLink = anyLink || row.deepLink != null || row.linkNote != null
+        }
         out.append("<th class=\"col-value\">Value</th>")
-        out.append("<th class=\"col-state\">State</th>")
-        out.append("<th class=\"col-link\">In Jira</th>")
+        if (anyState) {
+            out.append("<th class=\"col-state\">State</th>")
+        }
+        if (anyLink) {
+            out.append("<th class=\"col-link\">In Jira</th>")
+        }
         out.append("</tr></thead><tbody>")
         for (int i = 0; i < rows.size(); i++) {
             Nd row = rows.get(i)
@@ -1664,26 +1734,25 @@ class Render {
              * apart from a value nobody managed to read, which is the distinction
              * this whole report rests on. */
             String cell = valueHtml(row.value)
-            if (cell.isEmpty() && !row.diagnostics.isEmpty()) {
+            boolean diagnosed = cell.isEmpty() && !row.diagnostics.isEmpty()
+            if (diagnosed) {
                 cell = valueHtml(String.join("; ", row.diagnostics))
             }
             out.append("<td class=\"col-value\">")
-            out.append(cell.isEmpty() ? Pc.html(Pc.NA) : cell).append("</td>")
-            out.append("<td class=\"col-state\">")
-            if (!row.isReadable()) {
-                out.append("<span class=\"state state-").append(Pc.html(row.state)).append("\">")
-                out.append(Pc.html(stateLabel(row.state))).append("</span>")
+            out.append(cell.isEmpty() ? Pc.html(Pc.NA) : cell)
+            if (row.id != null) {
+                out.append(" <span class=\"node-id mono\">id ").append(Pc.html(row.id)).append("</span>")
             }
-            out.append("</td><td class=\"col-link\">")
-            if (row.deepLink != null) {
-                out.append("<a href=\"").append(Pc.html(row.deepLink))
-                out.append("\" target=\"_blank\" rel=\"noreferrer\">")
-                out.append(Pc.html(row.linkLabel == null ? "open" : row.linkLabel)).append("</a>")
-            } else if (row.linkNote != null) {
-                out.append("<span class=\"node-nolink\" title=\"").append(Pc.html(row.linkNote))
-                out.append("\">no link</span>")
+            /* A value does not make the reason of a failed read any less true, and a
+             * note belongs at its node, not only in the card at the top. */
+            out.append(tableRemarks(row, !diagnosed)).append("</td>")
+            if (anyState) {
+                out.append("<td class=\"col-state\">").append(tableState(row).trim()).append("</td>")
             }
-            out.append("</td></tr>")
+            if (anyLink) {
+                out.append("<td class=\"col-link\">").append(tableLink(row).trim()).append("</td>")
+            }
+            out.append("</tr>")
         }
         out.append("</tbody></table>")
         return out.toString()
@@ -2227,6 +2296,9 @@ summary.table-head:hover { background: var(--surface-subtle); }
 .table-head.lvl-1 h5 { font-size: 13px; }
 .table-head.lvl-2 h6 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
 details.rec > table.flat { margin-bottom: 4px; }
+/* Notes and diagnostics in a table sit under the value they belong to, not indented
+   to the tree's twisty column. */
+.table-remark { display: block; margin: 2px 0 0; }
 .section-value, .node-value, .linknote, table.flat td, .node-diag {
     overflow-wrap: anywhere; word-break: break-word;
 }

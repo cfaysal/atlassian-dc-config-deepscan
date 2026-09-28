@@ -2099,6 +2099,96 @@ ok("and no longer carries a hard-coded 500 for a throw out of the save",
     !endpointCode.contains(
         "refuse(500, \"write\", \"The page could not be written: \" + Cx.errorDetail(error))"))
 
+/* ---- OP-1458: the table view carries what the tree carries --------------- */
+
+/* A readable node with children used to become a heading that showed only its
+ * label and a count. Everything else the tree prints at that node - its value, its
+ * id, its link, its notes - was simply not in the table view, and neither were the
+ * notes of any row. These build the trees directly and look at the node itself:
+ * the summary of a heading, the row of a value. */
+def op1458View = { String whole -> whole.substring(whole.indexOf("<div class=\"view-table hidden\">")) }
+def op1458Head = { String html, String label ->
+    int at = html.indexOf(">" + label + " <span class=\"muted\">")
+    if (at < 0) { return "" }
+    int start = html.lastIndexOf("<summary", at)
+    int end = html.indexOf("</summary>", at)
+    return start < 0 || end < 0 ? "" : html.substring(start, end)
+}
+def op1458Row = { String html, String marker ->
+    int at = html.indexOf(marker)
+    if (at < 0) { return "" }
+    int start = html.lastIndexOf("<tr>", at)
+    int end = html.indexOf("</tr>", at)
+    return start < 0 || end < 0 ? "" : html.substring(start, end)
+}
+
+Report ovReport = new Report()
+Nd ovSection = ovReport.section("projectDetails", "Details")
+Nd ovLead = Nd.of("projectLead", "Lead").val("Jane (jdoe)").note("Lead is <b>inactive</b> & kept")
+ovLead.add(Nd.of("userEmail", "E-mail").val("jane@example.com"))
+ovSection.add(ovLead)
+Nd ovType = Nd.of("issueType", "Sub-task").val("sub-task").ident("10003")
+    .link("https://confluence.example.com/pages/viewpage.action?pageId=10003", "unused")
+    .linkAs("edit")
+ovType.add(Nd.of("issueTypeDescription", "Description").val("A small piece of work"))
+ovSection.add(ovType)
+Nd ovScreen = Nd.of("screen", "Default Screen").val("1 tab").link(null, "Maintained in the screen scheme")
+ovScreen.add(Nd.of("screenTab", "Field Tab").val("5 fields"))
+ovSection.add(ovScreen)
+ovSection.add(Nd.of("projectCategory", "Category").val("Internal").note("Set by the migration"))
+ovSection.add(Nd.of("projectAvatar", "Avatar").val("default").failed("AvatarManager threw"))
+String ovHtml = op1458View(Render.html(ovReport, params, false))
+
+String ovLeadHead = op1458Head(ovHtml, "Lead")
+ok("OP-1458 a container heading shows its value", ovLeadHead.contains("Jane (jdoe)"))
+ok("OP-1458 and stays a clickable heading", ovLeadHead.startsWith("<summary class=\"table-head"))
+ok("OP-1458 a container heading shows its notes, escaped",
+    ovLeadHead.contains("Lead is &lt;b&gt;inactive&lt;/b&gt; &amp; kept"))
+ok("OP-1458 no raw markup from a note reaches the table view", !ovHtml.contains("<b>inactive"))
+String ovTypeHead = op1458Head(ovHtml, "Sub-task")
+ok("OP-1458 a container heading carries its deep link",
+    ovTypeHead.contains("href=\"https://confluence.example.com/pages/viewpage.action?pageId=10003\""))
+ok("OP-1458 with the link label of the tree", ovTypeHead.contains(">edit</a>"))
+ok("OP-1458 and the id", ovTypeHead.contains("id 10003"))
+ok("OP-1458 and its value", ovTypeHead.contains("sub-task"))
+String ovScreenHead = op1458Head(ovHtml, "Default Screen")
+ok("OP-1458 a container without a link says so", ovScreenHead.contains(">no link</span>"))
+ok("OP-1458 with the reason as the tooltip",
+    ovScreenHead.contains("title=\"Maintained in the screen scheme\""))
+ok("OP-1458 a row shows its note at the row",
+    op1458Row(ovHtml, ">Category<").contains("Set by the migration"))
+String ovAvatarRow = op1458Row(ovHtml, ">Avatar<")
+ok("OP-1458 a failed row with a value keeps the value", ovAvatarRow.contains("default"))
+ok("OP-1458 and shows the diagnostic beside it", ovAvatarRow.contains("AvatarManager threw"))
+ok("OP-1458 and keeps its state", ovAvatarRow.contains("state-unreadable"))
+
+/* A column that is empty on every row is noise that reads like a measurement. */
+Report plainReport = new Report()
+Nd plainSection = plainReport.section("projectDetails", "Details")
+plainSection.add(Nd.of("projectKey", "Key").val("ENT"))
+plainSection.add(Nd.of("projectName", "Name").val("Enterprise"))
+String plainHtml = op1458View(Render.html(plainReport, params, false))
+ok("OP-1458 no State column when every row was read", !plainHtml.contains("<th class=\"col-state\">"))
+ok("OP-1458 no link column when no row has a link", !plainHtml.contains("<th class=\"col-link\">"))
+ok("OP-1458 and no empty cells for them either",
+    !plainHtml.contains("<td class=\"col-state\">") && !plainHtml.contains("<td class=\"col-link\">"))
+ok("OP-1458 Value always stays", plainHtml.contains("<th class=\"col-value\">Value</th>"))
+
+Report linkedReport = new Report()
+Nd linkedSection = linkedReport.section("projectDetails", "Details")
+linkedSection.add(Nd.of("projectKey", "Key").val("ENT"))
+linkedSection.add(Nd.of("projectName", "Name").val("Enterprise").link("https://confluence.example.com/x", "unused"))
+String linkedHtml = op1458View(Render.html(linkedReport, params, false))
+ok("OP-1458 one link brings the link column", linkedHtml.contains("<th class=\"col-link\">In Confluence</th>"))
+ok("OP-1458 but not the State column", !linkedHtml.contains("<th class=\"col-state\">"))
+
+Report stateReport = new Report()
+Nd stateSection = stateReport.section("projectDetails", "Details")
+stateSection.add(Nd.of("projectKey", "Key").val("ENT"))
+stateSection.add(Nd.of("projectUrl", "URL").absent("No URL"))
+String stateHtml = op1458View(Render.html(stateReport, params, false))
+ok("OP-1458 one unread row brings the State column", stateHtml.contains("<th class=\"col-state\">State</th>"))
+
 /* ---- result --------------------------------------------------------------- */
 
 println "PASSED: " + passed
