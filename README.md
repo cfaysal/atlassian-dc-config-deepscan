@@ -11,6 +11,7 @@ link to the exact administration screen where it is maintained.
 | Script | Platform | Version |
 | --- | --- | --- |
 | [`jira/jiraDCprojectConfig.groovy`](jira/jiraDCprojectConfig.groovy) | Jira Data Center | 0.3 |
+| [`confluence/confluenceDCspaceConfig.groovy`](confluence/confluenceDCspaceConfig.groovy) | Confluence Data Center | 0.3 |
 | [`confluence/userMacroDeepScan.groovy`](confluence/userMacroDeepScan.groovy) | Confluence Data Center | 4.1.0 |
 | [`confluence/confluenceDCspaceInfo.groovy`](confluence/confluenceDCspaceInfo.groovy) | Confluence Data Center | 0.1 |
 
@@ -163,9 +164,9 @@ out of memory. Two sources, both named at the method that uses them:
 The issue type scheme is linked through `ConfigureOptionSchemes!default.jspa` with `schemeId`
 and `fieldId=issuetype`. The request path is shown in an Atlassian Data Center KB article and
 the parameters are setters of `ConfigureOptionScheme` in the Jira 10.3.0 Javadoc; that the
-alias maps to that class is inferred from its name and package, and stays unverified until it
-is clicked on an instance. Without a scheme id the section falls back to the list of schemes
-and says so.
+alias maps to that class was inferred from its name and package and confirmed by clicking the
+link on a Jira Data Center instance on 2026-09-28. Without a scheme id the section falls back
+to the list of schemes and says so.
 
 ## Export to Confluence
 
