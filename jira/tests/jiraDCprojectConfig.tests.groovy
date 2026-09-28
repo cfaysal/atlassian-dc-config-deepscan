@@ -1552,6 +1552,53 @@ stateSection.add(Nd.of("projectUrl", "URL").absent("No URL"))
 String stateHtml = op1458View(Render.html(stateReport, [:] as LinkedHashMap, false))
 ok("OP-1458 one unread row brings the State column", stateHtml.contains("<th class=\"col-state\">State</th>"))
 
+/* ---- OP-1458: the issue type scheme itself ------------------------------- */
+
+check("OP-1458 the issue type scheme is linked by id", links.issueTypeScheme(10100),
+    "https://jira.example.com/secure/admin/ConfigureOptionSchemes!default.jspa?schemeId=10100&fieldId=issuetype")
+check("OP-1458 no scheme id, no scheme link", links.issueTypeScheme(null), null)
+
+/* ---- OP-1458: a link that repeats an enclosing link is dropped ------------ */
+
+/* A member whose link is the link of something above it sends the reader to a
+ * page they already have one click up. The pass runs once over the finished
+ * report, so every channel sees the same tree. */
+String rpScheme = "https://jira.example.com/secure/admin/EditIssueSecurities!default.jspa?schemeId=10001/scheme"
+Report rpReport = new Report()
+Nd rpSection = rpReport.section("issueSecurityScheme", "Issue security: S").link(rpScheme, "unused")
+Nd rpSame = Nd.of("issueSecurityLevel", "Level: Same").link(rpScheme, null).linkAs("edit level")
+Nd rpDeep = Nd.of("issueSecurityLevelMember", "Deep: Same").link(rpScheme, null)
+rpSame.add(rpDeep)
+Nd rpOwn = Nd.of("issueSecurityLevel", "Level: Own").link("https://jira.example.com/secure/admin/EditIssueSecurities!default.jspa?schemeId=10001/other", null)
+rpSection.add(rpSame).add(rpOwn)
+Report rpMissingReport = new Report()
+rpMissingReport.section("screen", "Screens").link(rpScheme, "unused")
+    .add(Nd.of("screen", "Unlinked screen").link(null, "Maintained in the screen scheme."))
+    .add(Nd.of("screen", "Repeating screen").link(rpScheme, null))
+int rpUnlinkedBefore = rpMissingReport.unlinkedCount()
+
+Report.dropRepeatedLinks(rpReport)
+Report.dropRepeatedLinks(rpMissingReport)
+
+check("OP-1458 a child repeating its parent's link loses it", rpSame.deepLink, null)
+check("OP-1458 and gets no note in its place", rpSame.linkNote, null)
+check("OP-1458 and no link label either", rpSame.linkLabel, null)
+check("OP-1458 a deeper repeat of an ancestor's link is dropped too", rpDeep.deepLink, null)
+check("OP-1458 a child with a link of its own keeps it", rpOwn.deepLink, "https://jira.example.com/secure/admin/EditIssueSecurities!default.jspa?schemeId=10001/other")
+check("OP-1458 the enclosing link itself stays", rpSection.deepLink, rpScheme)
+check("OP-1458 the without-a-deep-link count is unchanged by the pass",
+    rpMissingReport.unlinkedCount(), rpUnlinkedBefore)
+check("OP-1458 which still counts the one genuinely missing link", rpMissingReport.unlinkedCount(), 1)
+
+String rpHtml = Render.html(rpReport, [:] as LinkedHashMap, false)
+ok("OP-1458 a dropped link leaves no no-link marker in the HTML", !rpHtml.contains(">no link</span>"))
+ok("OP-1458 the kept link is in the HTML", rpHtml.contains("https://jira.example.com/secure/admin/EditIssueSecurities!default.jspa?schemeId=10001/other"))
+String rpCsv = Render.csv(rpReport)
+check("OP-1458 the CSV carries the repeated link only on the enclosing row",
+    rpCsv.split(java.util.regex.Pattern.quote(rpScheme), -1).length - 1, 1)
+ok("OP-1458 the JSON carries no dropped link either",
+    !Render.json(rpReport).contains("edit level"))
+
 /* ---- result --------------------------------------------------------------- */
 
 println "PASSED: " + passed

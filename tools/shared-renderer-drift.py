@@ -85,6 +85,14 @@ EXPORT_SHARED = [
     "errorDetail",
 ]
 
+# The pass over the finished report that drops a link repeating an enclosing one
+# (OP-1458). It runs before every channel, so a difference here would make the two
+# products disagree about which links a report shows.
+REPORT_SHARED = [
+    "dropRepeatedLinks",
+    "dropRepeatedLink",
+]
+
 # Intentional differences, each visible and reasoned. A pair is (jira line,
 # other line). Keep this list short: every entry is a place the two products
 # genuinely diverge, and a long list means the guard has stopped guarding.
@@ -300,7 +308,7 @@ def main():
     base_name, base_rel = ENDPOINTS[0]
     base_path = os.path.join(root, base_rel)
     failures = 0
-    strict = TABLE_SHARED + EXPORT_SHARED
+    strict = TABLE_SHARED + EXPORT_SHARED + REPORT_SHARED
 
     for other_name, other_rel in ENDPOINTS[1:]:
         other_path = os.path.join(root, other_rel)
@@ -323,6 +331,7 @@ def main():
 
     print("\nTable renderer: %d function(s) compared." % len(TABLE_SHARED))
     print("Export renderer: %d function(s) compared." % len(EXPORT_SHARED))
+    print("Report pass: %d function(s) compared." % len(REPORT_SHARED))
     print("Renderer identical across %d endpoint(s), %d function(s) compared, "
           "%d declared exception(s)."
           % (len(ENDPOINTS), len(strict), len(ALLOWED) + len(DECLARED)))

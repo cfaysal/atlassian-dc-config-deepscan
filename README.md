@@ -77,8 +77,9 @@ These are the reason the output is worth trusting.
   whose children could not be read look different in the report, and the reason travels with
   the node. An empty section and a broken section never look alike.
 - **A deep link is never guessed.** Every link shape in the file is backed by primary
-  evidence, recorded at the method that builds it. The one shape that could not be evidenced
-  carries no link and says in words where to find the item instead.
+  evidence, recorded at the method that builds it. A link sits only where the configuration
+  is edited: a member whose only page views it, or whose link repeats the link of an
+  enclosing item, carries none.
 - **Grants are resolved through Jira's own scheme type registry**, not through a table of
   type strings kept in the script. What the registry cannot name keeps its raw type and
   parameter: an unresolved id is still true, an invented name would not be.
@@ -159,9 +160,12 @@ out of memory. Two sources, both named at the method that uses them:
   `jira-admin-project-config-plugin` of a running instance. A literal that Jira itself emits
   outranks any documentation page.
 
-One shape could not be evidenced: addressing a single issue type scheme. No parameter for
-`ManageIssueTypeSchemes` appears anywhere in `jira-core` or in the shipped plugins, so that
-node carries no link and names the navigation path instead.
+The issue type scheme is linked through `ConfigureOptionSchemes!default.jspa` with `schemeId`
+and `fieldId=issuetype`. The request path is shown in an Atlassian Data Center KB article and
+the parameters are setters of `ConfigureOptionScheme` in the Jira 10.3.0 Javadoc; that the
+alias maps to that class is inferred from its name and package, and stays unverified until it
+is clicked on an instance. Without a scheme id the section falls back to the list of schemes
+and says so.
 
 ## Export to Confluence
 
