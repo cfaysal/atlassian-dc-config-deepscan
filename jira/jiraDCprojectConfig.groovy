@@ -1616,9 +1616,7 @@ class Render {
             out.append(valueHtml(node.value, SECTION_VALUE_CLAMP)).append("</span>")
         }
         out.append(tableState(node))
-        if (node.id != null) {
-            out.append(" <span class=\"node-id mono\">id ").append(Pc.html(node.id)).append("</span>")
-        }
+        out.append(tableId(node))
         out.append(tableLink(node))
         out.append(tableRemarks(node, true))
         out.append("</summary>")
@@ -1638,6 +1636,15 @@ class Render {
             out.append("\">no link</span>")
         }
         return out.toString()
+    }
+
+    /* The id of a node as the tree prints it. Leading space included, empty when
+     * the node has none. */
+    private static String tableId(Nd node) {
+        if (node.id == null) {
+            return ""
+        }
+        return " <span class=\"node-id mono\">id " + Pc.html(node.id) + "</span>"
     }
 
     /* The state badge, only for a node that was not read. */
@@ -1739,10 +1746,7 @@ class Render {
                 cell = valueHtml(String.join("; ", row.diagnostics))
             }
             out.append("<td class=\"col-value\">")
-            out.append(cell.isEmpty() ? Pc.html(Pc.NA) : cell)
-            if (row.id != null) {
-                out.append(" <span class=\"node-id mono\">id ").append(Pc.html(row.id)).append("</span>")
-            }
+            out.append(cell.isEmpty() ? Pc.html(Pc.NA) : cell).append(tableId(row))
             /* A value does not make the reason of a failed read any less true, and a
              * note belongs at its node, not only in the card at the top. */
             out.append(tableRemarks(row, !diagnosed)).append("</td>")

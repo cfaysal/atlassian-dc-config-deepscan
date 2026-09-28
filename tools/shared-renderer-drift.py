@@ -54,6 +54,7 @@ TABLE_SHARED = [
     "emitTables",
     "recordOpen",
     "tableHeading",
+    "tableId",
     "tableLink",
     "tableState",
     "tableRemarks",
