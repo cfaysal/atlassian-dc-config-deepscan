@@ -2107,20 +2107,17 @@ ok("and no longer carries a hard-coded 500 for a throw out of the save",
  * notes of any row. These build the trees directly and look at the node itself:
  * the summary of a heading, the row of a value. */
 def op1458View = { String whole -> whole.substring(whole.indexOf("<div class=\"view-table hidden\">")) }
-def op1458Head = { String html, String label ->
-    int at = html.indexOf(">" + label + " <span class=\"muted\">")
-    if (at < 0) { return "" }
-    int start = html.lastIndexOf("<summary", at)
-    int end = html.indexOf("</summary>", at)
-    return start < 0 || end < 0 ? "" : html.substring(start, end)
-}
-def op1458Row = { String html, String marker ->
+def op1458Around = { String html, String marker, String open, String close ->
     int at = html.indexOf(marker)
     if (at < 0) { return "" }
-    int start = html.lastIndexOf("<tr>", at)
-    int end = html.indexOf("</tr>", at)
+    int start = html.lastIndexOf(open, at)
+    int end = html.indexOf(close, at)
     return start < 0 || end < 0 ? "" : html.substring(start, end)
 }
+def op1458Head = { String html, String label ->
+    op1458Around(html, ">" + label + " <span class=\"muted\">", "<summary", "</summary>")
+}
+def op1458Row = { String html, String marker -> op1458Around(html, marker, "<tr>", "</tr>") }
 
 Report ovReport = new Report()
 Nd ovSection = ovReport.section("projectDetails", "Details")
