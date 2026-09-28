@@ -1193,6 +1193,36 @@ class Report {
         return total
     }
 
+    /* A link that repeats the link of an enclosing node sends the reader to the
+     * page they already have one level up, so the member carries none: no link,
+     * no note, no label. Run once over the finished report, before any rendering,
+     * so that the tree, the table, the CSV and the JSON all show the same thing.
+     * The note is cleared along with the link, which keeps unlinkedCount meaning
+     * "a link was expected and is unavailable": a dropped repeat was never
+     * unavailable. (OP-1458) */
+    static void dropRepeatedLinks(Report report) {
+        for (Nd section : report.sections) {
+            dropRepeatedLink(section, new ArrayList<String>())
+        }
+    }
+
+    static void dropRepeatedLink(Nd node, List<String> above) {
+        if (node.deepLink != null && above.contains(node.deepLink)) {
+            node.deepLink = null
+            node.linkNote = null
+            node.linkLabel = null
+        }
+        if (node.deepLink != null) {
+            above.add(node.deepLink)
+        }
+        for (Nd child : node.children) {
+            dropRepeatedLink(child, above)
+        }
+        if (node.deepLink != null) {
+            above.remove(above.size() - 1)
+        }
+    }
+
     Map<String, List<String>> notesByText() {
         Map<String, List<String>> out = new LinkedHashMap<String, List<String>>()
         for (Nd node : sections) {
@@ -6478,6 +6508,7 @@ spaceConfig(
     report.sections.add(scan.templates(pageTemplateManager, space))
     report.sections.add(scan.categories(spaceLabelManager, space))
 
+    Report.dropRepeatedLinks(report)
     report.executionMs = System.currentTimeMillis() - started
 
     /* ---- Emit --------------------------------------------------------------- */

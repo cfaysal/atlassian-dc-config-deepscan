@@ -599,7 +599,9 @@ class Dl {
     }
 
     /* Evidence: literal /plugins/servlet/project-config/${project.key}/issuetypes/${issueType.id}
-     * found in a shipped template of the running instance. */
+     * found in a shipped template of the running instance.
+     * No longer linked from the report, see OP-1458: that page only views the
+     * issue type, nothing about it is edited there. Kept for its tests. */
     String projectIssueType(String key, Object issueTypeId) {
         String id = Pc.text(issueTypeId)
         if (id == null) {
@@ -686,6 +688,9 @@ class Dl {
         return value == null ? null : admin("EditIssueSecurities!default.jspa?schemeId=" + Pc.urlQuery(value))
     }
 
+    /* No longer linked from the report, see OP-1458: it opens the page of the
+     * scheme the level sits in, which the scheme's own link already opens. Kept
+     * for its tests. */
     String issueSecurityLevel(Object schemeId, Object levelId) {
         String scheme = Pc.text(schemeId)
         String level = Pc.text(levelId)
@@ -715,22 +720,35 @@ class Dl {
             "&workflowMode=" + (draft ? "draft" : "live"))
     }
 
-    /* The alias ManageIssueTypeSchemes is evidenced in actions.xml, so the screen
-     * itself can be linked. What could NOT be evidenced anywhere in jira-core or in
-     * the shipped plugins is a parameter that preselects one scheme on it.
-     *
-     * The link therefore goes to the list, and its text says "issue type schemes"
-     * rather than "open in Jira". A reader who lands on a list after clicking a
-     * label that promised one scheme concludes the report pointed at the wrong
-     * thing; the imprecise half of a link belongs in the text somebody clicks, not
-     * in a footnote underneath it. */
+    /* Evidence: Atlassian KB "Jira throws java.lang.NumberFormatException: null
+     * when creating Issue type scheme" (Data Center only) shows the request path
+     * /secure/admin/ConfigureOptionSchemes!default.jspa for creating and editing an
+     * issue type scheme. Javadoc Jira 10.3.0:
+     * com.atlassian.jira.web.action.admin.issuetypes.ConfigureOptionScheme extends
+     * AbstractManageIssueTypeOptionsAction, with the fields schemeId and fieldId,
+     * the setters setSchemeId and setFieldId, and doDefault(). Javadoc 10.3.0
+     * constant-values: IssueFieldConstants.ISSUE_TYPE = "issuetype".
+     * NOT evidenced verbatim: that the alias ConfigureOptionSchemes maps to that
+     * class. It is inferred from the matching name and package, so this address is
+     * UNVERIFIED on an instance until the acceptance click. (OP-1458) */
+    String issueTypeScheme(Object schemeId) {
+        String id = Pc.text(schemeId)
+        return id == null ? null : admin("ConfigureOptionSchemes!default.jspa?schemeId=" +
+            Pc.urlQuery(id) + "&fieldId=issuetype")
+    }
+
+    /* The fallback when there is no scheme or no scheme id to address. The alias
+     * ManageIssueTypeSchemes is evidenced in actions.xml and opens the list of
+     * schemes, so the link text says "issue type schemes" rather than "open in
+     * Jira": a reader who lands on a list after clicking a label that promised one
+     * scheme concludes the report pointed at the wrong thing. */
     String issueTypeSchemes() {
         return admin("ManageIssueTypeSchemes.jspa")
     }
 
     String issueTypeSchemeUnavailableNote() {
-        return "Administration > Issues > Issue type schemes. No evidenced URL parameter " +
-            "addresses a single scheme, so this link opens the list."
+        return "Administration > Issues > Issue type schemes. The scheme of this project " +
+            "could not be addressed, so this link opens the list."
     }
 }
 
@@ -1051,6 +1069,36 @@ class Report {
             total += countUnlinked(child)
         }
         return total
+    }
+
+    /* A link that repeats the link of an enclosing node sends the reader to the
+     * page they already have one level up, so the member carries none: no link,
+     * no note, no label. Run once over the finished report, before any rendering,
+     * so that the tree, the table, the CSV and the JSON all show the same thing.
+     * The note is cleared along with the link, which keeps unlinkedCount meaning
+     * "a link was expected and is unavailable": a dropped repeat was never
+     * unavailable. (OP-1458) */
+    static void dropRepeatedLinks(Report report) {
+        for (Nd section : report.sections) {
+            dropRepeatedLink(section, new ArrayList<String>())
+        }
+    }
+
+    static void dropRepeatedLink(Nd node, List<String> above) {
+        if (node.deepLink != null && above.contains(node.deepLink)) {
+            node.deepLink = null
+            node.linkNote = null
+            node.linkLabel = null
+        }
+        if (node.deepLink != null) {
+            above.add(node.deepLink)
+        }
+        for (Nd child : node.children) {
+            dropRepeatedLink(child, above)
+        }
+        if (node.deepLink != null) {
+            above.remove(above.size() - 1)
+        }
     }
 
     Map<String, List<String>> notesByText() {
@@ -3788,10 +3836,11 @@ class Scan {
 
     Nd issueTypeScheme() {
         Nd node = Nd.of("issueTypeScheme", "Issue types")
-        /* The one link shape in this report that could not be evidenced. Rather
-         * than inventing a parameter for ManageIssueTypeSchemes, the node stays
-         * unlinked and says so, and its issue types link to the project page that
-         * does have an evidenced address. */
+        /* The list of schemes and its note are the fallback. Once the scheme is
+         * known, the section links the scheme itself, which is where its issue
+         * types are edited; see Dl.issueTypeScheme for the evidence and for the
+         * one part of it that is still unverified. The issue types below carry no
+         * link of their own: the project's issue type page only views them. */
         node.link(links.issueTypeSchemes(), links.issueTypeSchemeUnavailableNote())
             .linkAs("open issue type schemes")
         return guard(node) { Nd self ->
@@ -3807,6 +3856,10 @@ class Scan {
             }
             self.label = "Issue types: " + Pc.orNa(scheme.getName())
             self.ident(scheme.getId())
+            String schemeLink = links.issueTypeScheme(scheme.getId())
+            if (schemeLink != null) {
+                self.link(schemeLink, null).linkAs("open issue type scheme")
+            }
             if (Pc.text(scheme.getDescription()) != null) {
                 self.val(scheme.getDescription())
             }
@@ -3824,7 +3877,6 @@ class Scan {
                 defaultNode.absent("No default issue type, or it could not be read")
             } else {
                 defaultNode.val(defaultType.getName()).ident(defaultType.getId())
-                defaultNode.link(links.projectIssueType(project.getKey(), defaultType.getId()), null)
             }
             self.add(defaultNode)
 
@@ -3837,7 +3889,6 @@ class Scan {
                 Nd typeNode = Nd.of("issueType", type.getName())
                 typeNode.ident(type.getId())
                 typeNode.val(type.isSubTask() ? "sub-task" : "standard")
-                typeNode.link(links.projectIssueType(project.getKey(), type.getId()), null)
                 if (Pc.text(type.getDescription()) != null) {
                     typeNode.add(Nd.of("issueTypeDescription", "Description").val(type.getDescription()))
                 }
@@ -4738,8 +4789,6 @@ class Scan {
                      * invent leftovers out of its own blind spot. */
                     layer.note("This layer maps an issue type that is not in the " +
                         "issue type scheme of this project.")
-                } else if (name != null) {
-                    layer.link(links.projectIssueType(project.getKey(), issueTypeId), null)
                 }
                 layer.add(workflowNode(workflowManager, entry.getValue()))
                 self.add(layer)
@@ -5331,7 +5380,6 @@ class Scan {
             for (IssueSecurityLevel level : levels) {
                 Nd levelNode = Nd.of("issueSecurityLevel", "Level: " + Pc.orNa(level.getName()))
                 levelNode.ident(level.getId())
-                levelNode.link(links.issueSecurityLevel(scheme.getId(), level.getId()), null)
                 List<String> levelFacts = new ArrayList<String>()
                 if (defaultLevelKnown && defaultLevel != null && level.getId() != null &&
                         level.getId().longValue() == defaultLevel.longValue()) {
@@ -6041,7 +6089,6 @@ class Scan {
                 issueTypeNode.failed("The request type names no issue type.")
             } else if (issueTypeNames.containsKey(issueTypeKey)) {
                 issueTypeNode.val(issueTypeNames.get(issueTypeKey))
-                issueTypeNode.link(links.projectIssueType(project.getKey(), issueTypeKey), null)
             } else if (issueTypesFailure != null) {
                 issueTypeNode.failed("The issue type could not be named: " + issueTypesFailure)
             } else {
@@ -6652,6 +6699,7 @@ projectConfig(
         report.sections.add(serviceDeskSection)
     }
 
+    Report.dropRepeatedLinks(report)
     report.executionMs = System.currentTimeMillis() - started
 
     /* ---- Emit -------------------------------------------------------------- */

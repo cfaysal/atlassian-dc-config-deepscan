@@ -24,6 +24,18 @@ sections below are grouped by endpoint rather than by a single repository versio
   always stay. The CSV, the JSON, the tree view and the Confluence export are unchanged. The
   three new table helpers are identical in both endpoints and are compared by
   `tools/shared-renderer-drift.py`.
+- **A deep link sits only where the configuration is edited.** The Jira issue type section
+  now links the project's issue type scheme itself
+  (`ConfigureOptionSchemes!default.jspa?schemeId=...&fieldId=issuetype`) instead of the list
+  of all schemes; the list stays as the fallback when no scheme id is known. The alias is
+  inferred from the Javadoc class name and is unverified until the first click on an
+  instance. Issue types, the default issue type, workflow layers and a request type's issue
+  type no longer link to the project's issue type page, which only views them, and a security
+  level no longer repeats its scheme's page. In both endpoints a node whose link equals the
+  link of an enclosing node now carries no link and no "no link" marker, applied once to the
+  finished report so the tree, the table, the CSV and the JSON agree. The "without a deep
+  link" count still counts only links that were expected and are unavailable. The pass is
+  compared between the endpoints by `tools/shared-renderer-drift.py`.
 
 ## confluenceDCspaceInfo 0.1
 
