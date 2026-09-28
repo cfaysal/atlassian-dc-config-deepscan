@@ -1212,13 +1212,16 @@ class Report {
             node.linkNote = null
             node.linkLabel = null
         }
-        if (node.deepLink != null) {
-            above.add(node.deepLink)
+        /* The link this node keeps is pushed for its subtree and popped after it,
+         * so a sibling is never compared against another sibling's link. */
+        String kept = node.deepLink
+        if (kept != null) {
+            above.add(kept)
         }
         for (Nd child : node.children) {
             dropRepeatedLink(child, above)
         }
-        if (node.deepLink != null) {
+        if (kept != null) {
             above.remove(above.size() - 1)
         }
     }
