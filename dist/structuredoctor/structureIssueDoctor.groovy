@@ -40,7 +40,7 @@
  * INPUT jira/structuredoctor/LiveJiraGateway.groovy
  * INPUT jira/structuredoctor/LiveRepairInfrastructure.groovy
  * INPUT jira/structuredoctor/LiveStructureGateway.groovy
- * INPUT_SHA256 12a3f6a2088e37b0f54fb96963db126152a431f544436b3eab3cb797efac57f4
+ * INPUT_SHA256 141200063d388798fe7ad45d05e0b8ed29c080e0669045ed300bdca0b047615c
  */
 
 import com.almworks.jira.structure.api.StructureComponents
@@ -2711,7 +2711,7 @@ final class DcAutomationProvider implements AutomationDataProvider {
 
     @Override
     ReadResult<List<AutomationRuleSnapshot>> readRules(AnalysisScope scope) {
-        if (!scope?.projectIds) return ReadResult.incomplete([], 'Automation: Projektumfang nicht vollständig ermittelt')
+        if (!scope?.projectIds) return ReadResult.incomplete([], 'Automation: Projektumfang nicht vollst\u00E4ndig ermittelt')
         try {
             Object result = connection.call(CONFIG_API, { service, tenant ->
                 Map<Long, AutomationRuleSnapshot> rules = [:]
@@ -2731,7 +2731,7 @@ final class DcAutomationProvider implements AutomationDataProvider {
                 }
                 List values = rules.values().take(MAX_RULES).sort { it.ruleId }
                 complete ? ReadResult.complete(values) : ReadResult.incomplete(values,
-                    'Automation-Regeln nur teilweise gelesen: Leselimit, geänderte Revision oder unbekanntes Datenformat')
+                    'Automation-Regeln nur teilweise gelesen: Leselimit, ge\u00E4nderte Revision oder unbekanntes Datenformat')
             })
             result == null ? ReadResult.unavailable('AutomationConfigService im installierten Plugin nicht erreichbar') : result
         } catch (Exception failure) {
@@ -2743,7 +2743,7 @@ final class DcAutomationProvider implements AutomationDataProvider {
     ReadResult<List<AutomationAuditSnapshot>> readAudit(AuditRequest request) {
         if (request == null || request.requestedDays < 1 || request.requestedDays > 365 ||
             !request.issueIds) {
-            return ReadResult.incomplete([], 'Automation-Audit: Vorgangsumfang oder gültiges Zeitfenster fehlt')
+            return ReadResult.incomplete([], 'Automation-Audit: Vorgangsumfang oder g\u00FCltiges Zeitfenster fehlt')
         }
         try {
             Object result = connection.call(AUDIT_API, { service, tenant -> readAuditPages(service, tenant, request) })
@@ -2773,17 +2773,17 @@ final class DcAutomationProvider implements AutomationDataProvider {
             Long previousTotal = null
             while (true) {
                 if (seen.size() >= auditLimit) {
-                    gaps.add('Audit-Leselimit erreicht (' + auditLimit + ' Einträge)'); capped = true; break
+                    gaps.add('Audit-Leselimit erreicht (' + auditLimit + ' Eintr\u00E4ge)'); capped = true; break
                 }
                 long limit = Math.min(AUDIT_PAGE_SIZE, auditLimit - seen.size())
                 Object page = service.getItems(tenant, filter, offset, limit)
                 List items = DcAutomationMapping.list(DcAutomationMapping.property(page, 'items'))
                 long total = CoreAutomationJsonSupport.flexibleLong(DcAutomationMapping.property(page, 'total'), 'total')
                 String pageProblem = null
-                if (total < 0) pageProblem = 'Audit-Gesamtzahl nicht verfügbar'
-                else if (items.size() > limit) pageProblem = 'Audit-Seite überschreitet angefragte Seitengröße'
-                else if (offset + items.size() > total) pageProblem = 'Audit-Seite überschreitet gemeldete Gesamtzahl'
-                else if (previousTotal != null && total != previousTotal) pageProblem = 'Audit-Gesamtzahl zwischen Seiten geändert'
+                if (total < 0) pageProblem = 'Audit-Gesamtzahl nicht verf\u00FCgbar'
+                else if (items.size() > limit) pageProblem = 'Audit-Seite \u00FCberschreitet angefragte Seitengr\u00F6\u00DFe'
+                else if (offset + items.size() > total) pageProblem = 'Audit-Seite \u00FCberschreitet gemeldete Gesamtzahl'
+                else if (previousTotal != null && total != previousTotal) pageProblem = 'Audit-Gesamtzahl zwischen Seiten ge\u00E4ndert'
                 if (pageProblem != null) {
                     gaps.add(pageProblem + ' (' + (previousTotal == null ? '' : 'vorher=' + previousTotal + ', ') +
                         'total=' + total + ', offset=' + offset + ', gelesen=' + items.size() + ', limit=' + limit + ')')
@@ -2805,9 +2805,9 @@ final class DcAutomationProvider implements AutomationDataProvider {
                             gaps.add('Audit-Zeitfilter nicht eingehalten'); capped = true; continue
                         }
                         entries.addAll(normalized.entries)
-                        if (!normalized.complete) { gaps.add('Audit-Vorgangszuordnung unvollständig'); capped = true }
+                        if (!normalized.complete) { gaps.add('Audit-Vorgangszuordnung unvollst\u00E4ndig'); capped = true }
                     } catch (RuntimeException failure) {
-                        gaps.add('Audit-Datenformat nicht vollständig lesbar (' + failure.class.simpleName + ')'); capped = true
+                        gaps.add('Audit-Datenformat nicht vollst\u00E4ndig lesbar (' + failure.class.simpleName + ')'); capped = true
                     }
                 }
                 offset += items.size()
@@ -3098,16 +3098,16 @@ final class DoctorAutomationRenderer {
         }
         String ruleCount = report.sourceComplete('automation-rules') ?
             rules.size() + ' aktive Regeln im gelesenen Analyseumfang.' :
-            'Gesamtzahl aktiver Regeln unbekannt; bisher ' + rules.size() + ' Regeln aus dem Teilergebnis verfügbar.'
+            'Gesamtzahl aktiver Regeln unbekannt; bisher ' + rules.size() + ' Regeln aus dem Teilergebnis verf\u00FCgbar.'
         String auditCount = report.sourceComplete('automation-audit') ?
             audit.size() + ' protokollierte Regel-/Vorgangszuordnungen in dieser Anzeige.' :
-            'Ausführungshistorie unvollständig; bisher ' + audit.size() +
-                ' Zuordnungen verfügbar. Das ist kein Nachweis für ausgebliebene Ausführungen.'
+            'Ausf\u00FChrungshistorie unvollst\u00E4ndig; bisher ' + audit.size() +
+                ' Zuordnungen verf\u00FCgbar. Das ist kein Nachweis f\u00FCr ausgebliebene Ausf\u00FChrungen.'
         String ruleRows = rules.collect { AutomationRuleSnapshot rule ->
             '<tr><td>' + rule.ruleId + '</td><td>' + CoreSupport.html(rule.trigger) +
                 '</td><td>' + CoreSupport.html((rule.projectIds ?: []).join(', ') ?: 'Global') +
-                '</td><td>' + (rule.complete ? 'Nach unterstütztem Schema auswertbar' :
-                    'Nicht vollständig auswertbar: Aktion oder Script benötigt eine gesonderte Codeprüfung') + '</td></tr>'
+                '</td><td>' + (rule.complete ? 'Nach unterst\u00FCtztem Schema auswertbar' :
+                    'Nicht vollst\u00E4ndig auswertbar: Aktion oder Script ben\u00F6tigt eine gesonderte Codepr\u00FCfung') + '</td></tr>'
         }.join('')
         String auditRows = audit.sort(false) { a, b -> b.occurredAt <=> a.occurredAt }.take(20).collect { item ->
             '<tr><td>' + CoreSupport.html(item.occurredAt) + '</td><td>' + item.ruleId + '</td><td>' +
@@ -3115,13 +3115,13 @@ final class DoctorAutomationRenderer {
                     'Kein erfolgreicher Abschluss belegt') + '</td></tr>'
         }.join('')
         '<p><strong>' + ruleCount + '</strong> ' +
-            'Globale Regeln werden mitgelesen. Eine Regel kann weitere Projekte oder Vorgänge betreffen. ' +
-            'Unbekannte Aktionen und eingebettete Groovy-Scripte werden niemals ausgeführt und nicht als unproblematisch bewertet.</p>' +
-            (ruleRows ? '<details><summary>Gelesene aktive Regeln</summary><table><thead><tr><th>Regel-ID</th><th>Auslöser</th><th>Projekt-IDs</th><th>Auswertbarkeit</th></tr></thead><tbody>' + ruleRows + '</tbody></table></details>' : '') +
+            'Globale Regeln werden mitgelesen. Eine Regel kann weitere Projekte oder Vorg\u00E4nge betreffen. ' +
+            'Unbekannte Aktionen und eingebettete Groovy-Scripte werden niemals ausgef\u00FChrt und nicht als unproblematisch bewertet.</p>' +
+            (ruleRows ? '<details><summary>Gelesene aktive Regeln</summary><table><thead><tr><th>Regel-ID</th><th>Ausl\u00F6ser</th><th>Projekt-IDs</th><th>Auswertbarkeit</th></tr></thead><tbody>' + ruleRows + '</tbody></table></details>' : '') +
             '<p><strong>' + auditCount + '</strong> ' +
-            'Angezeigt werden höchstens 20 der gelesenen Zuordnungen, nach Zeitpunkt sortiert. Eine Zuordnung belegt keine konkrete Parent-Änderung und keine Ursache des Structure-Problems. ' +
-            'Gelesen werden vorhandene Protokolle innerhalb der konfigurierten Aufbewahrung; bereits gelöschte Historie ist nicht rekonstruierbar.</p>' +
-            (auditRows ? '<details open><summary>Ausführungsbelege</summary><table><thead><tr><th>Zeitpunkt (UTC)</th><th>Regel-ID</th><th>Vorgang</th><th>Ergebnis</th></tr></thead><tbody>' + auditRows + '</tbody></table></details>' : '')
+            'Angezeigt werden h\u00F6chstens 20 der gelesenen Zuordnungen, nach Zeitpunkt sortiert. Eine Zuordnung belegt keine konkrete Parent-\u00C4nderung und keine Ursache des Structure-Problems. ' +
+            'Gelesen werden vorhandene Protokolle innerhalb der konfigurierten Aufbewahrung; bereits gel\u00F6schte Historie ist nicht rekonstruierbar.</p>' +
+            (auditRows ? '<details open><summary>Ausf\u00FChrungsbelege</summary><table><thead><tr><th>Zeitpunkt (UTC)</th><th>Regel-ID</th><th>Vorgang</th><th>Ergebnis</th></tr></thead><tbody>' + auditRows + '</tbody></table></details>' : '')
     }
 }
 
@@ -3197,17 +3197,17 @@ final class DoctorFindingRenderer {
     String hierarchy(Finding finding) {
         Map descriptions = [
             ORPHAN: ['Kein Jira-Parent erfasst', 'Dieser Vorgang hat in den gelesenen Jira-Daten keine Elternbeziehung.',
-                'Ein fehlender Parent ist nicht automatisch ein Fehler. Fachlich prüfen, ob eine Zuordnung erforderlich ist. Die globale Hierarchie definiert Ebenen, aber keine Pflicht zur Befüllung.'],
+                'Ein fehlender Parent ist nicht automatisch ein Fehler. Fachlich pr\u00FCfen, ob eine Zuordnung erforderlich ist. Die globale Hierarchie definiert Ebenen, aber keine Pflicht zur Bef\u00FCllung.'],
             WRONG_PATH: ['Abweichender Structure-Pfad', 'Dieses Vorkommen steht unter einem anderen Vorgang als dem gelesenen Jira-Parent.',
-                'Prüfen, ob die abweichende Darstellung beabsichtigt ist. Falls die Structure die Jira-Hierarchie abbilden soll, den erzeugenden Generator und seine Linkrichtung prüfen. Bei Duplikaten das gewünschte Vorkommen in der Gruppe unten auswählen.'],
+                'Pr\u00FCfen, ob die abweichende Darstellung beabsichtigt ist. Falls die Structure die Jira-Hierarchie abbilden soll, den erzeugenden Generator und seine Linkrichtung pr\u00FCfen. Bei Duplikaten das gew\u00FCnschte Vorkommen in der Gruppe unten ausw\u00E4hlen.'],
             MISSING_PARENT: ['Elternhinweis ohne Jira-Parent', 'Ein Elternkandidat ist vorhanden, aber kein nativer Jira-Parent erfasst.',
-                'Den Kandidaten fachlich und anhand seiner Hierarchiestufe prüfen. Ein Link allein beweist nicht, dass dieser Vorgang als Jira-Parent gesetzt werden soll.'],
-            CONFLICTING_PARENT: ['Widersprüchliche Elternbeziehungen', 'Die gelesenen Elternbeziehungen liefern mehrere oder abweichende Kandidaten.',
-                'Festlegen, welche Beziehung fachlich maßgeblich ist. Danach Feldwerte, Links und gegebenenfalls schreibende Automation-Regeln vergleichen. Ohne Regel- und Ausführungsbelege bleibt die Ursache offen.'],
-            INVALID_LEVEL: ['Jira-Parent auf abweichender Ebene', 'Der gelesene Jira-Parent liegt nicht genau eine konfigurierte Ebene über dem Vorgang.',
-                'Vorgangstyp und Elternzuordnung anhand der bestehenden Jira-Hierarchie prüfen. Die globale Jira-Hierarchie wird niemals angepasst.']
+                'Den Kandidaten fachlich und anhand seiner Hierarchiestufe pr\u00FCfen. Ein Link allein beweist nicht, dass dieser Vorgang als Jira-Parent gesetzt werden soll.'],
+            CONFLICTING_PARENT: ['Widerspr\u00FCchliche Elternbeziehungen', 'Die gelesenen Elternbeziehungen liefern mehrere oder abweichende Kandidaten.',
+                'Festlegen, welche Beziehung fachlich ma\u00DFgeblich ist. Danach Feldwerte, Links und gegebenenfalls schreibende Automation-Regeln vergleichen. Ohne Regel- und Ausf\u00FChrungsbelege bleibt die Ursache offen.'],
+            INVALID_LEVEL: ['Jira-Parent auf abweichender Ebene', 'Der gelesene Jira-Parent liegt nicht genau eine konfigurierte Ebene \u00FCber dem Vorgang.',
+                'Vorgangstyp und Elternzuordnung anhand der bestehenden Jira-Hierarchie pr\u00FCfen. Die globale Jira-Hierarchie wird niemals angepasst.']
         ]
-        List text = descriptions[finding.type.name()] ?: [finding.type.name(), finding.summary, 'Die aufgeführten Belege fachlich prüfen.']
+        List text = descriptions[finding.type.name()] ?: [finding.type.name(), finding.summary, 'Die aufgef\u00FChrten Belege fachlich pr\u00FCfen.']
         IssueRelationSnapshot relation = report.issues[finding.issueId]
         List<OccurrenceSnapshot> occurrences = (report.analysis.snapshot?.occurrences ?: []).findAll {
             it.issueId == finding.issueId && (!finding.occurrenceIds || finding.occurrenceIds.contains(it.occurrenceId))
@@ -3217,17 +3217,17 @@ final class DoctorFindingRenderer {
                 report.structureParent(occurrence.parentIssueId) + '</p><p><strong>Structure-Pfad:</strong> ' +
                 report.path(occurrence.parentPath, finding.issueId) + '</p><p><strong>Quelle:</strong> ' +
                 report.provenance(occurrence.provenance, occurrence.creatorId) +
-                ' · Zeile <code>' + DoctorReportSupport.html(occurrence.rowId) + '</code></p></div>'
+                ' \u00B7 Zeile <code>' + DoctorReportSupport.html(occurrence.rowId) + '</code></p></div>'
         }.join('')
         '<article class="finding-card"><h3>' + DoctorReportSupport.html(text[0]) + '</h3><p class="issue-title">' +
             report.issue(finding.issueId, true) + '</p>' + report.metadata(finding.issueId) +
-            '<p>' + DoctorReportSupport.html(text[1]) + '</p><p><strong>Jira-Parent (Soll für die Structure):</strong> ' +
+            '<p>' + DoctorReportSupport.html(text[1]) + '</p><p><strong>Jira-Parent (Soll f\u00FCr die Structure):</strong> ' +
             (relation == null ? 'Nicht ermittelt' : report.issue(relation.nativeParentId, true)) +
-            '</p><p><strong>Übergeordnete Jira-Ebene:</strong> ' + report.expectedLevel(finding.issueId) + '</p>' +
+            '</p><p><strong>\u00DCbergeordnete Jira-Ebene:</strong> ' + report.expectedLevel(finding.issueId) + '</p>' +
             (relation?.leadingParentIds ? '<p><strong>Gelesene Elternkandidaten:</strong> ' +
                 relation.leadingParentIds.collect { report.issue(it) }.join(', ') + '</p>' : '') +
             (paths ?: '<p class="note">Nur als Jira-Vorfahre mitgelesen, kein eigenes Vorkommen in dieser Structure.</p>') +
-            '<div class="advice"><strong>Prüfschritt, keine automatische Reparatur</strong><p>' +
+            '<div class="advice"><strong>Pr\u00FCfschritt, keine automatische Reparatur</strong><p>' +
             DoctorReportSupport.html(text[2]) + '</p></div>' + DoctorReportSupport.blockers(finding.blockers) + '</article>'
     }
 
@@ -3239,41 +3239,41 @@ final class DoctorFindingRenderer {
             String permanent = occurrence.provenance == 'PERMANENT' ?
                 '<label class="choice"><input class="permanent-row" type="checkbox" disabled data-occurrence="' +
                     occurrenceId + '" value="' + DoctorReportSupport.html(occurrence.rowId) +
-                    '"><span>Entfernung dieser dauerhaften Structure-Zeile für den Plan freigeben. Der Jira-Vorgang bleibt erhalten.</span></label>' : ''
+                    '"><span>Entfernung dieser dauerhaften Structure-Zeile f\u00FCr den Plan freigeben. Der Jira-Vorgang bleibt erhalten.</span></label>' : ''
             '<div class="occurrence"><label class="choice"><input type="radio" disabled name="retain-' + id +
                 '" value="' + occurrenceId + '"><span>Vorkommen ' + occurrence.ordinal + ' behalten' +
                 (occurrence.recommended && hierarchyKnown ? ' <span class="badge">Empfehlung</span>' : '') +
                 '</span></label><p><strong>Structure-Pfad:</strong> ' + report.path(occurrence.parentPath, group.issueId) +
                 '</p><p><strong>Parent in der Structure (Ist):</strong> ' + report.structureParent(occurrence.parentIssueId) +
                 '</p><p><strong>Quelle:</strong> ' + report.provenance(occurrence.provenance, occurrence.creatorId) +
-                ' · Zeile <code>' + DoctorReportSupport.html(occurrence.rowId) + '</code></p>' +
+                ' \u00B7 Zeile <code>' + DoctorReportSupport.html(occurrence.rowId) + '</code></p>' +
                 '<p>Direkte Hierarchiestufe: <strong>' + hierarchyMatch(hierarchyKnown, occurrence) +
-                '</strong>. Übereinstimmung mit Jira-Parent: <strong>' +
+                '</strong>. \u00DCbereinstimmung mit Jira-Parent: <strong>' +
                 parentMatch(group.issueId, occurrence) + '</strong>.</p>' + permanent + '</div>'
         }.join('')
         '<article class="duplicate-card" data-group="' + id + '"><h3>' + report.issue(group.issueId, true) +
             '</h3>' + report.metadata(group.issueId) + '<p><strong>' + group.occurrences.size() +
-            ' Vorkommen desselben Jira-Vorgangs</strong>, keine mehrfach angelegten Jira-Vorgänge.</p>' +
-            '<p><strong>Jira-Parent (Soll für die Structure):</strong> ' +
+            ' Vorkommen desselben Jira-Vorgangs</strong>, keine mehrfach angelegten Jira-Vorg\u00E4nge.</p>' +
+            '<p><strong>Jira-Parent (Soll f\u00FCr die Structure):</strong> ' +
             (report.issues[group.issueId] == null ? 'Nicht ermittelt' : report.issue(report.issues[group.issueId].nativeParentId, true)) + '</p>' +
             duplicateEvidence(group) +
             '<label class="choice"><input class="finding" type="checkbox" value="' + id + '"' +
-            (group.selectable ? '' : ' disabled') + '><span>De-Dupe für diese Gruppe</span></label>' +
-            '<p class="note">Nur aktivierte Gruppen werden berücksichtigt. Wählen Sie genau das Vorkommen, das bleiben soll. ' +
-            'Die übrigen Vorkommen sollen aus der Structure verschwinden, nicht aus Jira. ' +
-            'Bei generierten Zeilen kann dies eine ausdrücklich zu bestätigende Änderung der Structure-Generatoren erfordern. ' +
-            'Diese Auswahl führt noch keine Änderung aus.</p>' + choices +
+            (group.selectable ? '' : ' disabled') + '><span>De-Dupe f\u00FCr diese Gruppe</span></label>' +
+            '<p class="note">Nur aktivierte Gruppen werden ber\u00FCcksichtigt. W\u00E4hlen Sie genau das Vorkommen, das bleiben soll. ' +
+            'Die \u00FCbrigen Vorkommen sollen aus der Structure verschwinden, nicht aus Jira. ' +
+            'Bei generierten Zeilen kann dies eine ausdr\u00FCcklich zu best\u00E4tigende \u00C4nderung der Structure-Generatoren erfordern. ' +
+            'Diese Auswahl f\u00FChrt noch keine \u00C4nderung aus.</p>' + choices +
             DoctorReportSupport.blockers(group.blockers) + '</article>'
     }
 
     private String parentMatch(long issueId, DuplicateOccurrence occurrence) {
-        if (!report.sourceComplete('jira-data') || report.issues[issueId] == null) return 'nicht geprüft'
+        if (!report.sourceComplete('jira-data') || report.issues[issueId] == null) return 'nicht gepr\u00FCft'
         if (report.issues[issueId].nativeParentId == null) return 'kein Jira-Parent erfasst'
         occurrence.nativeHierarchy ? 'ja' : 'nein'
     }
 
     private static String hierarchyMatch(boolean known, DuplicateOccurrence occurrence) {
-        if (!known) return 'nicht geprüft'
+        if (!known) return 'nicht gepr\u00FCft'
         occurrence.hierarchyValid ? 'passt' : 'passt nicht'
     }
 
@@ -3281,15 +3281,15 @@ final class DoctorFindingRenderer {
         Map translations = [
             'Multiple generators render this work item': 'Mehrere Generatoren erzeugen Vorkommen dieses Vorgangs.',
             'Occurrences follow multiple paths': 'Die Vorkommen liegen auf unterschiedlichen Structure-Pfaden.',
-            'Permanent and generated occurrences overlap': 'Dauerhafte und durch Generatoren erzeugte Zeilen überschneiden sich.',
-            'Native hierarchy and Jira link paths overlap': 'Advanced-Roadmaps- und Jira-Link-Pfade überschneiden sich.',
+            'Permanent and generated occurrences overlap': 'Dauerhafte und durch Generatoren erzeugte Zeilen \u00FCberschneiden sich.',
+            'Native hierarchy and Jira link paths overlap': 'Advanced-Roadmaps- und Jira-Link-Pfade \u00FCberschneiden sich.',
             'No enabled duplicates filter is present': 'In der gelesenen Konfiguration wurde kein aktiver Duplikatfilter erkannt.',
             'Duplicates filter runs before an occurrence source': 'Ein Duplikatfilter steht vor einer Quelle weiterer Vorkommen.',
             'Semantically identical occurrences remain separate physical rows': 'Gleicher Pfad und gleiche Quelle, aber unterschiedliche Structure-Zeilen.'
         ]
         '<details><summary>Beobachtungen zu dieser Gruppe</summary><ul>' + (group.explanations ?: []).collect {
             '<li>' + DoctorReportSupport.html(translations[it] ?: it) + '</li>'
-        }.join('') + '</ul><p class="note">Diese Beobachtungen erklären die Darstellung, belegen allein aber keine schreibende Automation als Ursache. Bei unvollständigen Quellen sind sie vorläufig.</p></details>'
+        }.join('') + '</ul><p class="note">Diese Beobachtungen erkl\u00E4ren die Darstellung, belegen allein aber keine schreibende Automation als Ursache. Bei unvollst\u00E4ndigen Quellen sind sie vorl\u00E4ufig.</p></details>'
     }
 }
 
@@ -3396,7 +3396,7 @@ ${catalogProblem}
 <button id="analyzeButton" type="button">Structure analysieren</button>
 </section>
 ${analysisHtml}${planHtml}
-<section class="card warning"><h2>Änderungen</h2><p><strong>Automatische Reparaturen sind deaktiviert.</strong> Die Auswahl prüft die Voraussetzungen eines Plans. Die Live-Ermittlung ausführbarer Reparaturen ist noch nicht angebunden. Die Jira-Hierarchie und Automation-Regeln werden niemals verändert.</p><button disabled>Ausgewählte Reparaturen anwenden</button></section>
+<section class="card warning"><h2>\u00C4nderungen</h2><p><strong>Automatische Reparaturen sind deaktiviert.</strong> Die Auswahl pr\u00FCft die Voraussetzungen eines Plans. Die Live-Ermittlung ausf\u00FChrbarer Reparaturen ist noch nicht angebunden. Die Jira-Hierarchie und Automation-Regeln werden niemals ver\u00E4ndert.</p><button disabled>Ausgew\u00E4hlte Reparaturen anwenden</button></section>
 <script>${browserScript()}</script>
 </main></body></html>"""
     }
@@ -3431,39 +3431,39 @@ ${analysisHtml}${planHtml}
         }.join('\n')
         String automationStatus
         if (!report.sourceComplete('automation-rules')) {
-            automationStatus = '<p><strong>Nicht geprüft: Automation-Regeln.</strong> Aus fehlenden Daten folgt nicht, dass keine Konflikte existieren. Ein offizieller JSON-Regel-Export kann oben zur Analyse ergänzt werden.</p>'
+            automationStatus = '<p><strong>Nicht gepr\u00FCft: Automation-Regeln.</strong> Aus fehlenden Daten folgt nicht, dass keine Konflikte existieren. Ein offizieller JSON-Regel-Export kann oben zur Analyse erg\u00E4nzt werden.</p>'
         } else if (analysis.automation == null || (analysis.automation.blockers ?: []).any {
             !(it in ['automation-audit', 'automation-audit-coverage'])
         }) {
-            automationStatus = '<p><strong>Automation-Regeln nicht vollständig ausgewertet.</strong> Vorhandene Hinweise sind ein Teilergebnis, keine Entwarnung.</p>'
+            automationStatus = '<p><strong>Automation-Regeln nicht vollst\u00E4ndig ausgewertet.</strong> Vorhandene Hinweise sind ein Teilergebnis, keine Entwarnung.</p>'
         } else {
-            automationStatus = '<p>Regelkonfiguration gelesen. ' + (automationItems ? 'Hinweise siehe unten.' : 'Keine Konflikte nach den implementierten Regelprüfungen erkannt.') + '</p>'
+            automationStatus = '<p>Regelkonfiguration gelesen. ' + (automationItems ? 'Hinweise siehe unten.' : 'Keine Konflikte nach den implementierten Regelpr\u00FCfungen erkannt.') + '</p>'
         }
         if (!report.sourceComplete('automation-audit')) automationStatus +=
-            '<p><strong>Ausführungen nicht vollständig geprüft.</strong> Ob und wann eine Regel diese Vorgänge verändert hat, ist nicht belegt. Das Auditfenster ist eine Anfrage, kein Nachweis vollständiger Protokolle.</p>'
+            '<p><strong>Ausf\u00FChrungen nicht vollst\u00E4ndig gepr\u00FCft.</strong> Ob und wann eine Regel diese Vorg\u00E4nge ver\u00E4ndert hat, ist nicht belegt. Das Auditfenster ist eine Anfrage, kein Nachweis vollst\u00E4ndiger Protokolle.</p>'
         String claims = (analysis.causalClaims ?: []).findAll { CausalClaim claim ->
             visibleFindingIds.contains(claim.findingId)
         }.collect { CausalClaim claim ->
             Finding related = ((analysis.hierarchy?.findings ?: []) + (analysis.duplicates?.findings ?: [])).find { it.id == claim.findingId }
             '<li>' + (related == null ? '' : report.issue(related.issueId) + ': ') + '<strong>' +
-                CoreSupport.html([CONFIGURATION_CONFLICT: 'Konfigurationskonflikt', POSSIBLE_CAUSE: 'Mögliche Ursache, nicht nachgewiesen',
-                    PROBABLE_CAUSE: 'Wahrscheinliche Ursache, nicht bestätigt', CONFIRMED_CAUSE: 'Bestätigte Ursache'][claim.grade.name()]) +
+                CoreSupport.html([CONFIGURATION_CONFLICT: 'Konfigurationskonflikt', POSSIBLE_CAUSE: 'M\u00F6gliche Ursache, nicht nachgewiesen',
+                    PROBABLE_CAUSE: 'Wahrscheinliche Ursache, nicht best\u00E4tigt', CONFIRMED_CAUSE: 'Best\u00E4tigte Ursache'][claim.grade.name()]) +
                 '</strong>; fehlende Belege: ' +
                 CoreSupport.html(claim.missingEvidence.join(', ')) + '</li>'
         }.join('\n')
         """<section class="card" data-snapshot-id="${CoreSupport.html(analysis.snapshotId)}">
 <h2>Analyse der Structure #${analysis.structureId}</h2>
-<p><strong>${analysis.complete ? 'Alle vorgesehenen Prüfbereiche vollständig ausgewertet.' : 'Teilergebnis: Nicht alle Prüfbereiche konnten ausgewertet werden.'}</strong> Angefragtes Auditfenster: ${analysis.requestedAuditDays} Tage.</p>
-<p>${visibleHierarchy.size()} angezeigte Hierarchie-Hinweise · ${visibleDuplicates.size()} angezeigte Duplikatgruppen. Gelesene Structure-Vorkommen: ${analysis.snapshot?.occurrences?.size() ?: 0}.</p>
-<p class="note">Ein Hinweis ist keine bestätigte Ursache. Die Lesestatus unten zeigen, welche Daten verfügbar waren, nicht ob die Structure fehlerfrei ist. „Soll“ bezeichnet die Ausrichtung an der gelesenen Jira-Elternbeziehung, keine automatische Änderungsfreigabe.</p>
+<p><strong>${analysis.complete ? 'Alle vorgesehenen Pr\u00FCfbereiche vollst\u00E4ndig ausgewertet.' : 'Teilergebnis: Nicht alle Pr\u00FCfbereiche konnten ausgewertet werden.'}</strong> Angefragtes Auditfenster: ${analysis.requestedAuditDays} Tage.</p>
+<p>${visibleHierarchy.size()} angezeigte Hierarchie-Hinweise \u00B7 ${visibleDuplicates.size()} angezeigte Duplikatgruppen. Gelesene Structure-Vorkommen: ${analysis.snapshot?.occurrences?.size() ?: 0}.</p>
+<p class="note">Ein Hinweis ist keine best\u00E4tigte Ursache. Die Lesestatus unten zeigen, welche Daten verf\u00FCgbar waren, nicht ob die Structure fehlerfrei ist. \u201ESoll\u201C bezeichnet die Ausrichtung an der gelesenen Jira-Elternbeziehung, keine automatische \u00C4nderungsfreigabe.</p>
 ${analysis.issueKeyFilter ? '<p>Anzeigefilter: ' + CoreSupport.html(analysis.issueKeyFilter) + '</p>' : ''}
 ${blockers(analysis.blockers)}
-<details open><summary>Datenquellen und Prüfgrenzen</summary>${report.coverageTable()}</details>
-<details open><summary>Hierarchie-Hinweise</summary>${analysis.hierarchy?.complete ? '' : '<p class="blockers">Hierarchie nicht vollständig geprüft. Aufgeführte Hinweise sind ein Teilergebnis.</p>'}<div>${hierarchyItems ?: '<p>Keine Hinweise in dieser Anzeige. Bei unvollständiger Prüfung ist das keine Entwarnung.</p>'}</div></details>
-<details open><summary>Duplikate: Vorkommen vergleichen und Auswahl treffen</summary>${analysis.duplicates?.complete ? '' : '<p class="blockers">Duplikate nicht vollständig geprüft. Die Anzeige kann unvollständig sein.</p>'}<div>${duplicateItems ?: '<p>Keine Duplikatgruppen in dieser Anzeige. Der Anzeigefilter und die Lesedeckung sind zu beachten.</p>'}</div></details>
-<details open><summary>Automation-Prüfung</summary>${automationStatus}${DoctorAutomationRenderer.evidence(report)}<ul>${automationItems}</ul></details>
-<details><summary>Ursachen und Beleglage</summary><ul>${claims ?: '<li>Keine vollständige Ursachenkette belegt.</li>'}</ul></details>
-${visibleDuplicates ? '<button id="planButton" type="button">Duplikatauswahl prüfen</button>' : ''}</section>"""
+<details open><summary>Datenquellen und Pr\u00FCfgrenzen</summary>${report.coverageTable()}</details>
+<details open><summary>Hierarchie-Hinweise</summary>${analysis.hierarchy?.complete ? '' : '<p class="blockers">Hierarchie nicht vollst\u00E4ndig gepr\u00FCft. Aufgef\u00FChrte Hinweise sind ein Teilergebnis.</p>'}<div>${hierarchyItems ?: '<p>Keine Hinweise in dieser Anzeige. Bei unvollst\u00E4ndiger Pr\u00FCfung ist das keine Entwarnung.</p>'}</div></details>
+<details open><summary>Duplikate: Vorkommen vergleichen und Auswahl treffen</summary>${analysis.duplicates?.complete ? '' : '<p class="blockers">Duplikate nicht vollst\u00E4ndig gepr\u00FCft. Die Anzeige kann unvollst\u00E4ndig sein.</p>'}<div>${duplicateItems ?: '<p>Keine Duplikatgruppen in dieser Anzeige. Der Anzeigefilter und die Lesedeckung sind zu beachten.</p>'}</div></details>
+<details open><summary>Automation-Pr\u00FCfung</summary>${automationStatus}${DoctorAutomationRenderer.evidence(report)}<ul>${automationItems}</ul></details>
+<details><summary>Ursachen und Beleglage</summary><ul>${claims ?: '<li>Keine vollst\u00E4ndige Ursachenkette belegt.</li>'}</ul></details>
+${visibleDuplicates ? '<button id="planButton" type="button">Duplikatauswahl pr\u00FCfen</button>' : ''}</section>"""
     }
 
     private static String renderPlan(ProposalPlan plan) {
@@ -3550,7 +3550,7 @@ if (planButton) planButton.addEventListener('click', async () => {
   selected.forEach(input => {
     const group = input.closest('.duplicate-card');
     const chosen = group.querySelector('input[type=radio]:checked:not(:disabled)');
-    if (!chosen) throw new Error('Für jede aktivierte Gruppe ein Vorkommen zum Behalten wählen.');
+    if (!chosen) throw new Error('F\u00FCr jede aktivierte Gruppe ein Vorkommen zum Behalten w\u00E4hlen.');
     retainOccurrenceByGroup[input.value] = chosen.value;
     group.querySelectorAll('.permanent-row:checked:not(:disabled)').forEach(row => selectedPermanentRowIds.push(row.value));
   });
@@ -3690,18 +3690,18 @@ final class DoctorReportSupport {
     String issue(Long id, boolean withTitle = false) {
         if (id == null) return 'Kein Jira-Parent erfasst'
         IssueRelationSnapshot item = issues[id]
-        if (!item?.issueKey) return 'Vorgang #' + id + ' (Details nicht verfügbar)'
+        if (!item?.issueKey) return 'Vorgang #' + id + ' (Details nicht verf\u00FCgbar)'
         String link = '<a href="../../../../browse/' +
             java.net.URLEncoder.encode(item.issueKey, 'UTF-8') +
             '" target="_blank" rel="noopener noreferrer">' + html(item.issueKey) + '</a>'
-        link + (withTitle && item.summary ? ' · ' + html(item.summary) : '')
+        link + (withTitle && item.summary ? ' \u00B7 ' + html(item.summary) : '')
     }
 
     String metadata(long id) {
         IssueRelationSnapshot item = issues[id]
         HierarchyLevel level = levelFor(id)
-        '<p class="note">Vorgangstyp: ' + html(item?.issueTypeName ?: 'nicht verfügbar') +
-            ' · Jira-Ebene: ' + html(level?.name ?: 'nicht ermittelt') + '</p>'
+        '<p class="note">Vorgangstyp: ' + html(item?.issueTypeName ?: 'nicht verf\u00FCgbar') +
+            ' \u00B7 Jira-Ebene: ' + html(level?.name ?: 'nicht ermittelt') + '</p>'
     }
 
     HierarchyLevel levelFor(Long id) {
@@ -3713,7 +3713,7 @@ final class DoctorReportSupport {
         HierarchyLevel child = levelFor(id)
         HierarchyLevel parent = child == null ? null :
             (analysis.snapshot?.hierarchy?.levels ?: []).find { it.rank == child.rank + 1L }
-        parent == null ? 'Keine übergeordnete Ebene ermittelt' : html(parent.name)
+        parent == null ? 'Keine \u00FCbergeordnete Ebene ermittelt' : html(parent.name)
     }
 
     String path(List<Long> parents, long childId) {
@@ -3721,7 +3721,7 @@ final class DoctorReportSupport {
     }
 
     String structureParent(Long id) {
-        id == null ? 'Structure-Wurzel (kein übergeordneter Vorgang)' : issue(id, true)
+        id == null ? 'Structure-Wurzel (kein \u00FCbergeordneter Vorgang)' : issue(id, true)
     }
 
     String provenance(String value, String creatorId) {
@@ -3745,10 +3745,10 @@ final class DoctorReportSupport {
 
     String coverageTable() {
         Map names = ['jira-hierarchy': 'Globale Jira-Hierarchie', 'structure-snapshot': 'Structure und Generatoren',
-            'jira-data': 'Jira-Vorgänge und Elternbeziehungen', 'automation-rules': 'Automation-Regeln',
-            'automation-audit': 'Automation-Ausführungen']
-        Map states = [COMPLETE: 'Vollständig gelesen', INCOMPLETE: 'Teilweise gelesen',
-            UNAVAILABLE: 'Nicht verfügbar', FAILED: 'Lesen fehlgeschlagen']
+            'jira-data': 'Jira-Vorg\u00E4nge und Elternbeziehungen', 'automation-rules': 'Automation-Regeln',
+            'automation-audit': 'Automation-Ausf\u00FChrungen']
+        Map states = [COMPLETE: 'Vollst\u00E4ndig gelesen', INCOMPLETE: 'Teilweise gelesen',
+            UNAVAILABLE: 'Nicht verf\u00FCgbar', FAILED: 'Lesen fehlgeschlagen']
         String rows = (analysis.coverage ?: []).collect { SourceCoverage item ->
             boolean complete = sourceComplete(item.source)
             String status = item.state == ReadState.COMPLETE && !complete ? 'Teilweise gelesen' :
@@ -3760,28 +3760,28 @@ final class DoctorReportSupport {
             '<tr><td>' + html(names[item.source] ?: item.source) + '</td><td>' +
                 html(status) + '</td><td>' +
                 html(item.provider == 'JSON_FALLBACK' ? 'JSON-Import' : item.provider) + '</td><td>' +
-                (complete ? 'Für diese Quelle vollständig.' :
-                    'Keine vollständige Aussage möglich.<details><summary>Technischer Grund</summary>' +
-                    html(item.reason ?: 'Keine vollständige Lesedeckung') + '</details>') + coverage + '</td></tr>'
+                (complete ? 'F\u00FCr diese Quelle vollst\u00E4ndig.' :
+                    'Keine vollst\u00E4ndige Aussage m\u00F6glich.<details><summary>Technischer Grund</summary>' +
+                    html(item.reason ?: 'Keine vollst\u00E4ndige Lesedeckung') + '</details>') + coverage + '</td></tr>'
         }.join('')
         '<table><thead><tr><th>Datenquelle</th><th>Lesestatus</th><th>Zugriff</th><th>Bedeutung</th></tr></thead><tbody>' + rows + '</tbody></table>'
     }
 
     static String blockers(List<String> values) {
         if (!values) return ''
-        Map labels = ['automation-rules': 'Automation-Regeln nicht vollständig geprüft',
-            'automation-audit': 'Ausführungsbelege fehlen', 'automation-audit-coverage': 'Auditzeitraum nicht vollständig belegt',
-            'jira-hierarchy': 'Jira-Hierarchie nicht vollständig geprüft', 'jira-data': 'Jira-Daten nicht vollständig gelesen',
-            'jira-relations': 'Elternbeziehungen nicht vollständig gelesen', 'structure-snapshot': 'Structure-Abbild unvollständig',
-            'structure-forest': 'Structure-Zeilen nicht vollständig gelesen', 'structure-generators': 'Generator-Konfiguration unvollständig',
+        Map labels = ['automation-rules': 'Automation-Regeln nicht vollst\u00E4ndig gepr\u00FCft',
+            'automation-audit': 'Ausf\u00FChrungsbelege fehlen', 'automation-audit-coverage': 'Auditzeitraum nicht vollst\u00E4ndig belegt',
+            'jira-hierarchy': 'Jira-Hierarchie nicht vollst\u00E4ndig gepr\u00FCft', 'jira-data': 'Jira-Daten nicht vollst\u00E4ndig gelesen',
+            'jira-relations': 'Elternbeziehungen nicht vollst\u00E4ndig gelesen', 'structure-snapshot': 'Structure-Abbild unvollst\u00E4ndig',
+            'structure-forest': 'Structure-Zeilen nicht vollst\u00E4ndig gelesen', 'structure-generators': 'Generator-Konfiguration unvollst\u00E4ndig',
             'occurrence-provenance': 'Herkunft eines Vorkommens nicht belegt',
             'no-hierarchy-valid-occurrence': 'Kein Vorkommen mit passender direkter Hierarchiestufe erkannt',
             'physical-occurrence-identity': 'Structure-Zeile nicht eindeutig identifiziert',
-            'proposal-source': 'Ermittlung ausführbarer Reparaturen nicht verfügbar',
+            'proposal-source': 'Ermittlung ausf\u00FChrbarer Reparaturen nicht verf\u00FCgbar',
             'automation-rule-normalization': 'Nicht alle Regelbestandteile konnten ausgewertet werden',
-            'stale-snapshot': 'Daten wurden geändert. Bitte erneut analysieren.']
+            'stale-snapshot': 'Daten wurden ge\u00E4ndert. Bitte erneut analysieren.']
         '<details class="blockers"><summary>Offene Voraussetzungen (' + values.size() + ')</summary><ul>' +
-            values.collect { '<li>' + html(labels[it] ?: 'Weitere Prüfung erforderlich') +
+            values.collect { '<li>' + html(labels[it] ?: 'Weitere Pr\u00FCfung erforderlich') +
                 ' <code>(' + html(it) + ')</code></li>' }.join('') + '</ul></details>'
     }
 }
