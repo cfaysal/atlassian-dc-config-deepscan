@@ -2122,7 +2122,7 @@ def op1458Row = { String html, String marker -> op1458Around(html, marker, "<tr>
 Report ovReport = new Report()
 Nd ovSection = ovReport.section("projectDetails", "Details")
 Nd ovLead = Nd.of("projectLead", "Lead").val("Jane (jdoe)").note("Lead is <b>inactive</b> & kept")
-ovLead.add(Nd.of("userEmail", "E-mail").val("jane@example.com"))
+ovLead.add(Nd.of("leadAccess", "Lead application access").val("Jira Software"))
 ovSection.add(ovLead)
 Nd ovType = Nd.of("issueType", "Sub-task").val("sub-task").ident("10003")
     .link("https://confluence.example.com/pages/viewpage.action?pageId=10003", "unused")
