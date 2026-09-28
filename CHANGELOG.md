@@ -4,7 +4,7 @@ All notable changes to this project are documented here. Each endpoint carries i
 version, declared once in its helper class and printed by every output channel, so the
 sections below are grouped by endpoint rather than by a single repository version.
 
-## confluenceDCspaceConfig and jiraDCprojectConfig - Unreleased
+## confluenceDCspaceConfig 0.3 and jiraDCprojectConfig 0.3
 
 ### Fixed
 

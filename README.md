@@ -10,7 +10,7 @@ link to the exact administration screen where it is maintained.
 
 | Script | Platform | Version |
 | --- | --- | --- |
-| [`jira/jiraDCprojectConfig.groovy`](jira/jiraDCprojectConfig.groovy) | Jira Data Center | 0.2 |
+| [`jira/jiraDCprojectConfig.groovy`](jira/jiraDCprojectConfig.groovy) | Jira Data Center | 0.3 |
 | [`confluence/userMacroDeepScan.groovy`](confluence/userMacroDeepScan.groovy) | Confluence Data Center | 4.1.0 |
 | [`confluence/confluenceDCspaceInfo.groovy`](confluence/confluenceDCspaceInfo.groovy) | Confluence Data Center | 0.1 |
 
