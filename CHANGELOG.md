@@ -4,6 +4,27 @@ All notable changes to this project are documented here. Each endpoint carries i
 version, declared once in its helper class and printed by every output channel, so the
 sections below are grouped by endpoint rather than by a single repository version.
 
+## confluenceDCspaceConfig and jiraDCprojectConfig - Unreleased
+
+### Fixed
+
+- **The table view no longer drops what the tree shows at a node.** A readable node with
+  children became a heading that carried only its label and a count, so the project lead's
+  name, a custom field's type, a workflow's "active, custom" and an issue type's link were in
+  the tree and nowhere in the table. A table heading now carries the node's value, its state
+  when it was not read, its id and its deep link, or the "no link" marker with the reason as
+  its tooltip, inline after the label; it stays the clickable summary of its record. Notes
+  appear at their node in both views, under the value, instead of only in the notes card at
+  the top of the page, which is unchanged. A row that has a value and a diagnostic shows both;
+  before, the diagnostic was printed only into an empty value cell. Rows also carry the id the
+  tree prints.
+- **The State and link columns appear only where a row has something to put in them.** The
+  Details section rendered thirteen rows with a link column empty on every one of them; a
+  column that is empty on every row reads like a measurement. The level columns and Value
+  always stay. The CSV, the JSON, the tree view and the Confluence export are unchanged. The
+  three new table helpers are identical in both endpoints and are compared by
+  `tools/shared-renderer-drift.py`.
+
 ## confluenceDCspaceInfo 0.1
 
 ### Added
