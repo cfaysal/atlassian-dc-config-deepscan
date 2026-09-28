@@ -15,18 +15,18 @@ final class DoctorReportSupport {
     String issue(Long id, boolean withTitle = false) {
         if (id == null) return 'Kein Jira-Parent erfasst'
         IssueRelationSnapshot item = issues[id]
-        if (!item?.issueKey) return 'Vorgang #' + id + ' (Details nicht verfügbar)'
+        if (!item?.issueKey) return 'Vorgang #' + id + ' (Details nicht verf\u00FCgbar)'
         String link = '<a href="../../../../browse/' +
             java.net.URLEncoder.encode(item.issueKey, 'UTF-8') +
             '" target="_blank" rel="noopener noreferrer">' + html(item.issueKey) + '</a>'
-        link + (withTitle && item.summary ? ' · ' + html(item.summary) : '')
+        link + (withTitle && item.summary ? ' \u00B7 ' + html(item.summary) : '')
     }
 
     String metadata(long id) {
         IssueRelationSnapshot item = issues[id]
         HierarchyLevel level = levelFor(id)
-        '<p class="note">Vorgangstyp: ' + html(item?.issueTypeName ?: 'nicht verfügbar') +
-            ' · Jira-Ebene: ' + html(level?.name ?: 'nicht ermittelt') + '</p>'
+        '<p class="note">Vorgangstyp: ' + html(item?.issueTypeName ?: 'nicht verf\u00FCgbar') +
+            ' \u00B7 Jira-Ebene: ' + html(level?.name ?: 'nicht ermittelt') + '</p>'
     }
 
     HierarchyLevel levelFor(Long id) {
@@ -38,7 +38,7 @@ final class DoctorReportSupport {
         HierarchyLevel child = levelFor(id)
         HierarchyLevel parent = child == null ? null :
             (analysis.snapshot?.hierarchy?.levels ?: []).find { it.rank == child.rank + 1L }
-        parent == null ? 'Keine übergeordnete Ebene ermittelt' : html(parent.name)
+        parent == null ? 'Keine \u00FCbergeordnete Ebene ermittelt' : html(parent.name)
     }
 
     String path(List<Long> parents, long childId) {
@@ -46,7 +46,7 @@ final class DoctorReportSupport {
     }
 
     String structureParent(Long id) {
-        id == null ? 'Structure-Wurzel (kein übergeordneter Vorgang)' : issue(id, true)
+        id == null ? 'Structure-Wurzel (kein \u00FCbergeordneter Vorgang)' : issue(id, true)
     }
 
     String provenance(String value, String creatorId) {
@@ -70,10 +70,10 @@ final class DoctorReportSupport {
 
     String coverageTable() {
         Map names = ['jira-hierarchy': 'Globale Jira-Hierarchie', 'structure-snapshot': 'Structure und Generatoren',
-            'jira-data': 'Jira-Vorgänge und Elternbeziehungen', 'automation-rules': 'Automation-Regeln',
-            'automation-audit': 'Automation-Ausführungen']
-        Map states = [COMPLETE: 'Vollständig gelesen', INCOMPLETE: 'Teilweise gelesen',
-            UNAVAILABLE: 'Nicht verfügbar', FAILED: 'Lesen fehlgeschlagen']
+            'jira-data': 'Jira-Vorg\u00E4nge und Elternbeziehungen', 'automation-rules': 'Automation-Regeln',
+            'automation-audit': 'Automation-Ausf\u00FChrungen']
+        Map states = [COMPLETE: 'Vollst\u00E4ndig gelesen', INCOMPLETE: 'Teilweise gelesen',
+            UNAVAILABLE: 'Nicht verf\u00FCgbar', FAILED: 'Lesen fehlgeschlagen']
         String rows = (analysis.coverage ?: []).collect { SourceCoverage item ->
             boolean complete = sourceComplete(item.source)
             String status = item.state == ReadState.COMPLETE && !complete ? 'Teilweise gelesen' :
@@ -85,28 +85,28 @@ final class DoctorReportSupport {
             '<tr><td>' + html(names[item.source] ?: item.source) + '</td><td>' +
                 html(status) + '</td><td>' +
                 html(item.provider == 'JSON_FALLBACK' ? 'JSON-Import' : item.provider) + '</td><td>' +
-                (complete ? 'Für diese Quelle vollständig.' :
-                    'Keine vollständige Aussage möglich.<details><summary>Technischer Grund</summary>' +
-                    html(item.reason ?: 'Keine vollständige Lesedeckung') + '</details>') + coverage + '</td></tr>'
+                (complete ? 'F\u00FCr diese Quelle vollst\u00E4ndig.' :
+                    'Keine vollst\u00E4ndige Aussage m\u00F6glich.<details><summary>Technischer Grund</summary>' +
+                    html(item.reason ?: 'Keine vollst\u00E4ndige Lesedeckung') + '</details>') + coverage + '</td></tr>'
         }.join('')
         '<table><thead><tr><th>Datenquelle</th><th>Lesestatus</th><th>Zugriff</th><th>Bedeutung</th></tr></thead><tbody>' + rows + '</tbody></table>'
     }
 
     static String blockers(List<String> values) {
         if (!values) return ''
-        Map labels = ['automation-rules': 'Automation-Regeln nicht vollständig geprüft',
-            'automation-audit': 'Ausführungsbelege fehlen', 'automation-audit-coverage': 'Auditzeitraum nicht vollständig belegt',
-            'jira-hierarchy': 'Jira-Hierarchie nicht vollständig geprüft', 'jira-data': 'Jira-Daten nicht vollständig gelesen',
-            'jira-relations': 'Elternbeziehungen nicht vollständig gelesen', 'structure-snapshot': 'Structure-Abbild unvollständig',
-            'structure-forest': 'Structure-Zeilen nicht vollständig gelesen', 'structure-generators': 'Generator-Konfiguration unvollständig',
+        Map labels = ['automation-rules': 'Automation-Regeln nicht vollst\u00E4ndig gepr\u00FCft',
+            'automation-audit': 'Ausf\u00FChrungsbelege fehlen', 'automation-audit-coverage': 'Auditzeitraum nicht vollst\u00E4ndig belegt',
+            'jira-hierarchy': 'Jira-Hierarchie nicht vollst\u00E4ndig gepr\u00FCft', 'jira-data': 'Jira-Daten nicht vollst\u00E4ndig gelesen',
+            'jira-relations': 'Elternbeziehungen nicht vollst\u00E4ndig gelesen', 'structure-snapshot': 'Structure-Abbild unvollst\u00E4ndig',
+            'structure-forest': 'Structure-Zeilen nicht vollst\u00E4ndig gelesen', 'structure-generators': 'Generator-Konfiguration unvollst\u00E4ndig',
             'occurrence-provenance': 'Herkunft eines Vorkommens nicht belegt',
             'no-hierarchy-valid-occurrence': 'Kein Vorkommen mit passender direkter Hierarchiestufe erkannt',
             'physical-occurrence-identity': 'Structure-Zeile nicht eindeutig identifiziert',
-            'proposal-source': 'Ermittlung ausführbarer Reparaturen nicht verfügbar',
+            'proposal-source': 'Ermittlung ausf\u00FChrbarer Reparaturen nicht verf\u00FCgbar',
             'automation-rule-normalization': 'Nicht alle Regelbestandteile konnten ausgewertet werden',
-            'stale-snapshot': 'Daten wurden geändert. Bitte erneut analysieren.']
+            'stale-snapshot': 'Daten wurden ge\u00E4ndert. Bitte erneut analysieren.']
         '<details class="blockers"><summary>Offene Voraussetzungen (' + values.size() + ')</summary><ul>' +
-            values.collect { '<li>' + html(labels[it] ?: 'Weitere Prüfung erforderlich') +
+            values.collect { '<li>' + html(labels[it] ?: 'Weitere Pr\u00FCfung erforderlich') +
                 ' <code>(' + html(it) + ')</code></li>' }.join('') + '</ul></details>'
     }
 }

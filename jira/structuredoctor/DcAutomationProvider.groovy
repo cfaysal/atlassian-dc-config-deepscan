@@ -27,7 +27,7 @@ final class DcAutomationProvider implements AutomationDataProvider {
 
     @Override
     ReadResult<List<AutomationRuleSnapshot>> readRules(AnalysisScope scope) {
-        if (!scope?.projectIds) return ReadResult.incomplete([], 'Automation: Projektumfang nicht vollständig ermittelt')
+        if (!scope?.projectIds) return ReadResult.incomplete([], 'Automation: Projektumfang nicht vollst\u00E4ndig ermittelt')
         try {
             Object result = connection.call(CONFIG_API, { service, tenant ->
                 Map<Long, AutomationRuleSnapshot> rules = [:]
@@ -47,7 +47,7 @@ final class DcAutomationProvider implements AutomationDataProvider {
                 }
                 List values = rules.values().take(MAX_RULES).sort { it.ruleId }
                 complete ? ReadResult.complete(values) : ReadResult.incomplete(values,
-                    'Automation-Regeln nur teilweise gelesen: Leselimit, geänderte Revision oder unbekanntes Datenformat')
+                    'Automation-Regeln nur teilweise gelesen: Leselimit, ge\u00E4nderte Revision oder unbekanntes Datenformat')
             })
             result == null ? ReadResult.unavailable('AutomationConfigService im installierten Plugin nicht erreichbar') : result
         } catch (Exception failure) {
@@ -59,7 +59,7 @@ final class DcAutomationProvider implements AutomationDataProvider {
     ReadResult<List<AutomationAuditSnapshot>> readAudit(AuditRequest request) {
         if (request == null || request.requestedDays < 1 || request.requestedDays > 365 ||
             !request.issueIds) {
-            return ReadResult.incomplete([], 'Automation-Audit: Vorgangsumfang oder gültiges Zeitfenster fehlt')
+            return ReadResult.incomplete([], 'Automation-Audit: Vorgangsumfang oder g\u00FCltiges Zeitfenster fehlt')
         }
         try {
             Object result = connection.call(AUDIT_API, { service, tenant -> readAuditPages(service, tenant, request) })
@@ -89,17 +89,17 @@ final class DcAutomationProvider implements AutomationDataProvider {
             Long previousTotal = null
             while (true) {
                 if (seen.size() >= auditLimit) {
-                    gaps.add('Audit-Leselimit erreicht (' + auditLimit + ' Einträge)'); capped = true; break
+                    gaps.add('Audit-Leselimit erreicht (' + auditLimit + ' Eintr\u00E4ge)'); capped = true; break
                 }
                 long limit = Math.min(AUDIT_PAGE_SIZE, auditLimit - seen.size())
                 Object page = service.getItems(tenant, filter, offset, limit)
                 List items = DcAutomationMapping.list(DcAutomationMapping.property(page, 'items'))
                 long total = CoreAutomationJsonSupport.flexibleLong(DcAutomationMapping.property(page, 'total'), 'total')
                 String pageProblem = null
-                if (total < 0) pageProblem = 'Audit-Gesamtzahl nicht verfügbar'
-                else if (items.size() > limit) pageProblem = 'Audit-Seite überschreitet angefragte Seitengröße'
-                else if (offset + items.size() > total) pageProblem = 'Audit-Seite überschreitet gemeldete Gesamtzahl'
-                else if (previousTotal != null && total != previousTotal) pageProblem = 'Audit-Gesamtzahl zwischen Seiten geändert'
+                if (total < 0) pageProblem = 'Audit-Gesamtzahl nicht verf\u00FCgbar'
+                else if (items.size() > limit) pageProblem = 'Audit-Seite \u00FCberschreitet angefragte Seitengr\u00F6\u00DFe'
+                else if (offset + items.size() > total) pageProblem = 'Audit-Seite \u00FCberschreitet gemeldete Gesamtzahl'
+                else if (previousTotal != null && total != previousTotal) pageProblem = 'Audit-Gesamtzahl zwischen Seiten ge\u00E4ndert'
                 if (pageProblem != null) {
                     gaps.add(pageProblem + ' (' + (previousTotal == null ? '' : 'vorher=' + previousTotal + ', ') +
                         'total=' + total + ', offset=' + offset + ', gelesen=' + items.size() + ', limit=' + limit + ')')
@@ -121,9 +121,9 @@ final class DcAutomationProvider implements AutomationDataProvider {
                             gaps.add('Audit-Zeitfilter nicht eingehalten'); capped = true; continue
                         }
                         entries.addAll(normalized.entries)
-                        if (!normalized.complete) { gaps.add('Audit-Vorgangszuordnung unvollständig'); capped = true }
+                        if (!normalized.complete) { gaps.add('Audit-Vorgangszuordnung unvollst\u00E4ndig'); capped = true }
                     } catch (RuntimeException failure) {
-                        gaps.add('Audit-Datenformat nicht vollständig lesbar (' + failure.class.simpleName + ')'); capped = true
+                        gaps.add('Audit-Datenformat nicht vollst\u00E4ndig lesbar (' + failure.class.simpleName + ')'); capped = true
                     }
                 }
                 offset += items.size()

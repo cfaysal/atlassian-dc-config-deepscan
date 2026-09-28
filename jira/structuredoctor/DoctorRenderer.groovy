@@ -38,7 +38,7 @@ ${catalogProblem}
 <button id="analyzeButton" type="button">Structure analysieren</button>
 </section>
 ${analysisHtml}${planHtml}
-<section class="card warning"><h2>Änderungen</h2><p><strong>Automatische Reparaturen sind deaktiviert.</strong> Die Auswahl prüft die Voraussetzungen eines Plans. Die Live-Ermittlung ausführbarer Reparaturen ist noch nicht angebunden. Die Jira-Hierarchie und Automation-Regeln werden niemals verändert.</p><button disabled>Ausgewählte Reparaturen anwenden</button></section>
+<section class="card warning"><h2>\u00C4nderungen</h2><p><strong>Automatische Reparaturen sind deaktiviert.</strong> Die Auswahl pr\u00FCft die Voraussetzungen eines Plans. Die Live-Ermittlung ausf\u00FChrbarer Reparaturen ist noch nicht angebunden. Die Jira-Hierarchie und Automation-Regeln werden niemals ver\u00E4ndert.</p><button disabled>Ausgew\u00E4hlte Reparaturen anwenden</button></section>
 <script>${browserScript()}</script>
 </main></body></html>"""
     }
@@ -73,39 +73,39 @@ ${analysisHtml}${planHtml}
         }.join('\n')
         String automationStatus
         if (!report.sourceComplete('automation-rules')) {
-            automationStatus = '<p><strong>Nicht geprüft: Automation-Regeln.</strong> Aus fehlenden Daten folgt nicht, dass keine Konflikte existieren. Ein offizieller JSON-Regel-Export kann oben zur Analyse ergänzt werden.</p>'
+            automationStatus = '<p><strong>Nicht gepr\u00FCft: Automation-Regeln.</strong> Aus fehlenden Daten folgt nicht, dass keine Konflikte existieren. Ein offizieller JSON-Regel-Export kann oben zur Analyse erg\u00E4nzt werden.</p>'
         } else if (analysis.automation == null || (analysis.automation.blockers ?: []).any {
             !(it in ['automation-audit', 'automation-audit-coverage'])
         }) {
-            automationStatus = '<p><strong>Automation-Regeln nicht vollständig ausgewertet.</strong> Vorhandene Hinweise sind ein Teilergebnis, keine Entwarnung.</p>'
+            automationStatus = '<p><strong>Automation-Regeln nicht vollst\u00E4ndig ausgewertet.</strong> Vorhandene Hinweise sind ein Teilergebnis, keine Entwarnung.</p>'
         } else {
-            automationStatus = '<p>Regelkonfiguration gelesen. ' + (automationItems ? 'Hinweise siehe unten.' : 'Keine Konflikte nach den implementierten Regelprüfungen erkannt.') + '</p>'
+            automationStatus = '<p>Regelkonfiguration gelesen. ' + (automationItems ? 'Hinweise siehe unten.' : 'Keine Konflikte nach den implementierten Regelpr\u00FCfungen erkannt.') + '</p>'
         }
         if (!report.sourceComplete('automation-audit')) automationStatus +=
-            '<p><strong>Ausführungen nicht vollständig geprüft.</strong> Ob und wann eine Regel diese Vorgänge verändert hat, ist nicht belegt. Das Auditfenster ist eine Anfrage, kein Nachweis vollständiger Protokolle.</p>'
+            '<p><strong>Ausf\u00FChrungen nicht vollst\u00E4ndig gepr\u00FCft.</strong> Ob und wann eine Regel diese Vorg\u00E4nge ver\u00E4ndert hat, ist nicht belegt. Das Auditfenster ist eine Anfrage, kein Nachweis vollst\u00E4ndiger Protokolle.</p>'
         String claims = (analysis.causalClaims ?: []).findAll { CausalClaim claim ->
             visibleFindingIds.contains(claim.findingId)
         }.collect { CausalClaim claim ->
             Finding related = ((analysis.hierarchy?.findings ?: []) + (analysis.duplicates?.findings ?: [])).find { it.id == claim.findingId }
             '<li>' + (related == null ? '' : report.issue(related.issueId) + ': ') + '<strong>' +
-                CoreSupport.html([CONFIGURATION_CONFLICT: 'Konfigurationskonflikt', POSSIBLE_CAUSE: 'Mögliche Ursache, nicht nachgewiesen',
-                    PROBABLE_CAUSE: 'Wahrscheinliche Ursache, nicht bestätigt', CONFIRMED_CAUSE: 'Bestätigte Ursache'][claim.grade.name()]) +
+                CoreSupport.html([CONFIGURATION_CONFLICT: 'Konfigurationskonflikt', POSSIBLE_CAUSE: 'M\u00F6gliche Ursache, nicht nachgewiesen',
+                    PROBABLE_CAUSE: 'Wahrscheinliche Ursache, nicht best\u00E4tigt', CONFIRMED_CAUSE: 'Best\u00E4tigte Ursache'][claim.grade.name()]) +
                 '</strong>; fehlende Belege: ' +
                 CoreSupport.html(claim.missingEvidence.join(', ')) + '</li>'
         }.join('\n')
         """<section class="card" data-snapshot-id="${CoreSupport.html(analysis.snapshotId)}">
 <h2>Analyse der Structure #${analysis.structureId}</h2>
-<p><strong>${analysis.complete ? 'Alle vorgesehenen Prüfbereiche vollständig ausgewertet.' : 'Teilergebnis: Nicht alle Prüfbereiche konnten ausgewertet werden.'}</strong> Angefragtes Auditfenster: ${analysis.requestedAuditDays} Tage.</p>
-<p>${visibleHierarchy.size()} angezeigte Hierarchie-Hinweise · ${visibleDuplicates.size()} angezeigte Duplikatgruppen. Gelesene Structure-Vorkommen: ${analysis.snapshot?.occurrences?.size() ?: 0}.</p>
-<p class="note">Ein Hinweis ist keine bestätigte Ursache. Die Lesestatus unten zeigen, welche Daten verfügbar waren, nicht ob die Structure fehlerfrei ist. „Soll“ bezeichnet die Ausrichtung an der gelesenen Jira-Elternbeziehung, keine automatische Änderungsfreigabe.</p>
+<p><strong>${analysis.complete ? 'Alle vorgesehenen Pr\u00FCfbereiche vollst\u00E4ndig ausgewertet.' : 'Teilergebnis: Nicht alle Pr\u00FCfbereiche konnten ausgewertet werden.'}</strong> Angefragtes Auditfenster: ${analysis.requestedAuditDays} Tage.</p>
+<p>${visibleHierarchy.size()} angezeigte Hierarchie-Hinweise \u00B7 ${visibleDuplicates.size()} angezeigte Duplikatgruppen. Gelesene Structure-Vorkommen: ${analysis.snapshot?.occurrences?.size() ?: 0}.</p>
+<p class="note">Ein Hinweis ist keine best\u00E4tigte Ursache. Die Lesestatus unten zeigen, welche Daten verf\u00FCgbar waren, nicht ob die Structure fehlerfrei ist. \u201ESoll\u201C bezeichnet die Ausrichtung an der gelesenen Jira-Elternbeziehung, keine automatische \u00C4nderungsfreigabe.</p>
 ${analysis.issueKeyFilter ? '<p>Anzeigefilter: ' + CoreSupport.html(analysis.issueKeyFilter) + '</p>' : ''}
 ${blockers(analysis.blockers)}
-<details open><summary>Datenquellen und Prüfgrenzen</summary>${report.coverageTable()}</details>
-<details open><summary>Hierarchie-Hinweise</summary>${analysis.hierarchy?.complete ? '' : '<p class="blockers">Hierarchie nicht vollständig geprüft. Aufgeführte Hinweise sind ein Teilergebnis.</p>'}<div>${hierarchyItems ?: '<p>Keine Hinweise in dieser Anzeige. Bei unvollständiger Prüfung ist das keine Entwarnung.</p>'}</div></details>
-<details open><summary>Duplikate: Vorkommen vergleichen und Auswahl treffen</summary>${analysis.duplicates?.complete ? '' : '<p class="blockers">Duplikate nicht vollständig geprüft. Die Anzeige kann unvollständig sein.</p>'}<div>${duplicateItems ?: '<p>Keine Duplikatgruppen in dieser Anzeige. Der Anzeigefilter und die Lesedeckung sind zu beachten.</p>'}</div></details>
-<details open><summary>Automation-Prüfung</summary>${automationStatus}${DoctorAutomationRenderer.evidence(report)}<ul>${automationItems}</ul></details>
-<details><summary>Ursachen und Beleglage</summary><ul>${claims ?: '<li>Keine vollständige Ursachenkette belegt.</li>'}</ul></details>
-${visibleDuplicates ? '<button id="planButton" type="button">Duplikatauswahl prüfen</button>' : ''}</section>"""
+<details open><summary>Datenquellen und Pr\u00FCfgrenzen</summary>${report.coverageTable()}</details>
+<details open><summary>Hierarchie-Hinweise</summary>${analysis.hierarchy?.complete ? '' : '<p class="blockers">Hierarchie nicht vollst\u00E4ndig gepr\u00FCft. Aufgef\u00FChrte Hinweise sind ein Teilergebnis.</p>'}<div>${hierarchyItems ?: '<p>Keine Hinweise in dieser Anzeige. Bei unvollst\u00E4ndiger Pr\u00FCfung ist das keine Entwarnung.</p>'}</div></details>
+<details open><summary>Duplikate: Vorkommen vergleichen und Auswahl treffen</summary>${analysis.duplicates?.complete ? '' : '<p class="blockers">Duplikate nicht vollst\u00E4ndig gepr\u00FCft. Die Anzeige kann unvollst\u00E4ndig sein.</p>'}<div>${duplicateItems ?: '<p>Keine Duplikatgruppen in dieser Anzeige. Der Anzeigefilter und die Lesedeckung sind zu beachten.</p>'}</div></details>
+<details open><summary>Automation-Pr\u00FCfung</summary>${automationStatus}${DoctorAutomationRenderer.evidence(report)}<ul>${automationItems}</ul></details>
+<details><summary>Ursachen und Beleglage</summary><ul>${claims ?: '<li>Keine vollst\u00E4ndige Ursachenkette belegt.</li>'}</ul></details>
+${visibleDuplicates ? '<button id="planButton" type="button">Duplikatauswahl pr\u00FCfen</button>' : ''}</section>"""
     }
 
     private static String renderPlan(ProposalPlan plan) {
@@ -192,7 +192,7 @@ if (planButton) planButton.addEventListener('click', async () => {
   selected.forEach(input => {
     const group = input.closest('.duplicate-card');
     const chosen = group.querySelector('input[type=radio]:checked:not(:disabled)');
-    if (!chosen) throw new Error('Für jede aktivierte Gruppe ein Vorkommen zum Behalten wählen.');
+    if (!chosen) throw new Error('F\u00FCr jede aktivierte Gruppe ein Vorkommen zum Behalten w\u00E4hlen.');
     retainOccurrenceByGroup[input.value] = chosen.value;
     group.querySelectorAll('.permanent-row:checked:not(:disabled)').forEach(row => selectedPermanentRowIds.push(row.value));
   });

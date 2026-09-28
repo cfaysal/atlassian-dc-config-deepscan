@@ -10,16 +10,16 @@ final class DoctorAutomationRenderer {
         }
         String ruleCount = report.sourceComplete('automation-rules') ?
             rules.size() + ' aktive Regeln im gelesenen Analyseumfang.' :
-            'Gesamtzahl aktiver Regeln unbekannt; bisher ' + rules.size() + ' Regeln aus dem Teilergebnis verfügbar.'
+            'Gesamtzahl aktiver Regeln unbekannt; bisher ' + rules.size() + ' Regeln aus dem Teilergebnis verf\u00FCgbar.'
         String auditCount = report.sourceComplete('automation-audit') ?
             audit.size() + ' protokollierte Regel-/Vorgangszuordnungen in dieser Anzeige.' :
-            'Ausführungshistorie unvollständig; bisher ' + audit.size() +
-                ' Zuordnungen verfügbar. Das ist kein Nachweis für ausgebliebene Ausführungen.'
+            'Ausf\u00FChrungshistorie unvollst\u00E4ndig; bisher ' + audit.size() +
+                ' Zuordnungen verf\u00FCgbar. Das ist kein Nachweis f\u00FCr ausgebliebene Ausf\u00FChrungen.'
         String ruleRows = rules.collect { AutomationRuleSnapshot rule ->
             '<tr><td>' + rule.ruleId + '</td><td>' + CoreSupport.html(rule.trigger) +
                 '</td><td>' + CoreSupport.html((rule.projectIds ?: []).join(', ') ?: 'Global') +
-                '</td><td>' + (rule.complete ? 'Nach unterstütztem Schema auswertbar' :
-                    'Nicht vollständig auswertbar: Aktion oder Script benötigt eine gesonderte Codeprüfung') + '</td></tr>'
+                '</td><td>' + (rule.complete ? 'Nach unterst\u00FCtztem Schema auswertbar' :
+                    'Nicht vollst\u00E4ndig auswertbar: Aktion oder Script ben\u00F6tigt eine gesonderte Codepr\u00FCfung') + '</td></tr>'
         }.join('')
         String auditRows = audit.sort(false) { a, b -> b.occurredAt <=> a.occurredAt }.take(20).collect { item ->
             '<tr><td>' + CoreSupport.html(item.occurredAt) + '</td><td>' + item.ruleId + '</td><td>' +
@@ -27,12 +27,12 @@ final class DoctorAutomationRenderer {
                     'Kein erfolgreicher Abschluss belegt') + '</td></tr>'
         }.join('')
         '<p><strong>' + ruleCount + '</strong> ' +
-            'Globale Regeln werden mitgelesen. Eine Regel kann weitere Projekte oder Vorgänge betreffen. ' +
-            'Unbekannte Aktionen und eingebettete Groovy-Scripte werden niemals ausgeführt und nicht als unproblematisch bewertet.</p>' +
-            (ruleRows ? '<details><summary>Gelesene aktive Regeln</summary><table><thead><tr><th>Regel-ID</th><th>Auslöser</th><th>Projekt-IDs</th><th>Auswertbarkeit</th></tr></thead><tbody>' + ruleRows + '</tbody></table></details>' : '') +
+            'Globale Regeln werden mitgelesen. Eine Regel kann weitere Projekte oder Vorg\u00E4nge betreffen. ' +
+            'Unbekannte Aktionen und eingebettete Groovy-Scripte werden niemals ausgef\u00FChrt und nicht als unproblematisch bewertet.</p>' +
+            (ruleRows ? '<details><summary>Gelesene aktive Regeln</summary><table><thead><tr><th>Regel-ID</th><th>Ausl\u00F6ser</th><th>Projekt-IDs</th><th>Auswertbarkeit</th></tr></thead><tbody>' + ruleRows + '</tbody></table></details>' : '') +
             '<p><strong>' + auditCount + '</strong> ' +
-            'Angezeigt werden höchstens 20 der gelesenen Zuordnungen, nach Zeitpunkt sortiert. Eine Zuordnung belegt keine konkrete Parent-Änderung und keine Ursache des Structure-Problems. ' +
-            'Gelesen werden vorhandene Protokolle innerhalb der konfigurierten Aufbewahrung; bereits gelöschte Historie ist nicht rekonstruierbar.</p>' +
-            (auditRows ? '<details open><summary>Ausführungsbelege</summary><table><thead><tr><th>Zeitpunkt (UTC)</th><th>Regel-ID</th><th>Vorgang</th><th>Ergebnis</th></tr></thead><tbody>' + auditRows + '</tbody></table></details>' : '')
+            'Angezeigt werden h\u00F6chstens 20 der gelesenen Zuordnungen, nach Zeitpunkt sortiert. Eine Zuordnung belegt keine konkrete Parent-\u00C4nderung und keine Ursache des Structure-Problems. ' +
+            'Gelesen werden vorhandene Protokolle innerhalb der konfigurierten Aufbewahrung; bereits gel\u00F6schte Historie ist nicht rekonstruierbar.</p>' +
+            (auditRows ? '<details open><summary>Ausf\u00FChrungsbelege</summary><table><thead><tr><th>Zeitpunkt (UTC)</th><th>Regel-ID</th><th>Vorgang</th><th>Ergebnis</th></tr></thead><tbody>' + auditRows + '</tbody></table></details>' : '')
     }
 }

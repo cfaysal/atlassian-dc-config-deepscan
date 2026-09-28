@@ -47,17 +47,17 @@ assert offsets == [0L, 1L]
 auditService.getItems = { context, filter, offset, limit -> [items: [[id: 10L]], total: 0L] }
 def inconsistentPage = provider.readAudit(request)
 assert inconsistentPage.state == ReadState.INCOMPLETE
-assert inconsistentPage.reason.contains('Audit-Seite überschreitet gemeldete Gesamtzahl')
+assert inconsistentPage.reason.contains('Audit-Seite \u00FCberschreitet gemeldete Gesamtzahl')
 assert inconsistentPage.reason.contains('total=0, offset=0, gelesen=1, limit=10')
-assert !inconsistentPage.reason.contains('während des Lesens geändert')
+assert !inconsistentPage.reason.contains('w\u00E4hrend des Lesens ge\u00E4ndert')
 auditService.getItems = { context, filter, offset, limit -> [items: [[id: 10L]], total: -1L] }
-assert provider.readAudit(request).reason.contains('Audit-Gesamtzahl nicht verfügbar (total=-1')
+assert provider.readAudit(request).reason.contains('Audit-Gesamtzahl nicht verf\u00FCgbar (total=-1')
 auditService.getItems = { context, filter, offset, limit -> [items: (1L..11L).collect { [id: it] }, total: 11L] }
-assert provider.readAudit(request).reason.contains('Audit-Seite überschreitet angefragte Seitengröße')
+assert provider.readAudit(request).reason.contains('Audit-Seite \u00FCberschreitet angefragte Seitengr\u00F6\u00DFe')
 auditService.getItems = { context, filter, offset, limit -> [items: [[id: 10L + offset]], total: offset == 0 ? 2L : 3L] }
-assert provider.readAudit(request).reason.contains('Audit-Gesamtzahl zwischen Seiten geändert (vorher=2, total=3')
+assert provider.readAudit(request).reason.contains('Audit-Gesamtzahl zwischen Seiten ge\u00E4ndert (vorher=2, total=3')
 auditService.getItems = { context, filter, offset, limit -> [items: (1L..limit).collect { [id: it] }, total: 11L] }
-assert provider.readAudit(request).reason.contains('Audit-Leselimit erreicht (10 Einträge)')
+assert provider.readAudit(request).reason.contains('Audit-Leselimit erreicht (10 Eintr\u00E4ge)')
 auditService.getItems = { context, filter, offset, limit -> [items: [[id: 10L]], total: 1L] }
 auditService.getItem = { context, filter, id -> Optional.of(detail + [componentChanges: [
     [associatedItems: [results: [], offset: 0L, total: 2L]]]]) }
