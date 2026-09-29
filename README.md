@@ -1,27 +1,16 @@
-# Atlassian Data Center Project Configuration
+# Atlassian Data Center Configuration and Diagnostics
 
-A ScriptRunner REST endpoint that answers one question about a Jira Data Center project:
-**how is this project actually configured, all the way down?**
+Five administrator tools built with ScriptRunner REST endpoints for Jira and Confluence Data Center. Use the guide for the tool you installed; they have different URLs, parameters, read coverage, and export behavior.
 
-Pick a project, press OK, and the report expands every configuration item of that project
-down to its own inner configuration. Not "this project uses screen scheme X" but the whole
-tree underneath it: issue type, operation, screen, tab, field. Every node carries a deep
-link to the exact administration screen where it is maintained.
+| Endpoint | Platform | Administrator guide | Source |
+| --- | --- | --- | --- |
+| Project configuration (projectConfig) | Jira | [Run and interpret a project scan](docs/jira-project-configuration.md) | [Groovy](jira/jiraDCprojectConfig.groovy) |
+| Structure Doctor (structureIssueDoctor) | Jira | [Analyse a Structure and review findings](docs/jira-structure-doctor.md) | [Installable bundle](dist/structuredoctor/structureIssueDoctor.groovy) |
+| Space configuration (spaceConfig) | Confluence | [Survey spaces and inspect one configuration](docs/confluence-space-configuration.md) | [Groovy](confluence/confluenceDCspaceConfig.groovy) |
+| Space information (spaceInfo) | Confluence | [Find a space and inspect its pages](docs/confluence-space-information.md) | [Groovy](confluence/confluenceDCspaceInfo.groovy) |
+| User macros (userMacros) | Confluence | [Inventory and assess user macros](docs/confluence-user-macros.md) | [Groovy](confluence/userMacroDeepScan.groovy) |
 
-| Script | Platform | Version |
-| --- | --- | --- |
-| [`jira/jiraDCprojectConfig.groovy`](jira/jiraDCprojectConfig.groovy) | Jira Data Center | 0.3 |
-| [`confluence/confluenceDCspaceConfig.groovy`](confluence/confluenceDCspaceConfig.groovy) | Confluence Data Center | 0.3 |
-| [`confluence/userMacroDeepScan.groovy`](confluence/userMacroDeepScan.groovy) | Confluence Data Center | 4.1.0 |
-| [`confluence/confluenceDCspaceInfo.groovy`](confluence/confluenceDCspaceInfo.groovy) | Confluence Data Center | 0.1 |
-
-Typical uses: handing a project over to a new administrator, documenting a project before a
-migration, finding out why two projects behave differently, or producing the configuration
-appendix of an audit.
-
-Everything from here to **Licence** describes the Jira endpoint. The Confluence user macro
-scan is documented under [Confluence user macros](#confluence-user-macros).
-
+Start with the linked guide for installation, the exact URL, controls, output interpretation, and troubleshooting. The technical sections below retain implementation background. The following project configuration sections apply to the Jira projectConfig endpoint through **Status**; the later **Confluence user macros** and **Structure Doctor Core** sections describe those tools. The Confluence space guides provide the missing end-user workflows.
 ## What it reports
 
 Every section is expanded, not summarised:
@@ -143,11 +132,10 @@ bookmarkable URL.
 
 | Parameter | Default | Effect |
 | --- | --- | --- |
-| `project` | none | Project key. Without it, the picker is rendered. |
-| `format` | `html` | `html`, `json` or `csv`. |
-| `depth` | `full` | `top` collapses everything below the first level of each section. |
+| `project` | none | Project key. Without it, the HTML picker is rendered even when `format` is supplied. |
+| `format` | `html` | `html`, `json` or `csv` for a selected project. |
+| `depth` | `collapsed` | `collapsed` or `full` controls initial node expansion. |
 | `includeInactive` | `true` | Set to `false` to leave out released and archived versions. |
-| `numbers` | `de` | Thousands separator style. |
 
 ## Deep links, and where they come from
 
@@ -214,7 +202,8 @@ that same classpath.
 
 ## Status
 
-Version 0.1. The endpoint is in active development and its interface may still change. What
+Version 0.3. The Jira projectConfig endpoint is in active development and its interface may
+still change. What
 will not change is the reporting discipline described under Properties: no failed read
 rendered as an empty result, no deep link that is not backed by evidence, no issue counting,
 and no outbound call outside the Confluence export.
