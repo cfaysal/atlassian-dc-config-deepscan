@@ -16,6 +16,7 @@ imports = "\n".join([
 ]) + "\n"
 
 with tempfile.TemporaryDirectory(prefix="deepscan-config-tests-") as temp:
+    subprocess.run(["groovy", "-DrepoRoot=" + str(repo), "tools/tests/config-overview-typecheck.tests.groovy"], cwd=repo, check=True)
     for product, scope in [("jira", "project"), ("confluence", "space")]:
         endpoint = f"{product}/{product}DC{scope}Config.groovy"
         source = (repo / endpoint).read_text(encoding="utf-8")
@@ -27,5 +28,6 @@ with tempfile.TemporaryDirectory(prefix="deepscan-config-tests-") as temp:
                          (repo / product / "tests" / f"{product}DC{scope}Config.tests.groovy").read_text(encoding="utf-8"),
                          encoding="utf-8")
         print(f"Testing {endpoint}", flush=True)
+        subprocess.run(["groovy", "tools/config-overview-typecheck.groovy", endpoint], cwd=repo, check=True)
         subprocess.run(["groovy", "-DrepoRoot=" + str(repo), str(suite)], cwd=repo, check=True)
         subprocess.run(["groovy", "tools/parsecheck.groovy", endpoint], cwd=repo, check=True)

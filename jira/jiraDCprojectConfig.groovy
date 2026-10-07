@@ -3761,8 +3761,8 @@ class ConfigOverview {
         java.util.regex.Pattern.compile('(?s)(?:<p\\b[^>]*>\\s*)?<ac:structured-macro\\b(?=[^>]*\\bac:name="anchor")[^>]*>\\s*' +
             '<ac:parameter\\b[^>]*>\\s*(' + namePattern + ')\\s*</ac:parameter>\\s*</ac:structured-macro>(?:\\s*</p>)?')
     }
-    static List<Map> matches(String body, String namePattern) {
-        List<Map> result = []
+    static List<Map<String, Object>> matches(String body, String namePattern) {
+        List<Map<String, Object>> result = []
         def matcher = anchors(namePattern).matcher(body)
         while (matcher.find()) { result.add([start: matcher.start(), end: matcher.end(), name: matcher.group(1)]) }
         result
@@ -3778,8 +3778,8 @@ class ConfigOverview {
         }
     }
     static String text(String cell) { Cx.plainText(anchors('[^<]*').matcher(cell).replaceAll('')) }
-    static Map rowIdentity(List<String> cells, String product) {
-        List<Map> marks = matches(cells.get(0), java.util.regex.Pattern.quote(prefix(product) + 'row-') + '[0-9]+')
+    static Map<String, String> rowIdentity(List<String> cells, String product) {
+        List<Map<String, Object>> marks = matches(cells.get(0), java.util.regex.Pattern.quote(prefix(product) + 'row-') + '[0-9]+')
         def resource = java.util.regex.Pattern.compile('<ri:page\\b[^>]*/>').matcher(cells.get(0))
         if (marks.size() != 1 || !resource.find()) { throw new IllegalArgumentException('Overview row identity is missing or ambiguous.') }
         String target = resource.group()
@@ -3787,19 +3787,20 @@ class ConfigOverview {
         String title = attr(target, 'ri:content-title')
         String space = attr(target, 'ri:space-key')
         if (!title || !space) { throw new IllegalArgumentException('Overview row has no confirmed page target.') }
-        [id: marks.get(0).name.substring((prefix(product) + 'row-').length()), title: title, space: space]
+        String name = (String) marks.get(0).name
+        [id: name.substring((prefix(product) + 'row-').length()), title: title, space: space]
     }
-    static Map read(String body, String product) {
+    static Map<String, Object> read(String body, String product) {
         if (body == null) { throw new IllegalArgumentException('Overview body could not be read.') }
         if (body.contains('cfcon-space-config-export/1') || body.contains('cfcon-project-config-export/1')) {
             throw new IllegalArgumentException('A detail export cannot be used as its own overview.')
         }
-        List<Map> starts = matches(body, java.util.regex.Pattern.quote(prefix(product) + 'start'))
-        List<Map> ends = matches(body, java.util.regex.Pattern.quote(prefix(product) + 'end'))
+        List<Map<String, Object>> starts = matches(body, java.util.regex.Pattern.quote(prefix(product) + 'start'))
+        List<Map<String, Object>> ends = matches(body, java.util.regex.Pattern.quote(prefix(product) + 'end'))
         if (starts.isEmpty() && ends.isEmpty() && !body.contains(prefix(product))) {
             return [before: body, after: '', columns: [], rows: []]
         }
-        if (starts.size() != 1 || ends.size() != 1 || starts.get(0).end > ends.get(0).start) {
+        if (starts.size() != 1 || ends.size() != 1 || (starts.get(0).end as int) > (ends.get(0).start as int)) {
             throw new IllegalArgumentException('Overview table markers are missing, duplicated or out of order.')
         }
         String block = body.substring(starts.get(0).end as int, ends.get(0).start as int)
@@ -3821,12 +3822,14 @@ class ConfigOverview {
         }
         if (!tableBody.substring(consumed).trim().isEmpty() || rows.isEmpty()) { throw new IllegalArgumentException('Overview header is missing.') }
         List<String> header = rows.remove(0)
-        List<Map> columns = []
+        List<Map<String, String>> columns = []
         Set<String> keys = [] as Set
         for (int i = 1; i < header.size(); i++) {
-            List<Map> marks = matches(header.get(i), java.util.regex.Pattern.quote(prefix(product) + 'col-') + '[A-Za-z0-9_-]+')
+            List<Map<String, Object>> marks = matches(header.get(i), java.util.regex.Pattern.quote(prefix(product) + 'col-') + '[A-Za-z0-9_-]+')
             if (marks.size() != 1) { throw new IllegalArgumentException('Overview column identity is missing or ambiguous.') }
-            String key = new String(Base64.urlDecoder.decode(marks.get(0).name.substring((prefix(product) + 'col-').length())), 'UTF-8')
+            String name = (String) marks.get(0).name
+            byte[] decoded = Base64.urlDecoder.decode(name.substring((prefix(product) + 'col-').length()))
+            String key = new String(decoded, 'UTF-8')
             if (!keys.add(key)) { throw new IllegalArgumentException('Overview contains duplicate columns.') }
             columns.add([key: key, html: header.get(i)])
         }
@@ -3837,7 +3840,7 @@ class ConfigOverview {
         Set<String> titles = [] as Set
         for (List<String> row : rows) {
             if (row.size() != header.size()) { throw new IllegalArgumentException('Overview row has the wrong number of cells.') }
-            Map identity = rowIdentity(row, product)
+            Map<String, String> identity = rowIdentity(row, product)
             if (!ids.add(identity.id) || !titles.add(identity.space.toLowerCase(Locale.ROOT) + '\n' + identity.title.toLowerCase(Locale.ROOT))) {
                 throw new IllegalArgumentException('Overview contains duplicate export identities.')
             }
@@ -3851,32 +3854,34 @@ class ConfigOverview {
     }
     static String upsert(String body, String product, String pageId, String title, String space, String label, List<Map<String, String>> sections) {
         if (!(pageId ==~ /[0-9]+/) || !title || !space) { throw new IllegalArgumentException('Export page identity is incomplete.') }
-        Map model = read(body, product)
+        Map<String, Object> model = read(body, product)
+        List<Map<String, String>> columns = (List<Map<String, String>>) model.columns
+        List<List<String>> rows = (List<List<String>>) model.rows
         Map<String, Map<String, String>> byKey = [:]
         for (Map<String, String> section : sections) {
             if (byKey.put(section.key, section) != null) { throw new IllegalArgumentException('Export contains duplicate section identities.') }
-            if (!model.columns.any { it.key == section.key }) {
-                model.columns.add([key: section.key, html: anchor(prefix(product) + 'col-' + encode(section.key)) + Cx.esc(section.column)])
-                model.rows.each { it.add('') }
+            if (!columns.any { it.key == section.key }) {
+                columns.add([key: section.key, html: anchor(prefix(product) + 'col-' + encode(section.key)) + Cx.esc(section.column)])
+                rows.each { it.add('') }
             }
         }
         List<Integer> found = []
-        for (int i = 0; i < model.rows.size(); i++) {
-            Map identity = rowIdentity(model.rows.get(i), product)
+        for (int i = 0; i < rows.size(); i++) {
+            Map<String, String> identity = rowIdentity(rows.get(i), product)
             if (identity.id == pageId || (identity.space.equalsIgnoreCase(space) && identity.title.equalsIgnoreCase(title))) { found.add(i) }
         }
         if (found.size() > 1) { throw new IllegalArgumentException('Export name and page ID match different overview rows.') }
         List<String> row = [anchor(prefix(product) + 'row-' + pageId) + link(title, space, label, null)]
-        for (Map column : model.columns) {
-            Map section = byKey.get(column.key)
+        for (Map<String, String> column : columns) {
+            Map<String, String> section = byKey.get(column.key)
             row.add(section == null ? '' : link(title, space, section.label + ' (' + section.count + ')', section.anchor))
         }
-        if (found.isEmpty()) { model.rows.add(row) } else { model.rows.set(found.get(0), row) }
+        if (found.isEmpty()) { rows.add(row) } else { rows.set(found.get(0), row) }
         StringBuilder out = new StringBuilder(model.before.toString())
         out.append(marker(product, 'start')).append('<table><tbody><tr><th>').append(product == 'jira' ? 'Project' : 'Space').append('</th>')
-        model.columns.each { out.append('<th>').append(it.html).append('</th>') }
+        columns.each { out.append('<th>').append(it.html).append('</th>') }
         out.append('</tr>')
-        model.rows.each { cells ->
+        rows.each { cells ->
             out.append('<tr>')
             cells.each { out.append('<td>').append(it).append('</td>') }
             out.append('</tr>')
@@ -3884,13 +3889,15 @@ class ConfigOverview {
         out.append('</tbody></table>').append(marker(product, 'end')).append(model.after).toString()
     }
     static boolean confirmed(String body, String product, String pageId, String title, String space, String label, List<Map<String, String>> sections) {
-        Map model = read(body, product)
-        List row = model.rows.find { rowIdentity(it, product).id == pageId }
+        Map<String, Object> model = read(body, product)
+        List<Map<String, String>> columns = (List<Map<String, String>>) model.columns
+        List<List<String>> rows = (List<List<String>>) model.rows
+        List<String> row = rows.find { rowIdentity(it, product).id == pageId }
         if (row == null) { return false }
-        Map identity = rowIdentity(row, product)
+        Map<String, String> identity = rowIdentity(row, product)
         if (identity.title != title || identity.space != space || text(row.get(0)) != Cx.plainText(Cx.esc(label))) { return false }
-        for (Map section : sections) {
-            int column = model.columns.findIndexOf { it.key == section.key }
+        for (Map<String, String> section : sections) {
+            int column = columns.findIndexOf { it.key == section.key }
             if (column < 0) { return false }
             String cell = row.get(column + 1)
             def resource = java.util.regex.Pattern.compile('<ri:page\\b[^>]*/>').matcher(cell)
@@ -3910,8 +3917,9 @@ class OverviewExport {
         String stage = 'read'
         try {
             Map page = (Map) reader.call()
+            Object pageVersion = page.version
             if (page.ok != Boolean.TRUE || page.id != parentId || page.spaceKey != space || page.title == null ||
-                !(page.version instanceof Number) || page.version.intValue() < 1 || page.storage == null || parentId == pageId) {
+                !(pageVersion instanceof Number) || ((Number) pageVersion).intValue() < 1 || page.storage == null || parentId == pageId) {
                 return [state: 'failed', reason: 'Overview identity, body or version could not be confirmed. ' + (page.error ?: '')]
             }
             String merged = ConfigOverview.upsert(page.storage.toString(), product, pageId, title, space, label, sections)
@@ -3922,8 +3930,9 @@ class OverviewExport {
             if (saved.refused == Boolean.TRUE) { return [state: 'failed', reason: 'Overview write was refused: ' + (saved.error ?: 'write refused')] }
             stage = 'verify'
             Map measured = (Map) reader.call()
+            Object measuredVersion = measured.version
             if (measured.ok != Boolean.TRUE || measured.id != parentId || measured.spaceKey != space ||
-                !(measured.version instanceof Number) || measured.version.intValue() <= page.version.intValue() ||
+                !(measuredVersion instanceof Number) || ((Number) measuredVersion).intValue() <= ((Number) pageVersion).intValue() ||
                 !ConfigOverview.confirmed(measured.storage as String, product, pageId, title, space, label, sections)) {
                 return [state: 'unknown', reason: 'Overview row could not be confirmed after the write. ' + (saved.error ?: '')]
             }

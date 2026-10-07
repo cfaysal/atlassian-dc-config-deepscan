@@ -105,8 +105,8 @@ jobs:
           java -cp "$GROOVY_CP" groovy.ui.GroovyMain -e 'println "groovy " + GroovySystem.version'
 
       # The parse check compiles the endpoint to the CONVERSION phase. That validates
-      # syntax without resolving a single Jira symbol, which is the most that can be
-      # verified off-instance. It does not prove the script runs.
+      # syntax without resolving a single Jira symbol. Pure helpers can additionally
+      # be typechecked offline, but neither check proves platform code runs.
       - name: Parse check
         run: |
           set -euo pipefail
@@ -116,6 +116,15 @@ jobs:
             exit 1
           fi
           java -Dfile.encoding=UTF-8 -cp "$GROOVY_CP" groovy.ui.GroovyMain tools/parsecheck.groovy "$F"
+
+      - name: Overview helper static typecheck
+        if: matrix.product == 'jira' || matrix.product == 'confluence'
+        run: |
+          set -euo pipefail
+          java -Dfile.encoding=UTF-8 -cp "$GROOVY_CP" groovy.ui.GroovyMain \
+            tools/config-overview-typecheck.groovy '${{ matrix.endpoint }}'
+          java -Dfile.encoding=UTF-8 -DrepoRoot=. -cp "$GROOVY_CP" groovy.ui.GroovyMain \
+            tools/tests/config-overview-typecheck.tests.groovy
 
       # The suite is compiled together with the helper classes cut from the endpoint
       # itself, so it always tests the shipped source rather than a copy that can drift.

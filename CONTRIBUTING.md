@@ -55,7 +55,14 @@ is not.
     # parse check
     java -cp "$GROOVY_CP" groovy.ui.GroovyMain tools/parsecheck.groovy jira/jiraDCprojectConfig.groovy
 
-CI runs the parse check, the offline suite, the credential scan and the outbound-call check.
-None of that resolves a single Jira symbol, so before a release the file is additionally
+Run `python3 tools/run-config-tests.py` for both configuration endpoints. It runs the
+Overview helper static typecheck, the source-derived functional suites and the endpoint
+parse checks. `tools/config-overview-typecheck.groovy` typechecks `ConfigOverview` and
+`OverviewExport` from each shipped file against its actual platform-free dependencies;
+those dependencies are loaded dynamically. This gate fails on static diagnostics and
+does not check the remaining helpers or platform-dependent code.
+
+CI runs these checks, the credential scan and the outbound-call check.
+None of that resolves a single Jira or Confluence symbol, so before a release the file is additionally
 compiled against a running instance's own classpath and run through the static type checker
 against that same classpath. A change that only passes CI is not verified.
