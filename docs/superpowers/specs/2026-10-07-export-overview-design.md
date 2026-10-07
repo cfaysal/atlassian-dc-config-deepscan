@@ -4,7 +4,7 @@ The Jira `projectConfig` and Confluence `spaceConfig` endpoints retain their exi
 
 The selected parent receives one managed table per product. Its first column links the project or space name to the detail page. Section columns link to invisible Anchor macros immediately before the existing Expand macros. Counts come from the detail renderer, including its truncation wording. Jira columns use section kinds rather than project-specific scheme names.
 
-Rows are identified by the exported page ID. Creating another detail page appends a row; regenerating the same page replaces its row in place. Additional section kinds add columns without losing older rows. Native Confluence page links resolve section anchors; URLs and title-derived fragment identifiers are not guessed.
+Rows are matched by the linked export page title, with page ID as an additional identity check. A replacement page with the same title updates the existing row; ambiguous matches are refused. Creating another detail page appends a row; regenerating the same page replaces its row in place. Additional section kinds add columns without losing older rows. Native Confluence page links resolve section anchors; URLs and title-derived fragment identifiers are not guessed.
 
 Invisible Anchor macros identify the managed table, columns and rows. Parent content outside that region is preserved verbatim. Invalid, incomplete or duplicate markers, malformed rows and a detail export used as an overview are refused. Existing unmarked parent content may receive a new managed table. Product markers let Jira and Confluence tables coexist on the same parent.
 

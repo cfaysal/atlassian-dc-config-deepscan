@@ -183,6 +183,16 @@ link, which is the only outbound path in the file.
 
 ## Verification
 
+Both configuration endpoints can maintain a fixed overview on the selected Confluence parent page. An existing export page name updates its row; a new name appends a row with links to the detail page's sections. The detail-page layout and Remarks remain as before. See the [export architecture](ARCHITECTURE.md) and the [Jira](docs/jira-project-configuration.md) and [Confluence](docs/confluence-space-configuration.md) guides.
+
+```mermaid
+flowchart LR
+    Jira[projectConfig] --> Detail[Existing detail export]
+    Confluence[spaceConfig] --> Detail
+    Detail --> Overview[Selected parent: table upsert by export name]
+    Overview --> Sections[Links to detail section anchors]
+```
+
 The offline test suite is compiled together with the Jira-free classes cut out of the
 endpoint itself, so it always tests the shipped source rather than a copy that can drift.
 See [`jira/tests/README.md`](jira/tests/README.md) for what it covers, what it deliberately

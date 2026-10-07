@@ -47,7 +47,11 @@ Per-space JSON carries report metadata, space, sections, totals, diagnostics, an
 
 ## Optional Confluence page export
 
-From a selected space report, press **Export to a page**. Search for and select the destination space, optionally choose a parent page, enter the title, and press **Generate the page**. This POST writes one page on the same Confluence instance. It preserves existing **Remark** cells when regenerating its own marker-protected page. It refuses to overwrite an unrelated page or proceed when existing remarks cannot be read safely. Check the returned page and destination after generation.
+From a selected space report, press **Export to a page**. Search for and select the destination space, optionally choose a parent page, enter the title, and press **Generate the page**. This POST writes the detail page on the same Confluence instance. It preserves existing **Remark** cells when regenerating its own marker-protected page. It refuses to overwrite an unrelated detail page or proceed when existing remarks cannot be read safely. Check the returned page and destination after generation.
+
+The selected parent also becomes the fixed overview page. Choose the same parent for subsequent exports to accumulate rows in one table. An existing export page name updates its row and section links; a new name adds a row. The page ID also prevents a duplicate after a rename. Section counts match the detail page, including any truncation. Existing parent text and other tables outside the managed overview remain intact. Without a parent, the export writes only the detail page.
+
+The result links to both pages and states whether the overview was updated. If its save fails or cannot be confirmed, the result still names the written detail page and reports the overview problem separately. Re-export after resolving the problem; matching by name avoids a duplicate. The overview requires permission to update the selected parent. Keep its generated table and invisible identity anchors intact; add your own notes outside it. Older detail pages appear in the overview when exported again with that parent.
 
 ## Limits and troubleshooting
 
