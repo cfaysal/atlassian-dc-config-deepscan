@@ -2147,6 +2147,8 @@ function pickFirstProject(event) {
         all. A remark whose configuration item has disappeared is kept in a second table rather than
         dropped. A page that does not carry this export's marker is never overwritten. Nothing is read
         from Confluence until the button below is pressed.
+        The selected parent keeps an overview table: an existing export name updates its row,
+        and a new export adds a row with section links. Without a parent, only the detail page is written.
     </div>
     <div class="export-grid">
         <button id="exportOpen" class="button" type="button" onclick="openExport()">Export to Confluence</button>
@@ -2171,7 +2173,7 @@ function pickFirstProject(event) {
         </div>
         <div id="exportPageStage" class="export-stage hidden">
             <div class="export-grid">
-                <label class="export-field">Parent page - search by title (optional)
+                <label class="export-field">Parent page / overview - search by title (optional)
                     <input id="exportParentQuery" class="wide" type="search" autocomplete="off"
                            placeholder="Type at least ${Cx.MIN_SEARCH_CHARS} characters..." oninput="parentTyped()"
                            onkeydown="pickFirstHit(event, 'exportParentResults')">
@@ -2748,10 +2750,19 @@ function exportToConfluence() {
             parent += ' PARENT NOT CONFIRMED. ' +
                 (body.parentAppliedReason || 'The position could not be read back.');
         }
+        var overview = body.overview || { state: 'skipped' };
+        var overviewText = '';
+        if (overview.state === 'updated') {
+            overviewText = ' Overview updated.';
+        } else if (overview.state === 'failed' || overview.state === 'unknown') {
+            if (tone === 'good') { tone = 'warn'; }
+            overviewText = ' DETAIL PAGE WRITTEN; OVERVIEW ' +
+                (overview.state === 'failed' ? 'FAILED. ' : 'NOT CONFIRMED. ') + (overview.reason || '');
+        }
         var status = say(tone, 'Page ' + body.action + ': "' + body.title + '" in ' + body.spaceKey +
             ' (version ' + version + '). Remark read: ' + body.remarkRead +
             ', carried over: ' + body.remarksCarried + ' of ' + body.remarksRead +
-            ', without a matching item: ' + body.orphanedRemarks + '.' + parent);
+            ', without a matching item: ' + body.orphanedRemarks + '.' + parent + overviewText);
         if (body.pageUrl) {
             var link = document.createElement('a');
             link.href = body.pageUrl;
@@ -2759,6 +2770,14 @@ function exportToConfluence() {
             link.rel = 'noopener';
             link.textContent = ' Open the page';
             status.appendChild(link);
+        }
+        if (body.parentPageUrl && overview.state !== 'skipped') {
+            var indexLink = document.createElement('a');
+            indexLink.href = body.parentPageUrl;
+            indexLink.target = '_blank';
+            indexLink.rel = 'noopener';
+            indexLink.textContent = ' Open the overview';
+            status.appendChild(indexLink);
         }
     }).catch(function (error) {
         button.disabled = false;
@@ -2989,12 +3008,11 @@ class Cx {
         return out
     }
 
-    /* Body of a parent page this export creates. Minimal on purpose: it says what
-     * the page is for and where it came from, and it holds no report data, which
-     * lives on the child page and is rewritten on every run. */
+    /* Initial body of a parent created by this export. The detail remains on
+     * its child page; the overview updater owns its separate managed table. */
     static final String PARENT_BODY = "<p>Container page for the Jira project configuration export. " +
         "It was created by that export because the chosen parent page did not exist yet. " +
-        "The report itself is the child page below; this page carries no report data and is never rewritten.</p>"
+        "The report itself is the child page below; this page maintains the configuration overview table.</p>"
 
     /* Space picker paging. 20 pages of 200 covers every instance we have seen;
      * past that the picker reports itself truncated rather than showing a short
@@ -3402,6 +3420,7 @@ class Cx {
          * carries text more than once anywhere on the page. */
         List<Map<String, Object>> rows = new ArrayList<Map<String, Object>>()
         List<List<Map<String, Object>>> grouped = new ArrayList<List<Map<String, Object>>>()
+        List<Map<String, Object>> kept = []
         for (Map<String, Object> section : rowsOf(request, "sections")) {
             List<Map<String, Object>> sectionRows = new ArrayList<Map<String, Object>>()
             flatten(section, "", sectionRows)
@@ -3409,6 +3428,7 @@ class Cx {
                 continue
             }
             grouped.add(sectionRows)
+            kept.add(section)
             /* The same row objects, not copies: making the paths unique below has to
              * be visible in both views. */
             rows.addAll(sectionRows)
@@ -3452,10 +3472,13 @@ class Cx {
              * from the full list rather than from the visible one, because a section
              * that was cut to nothing still has to carry its own name. */
             String heading = str(sectionRows.get(0), "label", "Section")
-            out.append(expandOpen(sectionCut
-                ? heading + " (" + String.valueOf(visible.size()) + " of " +
-                    Pc.plural(sectionRows.size(), "item") + ", the rest is cut)"
-                : heading + " (" + Pc.plural(visible.size(), "item") + ")"))
+            String countText = sectionCut
+                ? String.valueOf(visible.size()) + " of " + Pc.plural(sectionRows.size(), "item") + ", the rest is cut"
+                : Pc.plural(visible.size(), "item")
+            Map<String, String> summary = ConfigOverview.section(kept.get(i), i, heading, countText)
+            outcome.sections.add(summary)
+            out.append(ConfigOverview.anchor(summary.get("anchor")))
+            out.append(expandOpen(heading + " (" + countText + ")"))
             if (sectionCut) {
                 out.append("<p><strong>This section is not complete.</strong> It carries ")
                 out.append(String.valueOf(visible.size())).append(" of ")
@@ -3721,6 +3744,196 @@ class Cx {
     }
 }
 
+class ConfigOverview {
+    static String prefix(String product) { 'cfcon-overview-' + product + '-' }
+    static String anchor(String name) {
+        '<ac:structured-macro ac:name="anchor"><ac:parameter ac:name="">' + Cx.esc(name) +
+            '</ac:parameter></ac:structured-macro>'
+    }
+    static String marker(String product, String part) { '<p>' + anchor(prefix(product) + part) + '</p>' }
+    static String encode(String key) { Base64.urlEncoder.withoutPadding().encodeToString(key.getBytes('UTF-8')) }
+    static Map<String, String> section(Map node, int index, String label, String count) {
+        String key = Cx.str(node, 'kind', 'section-' + index)
+        [key: key, column: Pc.humanKind(key, null), label: label,
+         anchor: 'cfcon-config-section-' + encode(key), count: count]
+    }
+    static java.util.regex.Pattern anchors(String namePattern) {
+        java.util.regex.Pattern.compile('(?s)(?:<p\\b[^>]*>\\s*)?<ac:structured-macro\\b(?=[^>]*\\bac:name="anchor")[^>]*>\\s*' +
+            '<ac:parameter\\b[^>]*>\\s*(' + namePattern + ')\\s*</ac:parameter>\\s*</ac:structured-macro>(?:\\s*</p>)?')
+    }
+    static List<Map> matches(String body, String namePattern) {
+        List<Map> result = []
+        def matcher = anchors(namePattern).matcher(body)
+        while (matcher.find()) { result.add([start: matcher.start(), end: matcher.end(), name: matcher.group(1)]) }
+        result
+    }
+    static String attr(String markup, String name) {
+        def matcher = java.util.regex.Pattern.compile('(?:^|\\s)' + java.util.regex.Pattern.quote(name) + '\\s*=\\s*"([^"]*)"').matcher(markup)
+        if (!matcher.find()) { return null }
+        Map<String, String> entities = [amp: '&', lt: '<', gt: '>', quot: '"', apos: "'"]
+        matcher.group(1).replaceAll(/&(#(?:x[0-9a-fA-F]+|[0-9]+)|amp|lt|gt|quot|apos);/) { String encoded, String entity ->
+            if (entities.containsKey(entity)) { return entities.get(entity) }
+            boolean hex = entity.startsWith('#x')
+            new String(Character.toChars(Integer.parseInt(entity.substring(hex ? 2 : 1), hex ? 16 : 10)))
+        }
+    }
+    static String text(String cell) { Cx.plainText(anchors('[^<]*').matcher(cell).replaceAll('')) }
+    static Map rowIdentity(List<String> cells, String product) {
+        List<Map> marks = matches(cells.get(0), java.util.regex.Pattern.quote(prefix(product) + 'row-') + '[0-9]+')
+        def resource = java.util.regex.Pattern.compile('<ri:page\\b[^>]*/>').matcher(cells.get(0))
+        if (marks.size() != 1 || !resource.find()) { throw new IllegalArgumentException('Overview row identity is missing or ambiguous.') }
+        String target = resource.group()
+        if (resource.find()) { throw new IllegalArgumentException('Overview row has multiple page targets.') }
+        String title = attr(target, 'ri:content-title')
+        String space = attr(target, 'ri:space-key')
+        if (!title || !space) { throw new IllegalArgumentException('Overview row has no confirmed page target.') }
+        [id: marks.get(0).name.substring((prefix(product) + 'row-').length()), title: title, space: space]
+    }
+    static Map read(String body, String product) {
+        if (body == null) { throw new IllegalArgumentException('Overview body could not be read.') }
+        if (body.contains('cfcon-space-config-export/1') || body.contains('cfcon-project-config-export/1')) {
+            throw new IllegalArgumentException('A detail export cannot be used as its own overview.')
+        }
+        List<Map> starts = matches(body, java.util.regex.Pattern.quote(prefix(product) + 'start'))
+        List<Map> ends = matches(body, java.util.regex.Pattern.quote(prefix(product) + 'end'))
+        if (starts.isEmpty() && ends.isEmpty() && !body.contains(prefix(product))) {
+            return [before: body, after: '', columns: [], rows: []]
+        }
+        if (starts.size() != 1 || ends.size() != 1 || starts.get(0).end > ends.get(0).start) {
+            throw new IllegalArgumentException('Overview table markers are missing, duplicated or out of order.')
+        }
+        String block = body.substring(starts.get(0).end as int, ends.get(0).start as int)
+        def table = java.util.regex.Pattern.compile('(?s)^\\s*<table\\b[^>]*>\\s*<tbody\\b[^>]*>(.*?)</tbody>\\s*</table>\\s*$').matcher(block)
+        if (!table.matches()) { throw new IllegalArgumentException('Overview table is malformed.') }
+        String tableBody = table.group(1)
+        if (tableBody.contains('<table')) { throw new IllegalArgumentException('Overview table is nested.') }
+        List<List<String>> rows = []
+        def rowMatcher = Cx.ROW.matcher(tableBody)
+        int consumed = 0
+        while (rowMatcher.find()) {
+            if (!tableBody.substring(consumed, rowMatcher.start()).trim().isEmpty()) { throw new IllegalArgumentException('Unexpected overview table content.') }
+            String row = rowMatcher.group(1)
+            if (row =~ /(?i)\b(?:rowspan|colspan)\s*=/) { throw new IllegalArgumentException('Merged overview cells cannot be updated safely.') }
+            List<String> cells = Cx.cellsOf(row)
+            if (cells.isEmpty()) { throw new IllegalArgumentException('Overview row has no cells.') }
+            rows.add(cells)
+            consumed = rowMatcher.end()
+        }
+        if (!tableBody.substring(consumed).trim().isEmpty() || rows.isEmpty()) { throw new IllegalArgumentException('Overview header is missing.') }
+        List<String> header = rows.remove(0)
+        List<Map> columns = []
+        Set<String> keys = [] as Set
+        for (int i = 1; i < header.size(); i++) {
+            List<Map> marks = matches(header.get(i), java.util.regex.Pattern.quote(prefix(product) + 'col-') + '[A-Za-z0-9_-]+')
+            if (marks.size() != 1) { throw new IllegalArgumentException('Overview column identity is missing or ambiguous.') }
+            String key = new String(Base64.urlDecoder.decode(marks.get(0).name.substring((prefix(product) + 'col-').length())), 'UTF-8')
+            if (!keys.add(key)) { throw new IllegalArgumentException('Overview contains duplicate columns.') }
+            columns.add([key: key, html: header.get(i)])
+        }
+        if (header.isEmpty() || text(header.get(0)) != (product == 'jira' ? 'Project' : 'Space')) {
+            throw new IllegalArgumentException('Overview header is not this exporter\'s header.')
+        }
+        Set<String> ids = [] as Set
+        Set<String> titles = [] as Set
+        for (List<String> row : rows) {
+            if (row.size() != header.size()) { throw new IllegalArgumentException('Overview row has the wrong number of cells.') }
+            Map identity = rowIdentity(row, product)
+            if (!ids.add(identity.id) || !titles.add(identity.space.toLowerCase(Locale.ROOT) + '\n' + identity.title.toLowerCase(Locale.ROOT))) {
+                throw new IllegalArgumentException('Overview contains duplicate export identities.')
+            }
+        }
+        [before: body.substring(0, starts.get(0).start as int), after: body.substring(ends.get(0).end as int), columns: columns, rows: rows]
+    }
+    static String link(String title, String space, String label, String sectionAnchor) {
+        '<ac:link' + (sectionAnchor ? ' ac:anchor="' + Cx.esc(sectionAnchor) + '"' : '') + '>' +
+            '<ri:page ri:content-title="' + Cx.esc(title) + '" ri:space-key="' + Cx.esc(space) + '"/>' +
+            '<ac:link-body>' + Cx.esc(label) + '</ac:link-body></ac:link>'
+    }
+    static String upsert(String body, String product, String pageId, String title, String space, String label, List<Map<String, String>> sections) {
+        if (!(pageId ==~ /[0-9]+/) || !title || !space) { throw new IllegalArgumentException('Export page identity is incomplete.') }
+        Map model = read(body, product)
+        Map<String, Map<String, String>> byKey = [:]
+        for (Map<String, String> section : sections) {
+            if (byKey.put(section.key, section) != null) { throw new IllegalArgumentException('Export contains duplicate section identities.') }
+            if (!model.columns.any { it.key == section.key }) {
+                model.columns.add([key: section.key, html: anchor(prefix(product) + 'col-' + encode(section.key)) + Cx.esc(section.column)])
+                model.rows.each { it.add('') }
+            }
+        }
+        List<Integer> found = []
+        for (int i = 0; i < model.rows.size(); i++) {
+            Map identity = rowIdentity(model.rows.get(i), product)
+            if (identity.id == pageId || (identity.space.equalsIgnoreCase(space) && identity.title.equalsIgnoreCase(title))) { found.add(i) }
+        }
+        if (found.size() > 1) { throw new IllegalArgumentException('Export name and page ID match different overview rows.') }
+        List<String> row = [anchor(prefix(product) + 'row-' + pageId) + link(title, space, label, null)]
+        for (Map column : model.columns) {
+            Map section = byKey.get(column.key)
+            row.add(section == null ? '' : link(title, space, section.label + ' (' + section.count + ')', section.anchor))
+        }
+        if (found.isEmpty()) { model.rows.add(row) } else { model.rows.set(found.get(0), row) }
+        StringBuilder out = new StringBuilder(model.before.toString())
+        out.append(marker(product, 'start')).append('<table><tbody><tr><th>').append(product == 'jira' ? 'Project' : 'Space').append('</th>')
+        model.columns.each { out.append('<th>').append(it.html).append('</th>') }
+        out.append('</tr>')
+        model.rows.each { cells ->
+            out.append('<tr>')
+            cells.each { out.append('<td>').append(it).append('</td>') }
+            out.append('</tr>')
+        }
+        out.append('</tbody></table>').append(marker(product, 'end')).append(model.after).toString()
+    }
+    static boolean confirmed(String body, String product, String pageId, String title, String space, String label, List<Map<String, String>> sections) {
+        Map model = read(body, product)
+        List row = model.rows.find { rowIdentity(it, product).id == pageId }
+        if (row == null) { return false }
+        Map identity = rowIdentity(row, product)
+        if (identity.title != title || identity.space != space || text(row.get(0)) != Cx.plainText(Cx.esc(label))) { return false }
+        for (Map section : sections) {
+            int column = model.columns.findIndexOf { it.key == section.key }
+            if (column < 0) { return false }
+            String cell = row.get(column + 1)
+            def resource = java.util.regex.Pattern.compile('<ri:page\\b[^>]*/>').matcher(cell)
+            def target = java.util.regex.Pattern.compile('<ac:link\\b[^>]*>').matcher(cell)
+            if (text(cell) != Cx.plainText(Cx.esc(section.label + ' (' + section.count + ')')) || !resource.find() || !target.find() ||
+                attr(resource.group(), 'ri:content-title') != title || attr(resource.group(), 'ri:space-key') != space ||
+                attr(target.group(), 'ac:anchor') != section.anchor) { return false }
+        }
+        true
+    }
+}
+
+class OverviewExport {
+    static Map maintain(String product, String parentId, String pageId, String title, String space, String label,
+                        List<Map<String, String>> sections, Closure reader, Closure writer) {
+        if (!parentId) { return [state: 'skipped', reason: 'No overview page was selected.'] }
+        String stage = 'read'
+        try {
+            Map page = (Map) reader.call()
+            if (page.ok != Boolean.TRUE || page.id != parentId || page.spaceKey != space || page.title == null ||
+                !(page.version instanceof Number) || page.version.intValue() < 1 || page.storage == null || parentId == pageId) {
+                return [state: 'failed', reason: 'Overview identity, body or version could not be confirmed. ' + (page.error ?: '')]
+            }
+            String merged = ConfigOverview.upsert(page.storage.toString(), product, pageId, title, space, label, sections)
+            stage = 'write'
+            Map saved
+            try { saved = (Map) writer.call(page, merged) }
+            catch (Exception error) { saved = [ok: false, error: Cx.errorDetail(error)] }
+            if (saved.refused == Boolean.TRUE) { return [state: 'failed', reason: 'Overview write was refused: ' + (saved.error ?: 'write refused')] }
+            stage = 'verify'
+            Map measured = (Map) reader.call()
+            if (measured.ok != Boolean.TRUE || measured.id != parentId || measured.spaceKey != space ||
+                !(measured.version instanceof Number) || measured.version.intValue() <= page.version.intValue() ||
+                !ConfigOverview.confirmed(measured.storage as String, product, pageId, title, space, label, sections)) {
+                return [state: 'unknown', reason: 'Overview row could not be confirmed after the write. ' + (saved.error ?: '')]
+            }
+            [state: 'updated', reason: null, pageId: parentId, pageVersion: measured.version]
+        } catch (Exception error) {
+            [state: stage == 'verify' ? 'unknown' : 'failed', reason: 'Overview ' + stage + ': ' + Cx.errorDetail(error)]
+        }
+    }
+}
+
 /* What a remark read found, and whether writing is allowed at all. */
 class RemarkRead {
 
@@ -3760,6 +3973,7 @@ class RemarkRead {
 
 /* Rendered storage format plus what happened to the carried-over remarks. */
 class ExportOutcome {
+    List<Map<String, String>> sections = []
     String storage
     int remarksRead
     int remarksCarried
@@ -7056,6 +7270,9 @@ Map<String, Object> confluenceCall(ApplicationLinkRequestFactory factory, Reques
     Map<String, Object> json = Cx.copyMap((Map<?, ?>) parsed)
     Object statusCode = json.get("statusCode")
     if (statusCode instanceof Number && ((Number) statusCode).intValue() >= 400) {
+        /* Timeouts and server errors may follow a persisted write. Only known
+         * validation, access and version refusals may skip overview readback. */
+        result.put("refused", [400, 401, 403, 404, 409].contains(((Number) statusCode).intValue()))
         result.put("error", "Confluence refused the call to " + url + " with HTTP " +
             String.valueOf(((Number) statusCode).intValue()) + ": " + Cx.str(json, "message", "no message"))
         return result
@@ -7121,6 +7338,31 @@ Map<String, Object> confluenceSpaces(ApplicationLinkRequestFactory factory) {
     result.put("ok", Boolean.TRUE)
     result.put("truncated", Boolean.TRUE)
     return result
+}
+
+/* The same authenticated application link as the detail export. Read the body,
+ * version and identity together, then update only the overview body. */
+Map<String, Object> confluenceOverviewRead(ApplicationLinkRequestFactory factory, String parentId) {
+    Map<String, Object> call = confluenceCall(factory, Request.MethodType.GET,
+        "/rest/api/content/" + parentId + "?expand=body.storage,version,space", null)
+    if (call.get("ok") != Boolean.TRUE) { return [ok: false, error: call.get("error")] }
+    Map<String, Object> json = (Map<String, Object>) call.get("json")
+    Map<String, Object> storage = Cx.sub(Cx.sub(json, "body"), "storage")
+    if (Cx.str(json, "type", "") != "page" || !storage.containsKey("value") || storage.get("value") == null) {
+        return [ok: false, error: "The overview page storage body did not arrive."]
+    }
+    return [ok: true, id: Cx.str(json, "id", ""), title: Cx.str(json, "title", ""),
+        spaceKey: Cx.str(Cx.sub(json, "space"), "key", ""),
+        version: Cx.sub(json, "version").get("number"), storage: storage.get("value")]
+}
+
+Map<String, Object> confluenceOverviewWrite(ApplicationLinkRequestFactory factory, Map page, String storage) {
+    Map payload = [id: page.get("id"), type: "page", title: page.get("title"),
+        body: [storage: [value: storage, representation: "storage"]],
+        version: [number: ((Number) page.get("version")).intValue() + 1, minorEdit: true]]
+    Map<String, Object> call = confluenceCall(factory, Request.MethodType.PUT,
+        "/rest/api/content/" + page.get("id"), JsonOutput.toJson(payload))
+    return [ok: call.get("ok") == Boolean.TRUE, refused: call.get("refused"), error: call.get("error")]
 }
 
 /* The parent page, resolved and located. A parent that does not exist or sits in
@@ -7899,6 +8141,13 @@ projectConfig(
         outcome.warnings.add(parentVerdict.get("reason").toString())
     }
 
+    Map<String, Object> projectIdentity = Cx.sub(request, "project")
+    String overviewLabel = Cx.str(projectIdentity, "name", Cx.str(projectIdentity, "key", title))
+    Map overview = OverviewExport.maintain("jira", parentId, pageId, title, spaceKey, overviewLabel,
+        outcome.sections,
+        { -> confluenceOverviewRead(factory, parentId) },
+        { Map page, String storage -> confluenceOverviewWrite(factory, page, storage) })
+
     Map<String, Object> response = new LinkedHashMap<String, Object>()
     response.put("ok", Boolean.TRUE)
     response.put("written", Boolean.TRUE)
@@ -7922,6 +8171,7 @@ projectConfig(
     response.put("remarksCarried", Integer.valueOf(outcome.remarksCarried))
     response.put("orphanedRemarks", Integer.valueOf(outcome.orphanKeys.size()))
     response.put("orphanedKeys", outcome.orphanKeys)
+    response.put("overview", overview)
     response.put("warnings", outcome.warnings)
     response.put("executionMs", Long.valueOf(System.currentTimeMillis() - started))
 

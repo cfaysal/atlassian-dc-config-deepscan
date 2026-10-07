@@ -1599,6 +1599,8 @@ check("OP-1458 the CSV carries the repeated link only on the enclosing row",
 ok("OP-1458 the JSON carries no dropped link either",
     !Render.json(rpReport).contains("edit level"))
 
+new GroovyShell(getClass().classLoader, new Binding([product: 'jira', renderDetail: { Map request -> Cx.render(request, null) }])).evaluate(new File(System.getProperty('repoRoot', '.'), 'tools/tests/export-overview.tests.groovy'))
+
 /* ---- result --------------------------------------------------------------- */
 
 println "PASSED: " + passed
