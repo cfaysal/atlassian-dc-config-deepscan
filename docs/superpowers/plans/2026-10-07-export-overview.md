@@ -33,7 +33,8 @@
 
 - [x] Run both full offline suites, both endpoint parse checks and the shared-renderer drift gate.
 - [x] Inspect source integration and scoped diff; obtain independent review and behavior-preserving simplifier feedback.
-- [x] Record results and live-test limitations on OP-1475. Commit only this workstream, with `OP-1475` at the start of the subject. Keep the branch/worktree while acceptance is pending.
+- [ ] Record results and live-test limitations on OP-1475; the prepared result comment awaits publication approval.
+- [x] Commit only this workstream, with `OP-1475` at the start of the subject. Keep the branch/worktree while acceptance is pending.
 
 The test runner extracts from `class Pc {` to the product's `END OF THE ...-FREE BLOCK` banner, prepends the imports used by CI and appends the real endpoint suite. Run with `groovy -DrepoRoot=<worktree> <generated-suite>`. Parse with `groovy tools/parsecheck.groovy <endpoint>`. Drift with `python3 tools/shared-renderer-drift.py`.
 
