@@ -185,10 +185,13 @@ link, which is the only outbound path in the file.
 
 Both configuration endpoints can maintain a fixed overview on the selected Confluence parent page. An existing export page name updates its row; a new name appends a row with links to the detail page's sections. The detail-page layout and Remarks remain as before. See the [export architecture](ARCHITECTURE.md) and the [Jira](docs/jira-project-configuration.md) and [Confluence](docs/confluence-space-configuration.md) guides.
 
+The local Confluence export groups parent creation, detail persistence and overview persistence in one SAL transaction. Its transaction error response also covers commit failures; instance behavior still requires verification on the installed ScriptRunner endpoint.
+
 ```mermaid
 flowchart LR
     Jira[projectConfig] --> Detail[Existing detail export]
-    Confluence[spaceConfig] --> Detail
+    Confluence[spaceConfig] --> Transaction[Confluence: SAL unit of work]
+    Transaction --> Detail
     Detail --> Overview[Selected parent: table upsert by export name]
     Overview --> Sections[Links to detail section anchors]
 ```

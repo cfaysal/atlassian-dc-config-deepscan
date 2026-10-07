@@ -62,6 +62,13 @@ parse checks. `tools/config-overview-typecheck.groovy` typechecks `ConfigOvervie
 those dependencies are loaded dynamically. This gate fails on static diagnostics and
 does not check the remaining helpers or platform-dependent code.
 
+The same runner and the Confluence CI job also execute the actual export branch
+against a synthetic persistence lifecycle in
+`confluence/tests/confluenceDCspaceConfig.transaction.tests.groovy`. This checks
+first-run parent/table creation, repeat exports, rollback and existing write
+guards, and statically checks the new transaction adapter against API contract
+stubs. It does not replace a live Confluence test or an instance-classpath check.
+
 CI runs these checks, the credential scan and the outbound-call check.
 None of that resolves a single Jira or Confluence symbol, so before a release the file is additionally
 compiled against a running instance's own classpath and run through the static type checker
