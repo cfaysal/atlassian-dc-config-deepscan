@@ -173,6 +173,13 @@ jobs:
           } > /tmp/testsuite.groovy
           java -Xmx2g -Dfile.encoding=UTF-8 -cp "$GROOVY_CP" groovy.ui.GroovyMain /tmp/testsuite.groovy
 
+      - name: Confluence export transaction lifecycle
+        if: matrix.product == 'confluence'
+        run: |
+          set -euo pipefail
+          java -Dfile.encoding=UTF-8 -DrepoRoot=. -cp "$GROOVY_CP" groovy.ui.GroovyMain \
+            confluence/tests/confluenceDCspaceConfig.transaction.tests.groovy
+
       - name: Structure Doctor capability-probe contract
         if: matrix.product == 'jira'
         run: |

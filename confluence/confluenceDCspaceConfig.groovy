@@ -7125,6 +7125,39 @@ class Cw {
  * replace a foreign page nor drop a remark.
  * ========================================================================== */
 
+/* Related PageManager calls must share one unit of work. SAL uses REQUIRED:
+ * https://developer.atlassian.com/server/confluence/hibernate-sessions-and-transaction-management-guidelines/
+ * Resolve the SAL types at runtime, as with the read-only database adapter.
+ * Exceptions must propagate: Pc.duckAll would swallow a failed commit. */
+class PageExportRejected extends RuntimeException {
+    final Object response
+    PageExportRejected(Object response) { this.response = response }
+}
+
+class PageExportTransaction {
+    static Object execute(Closure body) {
+        Class templateType = Class.forName("com.atlassian.sal.api.transaction.TransactionTemplate")
+        Object template = ComponentLocator.getComponent(templateType)
+        if (template == null) {
+            throw new IllegalStateException("The SAL transaction component could not be resolved. Nothing was written.")
+        }
+        Class callbackType = Class.forName("com.atlassian.sal.api.transaction.TransactionCallback")
+        Object callback = { ->
+            Object response = body.call()
+            Object status = InvokerHelper.invokeMethod(response, "getStatus", new Object[0])
+            if (!(status instanceof Number)) {
+                throw new IllegalStateException("The export response status could not be read.")
+            }
+            if (((Number) status).intValue() >= 400) {
+                throw new PageExportRejected(response)
+            }
+            return response
+        }.asType(callbackType)
+        return InvokerHelper.invokeMethod(template, "execute", [callback] as Object[])
+    }
+}
+/* ---- End page export transaction ---- */
+
 spaceConfig(
     httpMethod: "POST",
     groups: ["confluence-administrators"]
@@ -7315,333 +7348,346 @@ spaceConfig(
             (pageManager == null ? "PageManager" : (pageService == null ? "PageService" : "SpaceService")) + ").")
     }
 
-    Space space = null
+    /* Keep parent creation, child attachment and overview update in the same
+     * transaction. Return the prepared response only after execute has completed;
+     * an ORM failure or a refusal after a save must never claim a written export. */
     try {
-        space = spaceService.getKeySpaceLocator(spaceKey).getSpace()
-    } catch (Exception error) {
-        return refuse(500, "validate", "The space \"" + spaceKey + "\" could not be read: " +
-            Cx.errorDetail(error))
-    }
-    if (space == null) {
-        return refuse(400, "validate", "There is no space with the key \"" + spaceKey + "\".")
-    }
-
-    /* Three outcomes, kept apart in the response: no parent, a parent that was
-     * found, and a parent this run created. Creating is never reported as finding -
-     * an administrator who reads "found" believes the page was already there and
-     * stops looking for the one that was just made. */
-    Page parentPage = null
-    String parentAction = "none"
-
-    if (!parentRaw.isEmpty()) {
-        long parentId = 0L
-        try {
-            parentId = Long.parseLong(parentRaw)
-        } catch (NumberFormatException ignored) {
-            return refuse(400, "validate", "The parent page ID \"" + parentRaw + "\" is not a number.")
-        }
-        try {
-            parentPage = pageService.getIdPageLocator(parentId).getPage()
-        } catch (Exception error) {
-            return refuse(500, "validate", "The parent page could not be read: " + Cx.errorDetail(error))
-        }
-        if (parentPage == null) {
-            return refuse(400, "validate", "There is no page with the ID " + parentRaw + ".")
-        }
-        if (!spaceKey.equalsIgnoreCase(String.valueOf(parentPage.getSpaceKey()))) {
-            return refuse(400, "validate", "The parent page " + parentRaw + " sits in space \"" +
-                String.valueOf(parentPage.getSpaceKey()) + "\", not in \"" + spaceKey + "\".")
-        }
-        parentAction = "found"
-    }
-
-    /* ---- Remark read ------------------------------------------------------- */
-
-    /* The exact locator returns the persistence Page the remark parser and the
-     * write path below both work on. */
-    Page existingPage = null
-    try {
-        existingPage = pageService.getTitleAndSpaceKeyPageLocator(spaceKey, title).getPage()
-    } catch (Exception error) {
-        return refuse(409, "read", "The existing page could not be read (" + Cx.errorDetail(error) +
-            "). Nothing is written, so no remark can be lost.")
-    }
-
-    RemarkRead read = new RemarkRead()
-    if (existingPage != null) {
-        String existingStorage = null
-        try {
-            existingStorage = existingPage.getBodyAsString()
-        } catch (Exception error) {
-            return refuse(409, "read", "The body of the existing page could not be read (" +
-                Cx.errorDetail(error) + "). Nothing is written, so no remark can be lost.")
-        }
-        read = Cx.parseRemarks(existingStorage)
-        read.pageId = existingPage.getIdAsString()
-        read.pageVersion = existingPage.getVersion()
-    }
-
-    /* Fail closed. This is the only path to a write and a FAILED read never passes
-     * it: no create, no update, reported to the caller as a failure. A page that
-     * would lose an administrator's own text is never produced. */
-    if (!read.isWriteAllowed()) {
-        Map<String, Object> refusal = new LinkedHashMap<String, Object>()
-        refusal.put("ok", Boolean.FALSE)
-        refusal.put("written", Boolean.FALSE)
-        refusal.put("stage", "read")
-        refusal.put("error", read.reason)
-        refusal.put("remarkRead", read.outcome)
-        refusal.put("remarkReadDetail", read.asMap())
-        refusal.put("spaceKey", spaceKey)
-        refusal.put("title", title)
-        refusal.put("executionMs", Long.valueOf(System.currentTimeMillis() - started))
-        return Http.build(responseClass, 409,
-            JsonOutput.prettyPrint(JsonOutput.toJson(refusal)), Http.JSON, null)
-    }
-
-    /* ---- Parent page from a typed title ------------------------------------ */
-
-    /* There is no Create button. A title that was typed and never picked is
-     * resolved here, in the generating request, which is the only moment at which
-     * the answer is still current. It sits AFTER the fail-closed remark read on
-     * purpose: a run that is about to be refused with a 409 must not leave a
-     * container page behind that nothing was ever filed under.
-     *
-     * The exact title is re-checked immediately before the create, not only in the
-     * search the browser ran earlier. That covers the page somebody else created in
-     * between and the administrator who saw a hit, did not click it and generated
-     * anyway. Neither produces a second page with the same title. A failed read
-     * stays a failed read and never degrades into "no such page", which would be
-     * answered by creating a duplicate. */
-    if (parentPage == null && !parentTitleRaw.isEmpty()) {
-        try {
-            parentPage = pageService.getTitleAndSpaceKeyPageLocator(spaceKey, parentTitleRaw).getPage()
-        } catch (Exception error) {
-            return refuse(500, "parent", "The parent page \"" + parentTitleRaw + "\" could not be looked " +
-                "up in \"" + spaceKey + "\" (" + Cx.errorDetail(error) + "). That is a failed read, not a " +
-                "space without that page, so nothing was created and nothing is written.")
-        }
-
-        if (parentPage != null) {
-            parentAction = "found"
-        } else {
+        return PageExportTransaction.execute({ ->
+            Space space = null
             try {
-                Page container = new Page()
-                container.setVersion(1)
-                container.setSpace(space)
-                container.setTitle(parentTitleRaw)
-                container.setBodyContent(new BodyContent(container, Cx.PARENT_BODY, BodyType.XHTML))
-                container.setCreator(AuthenticatedUserThreadLocal.get())
-                pageManager.saveContentEntity(container, DefaultSaveContext.SUPPRESS_NOTIFICATIONS)
-                parentPage = pageService.getTitleAndSpaceKeyPageLocator(spaceKey, parentTitleRaw).getPage()
+                space = spaceService.getKeySpaceLocator(spaceKey).getSpace()
             } catch (Exception error) {
-                return refuse(500, "parent", "The parent page \"" + parentTitleRaw + "\" could not be " +
-                    "created in \"" + spaceKey + "\" (" + Cx.errorDetail(error) + "). Nothing is written: a " +
-                    "report filed at the top level of the space instead would sit where nobody looks for it.")
+                return refuse(500, "validate", "The space \"" + spaceKey + "\" could not be read: " +
+                    Cx.errorDetail(error))
             }
-            if (parentPage == null) {
-                return refuse(500, "parent", "The parent page \"" + parentTitleRaw + "\" is not readable " +
-                    "after the save, so the report has no confirmed place to go. Nothing is written.")
+            if (space == null) {
+                return refuse(400, "validate", "There is no space with the key \"" + spaceKey + "\".")
             }
-            parentAction = "created"
-        }
-    }
 
-    /* ---- Write ------------------------------------------------------------- */
+            /* Three outcomes, kept apart in the response: no parent, a parent that was
+             * found, and a parent this run created. Creating is never reported as finding -
+             * an administrator who reads "found" believes the page was already there and
+             * stops looking for the one that was just made. */
+            Page parentPage = null
+            String parentAction = "none"
 
-    /* The instance block on the page is read from this instance, never taken from
-     * the payload the browser sent back. */
-    Map<String, String> identity = Cw.instanceIdentity()
-    Object instanceNode = request.get("instance")
-    Map<String, Object> instanceMap = instanceNode instanceof Map
-        ? (Map<String, Object>) instanceNode : new LinkedHashMap<String, Object>()
-    for (String field : ["baseUrl", "title", "confluenceVersion"]) {
-        if (identity.get(field) != null) {
-            instanceMap.put(field, identity.get(field))
-        }
-    }
-    request.put("instance", instanceMap)
-
-    ExportOutcome outcome = Cx.render(request, read)
-
-    String action = existingPage == null ? "created" : "updated"
-    int writtenVersion = existingPage == null ? 1 : read.pageVersion + 1
-    String pageId = read.pageId
-
-    /* The parent named in this run, and what this run does about the position of an
-     * existing page. Both are decided before the write so the branches below only
-     * carry it out. */
-    String requestedParentId = parentPage == null ? null : parentPage.getIdAsString()
-    String moveDecision = Cx.MOVE_NOT_REQUESTED
-    String moveError = null
-    boolean parentReadBackOk = false
-    String actualParentId = null
-
-    try {
-        if (existingPage == null) {
-            Page fresh = new Page()
-            fresh.setVersion(1)
-            fresh.setSpace(space)
-            fresh.setTitle(title)
-            fresh.setBodyContent(new BodyContent(fresh, outcome.storage, BodyType.XHTML))
-            fresh.setCreator(AuthenticatedUserThreadLocal.get())
-            if (parentPage != null) {
-                /* Ancestors run from the root of the space downwards, so the parent
-                 * is appended last. The create path carries the parent in the entity
-                 * itself; the update path below moves an existing page instead. */
-                moveDecision = Cx.MOVE_REQUESTED
-                fresh.setParentPage(parentPage)
-                parentPage.addChild(fresh)
-                List<Page> ancestors = new ArrayList<Page>()
-                List<Page> parentAncestors = parentPage.getAncestors()
-                if (parentAncestors != null) {
-                    ancestors.addAll(parentAncestors)
-                }
-                ancestors.add(parentPage)
-                fresh.setAncestors(ancestors)
-            }
-            pageManager.saveContentEntity(fresh, DefaultSaveContext.SUPPRESS_NOTIFICATIONS)
-        } else {
-            /* saveContentEntity(obj, origObj, ctx) is the documented history path:
-             * the modified as well as the original version of the object are handed
-             * over. The fetched entity carries the modification, so its
-             * pre-modification state is taken first and passed as the original. The
-             * body is all this save carries: the position is a separate operation
-             * and is handled right after it. */
-            Page original = (Page) existingPage.clone()
-            existingPage.setBodyAsString(outcome.storage)
-            pageManager.saveContentEntity(existingPage, original, DefaultSaveContext.SUPPRESS_NOTIFICATIONS)
-
-            /* A parent named in this run is applied to a page that already exists,
-             * not only to one this run creates. A run that names no parent still
-             * does not touch the position, so a page an administrator moved by hand
-             * stays moved. movePageAsChild owns the ancestor list; it is not
-             * hand-rolled here. */
-            Page currentParent = null
-            try {
-                currentParent = existingPage.getParent()
-            } catch (Exception ignored) {
-                currentParent = null
-            }
-            moveDecision = Cx.moveDecision(requestedParentId,
-                currentParent == null ? null : currentParent.getIdAsString())
-            if (Cx.MOVE_REQUESTED.equals(moveDecision)) {
+            if (!parentRaw.isEmpty()) {
+                long parentId = 0L
                 try {
-                    pageManager.movePageAsChild(existingPage, parentPage)
+                    parentId = Long.parseLong(parentRaw)
+                } catch (NumberFormatException ignored) {
+                    return refuse(400, "validate", "The parent page ID \"" + parentRaw + "\" is not a number.")
+                }
+                try {
+                    parentPage = pageService.getIdPageLocator(parentId).getPage()
                 } catch (Exception error) {
-                    /* The report is written at this point. A failed move costs the
-                     * position and is reported as such below; it never costs the
-                     * report, and it is never swallowed either. */
-                    moveError = Cx.errorDetail(error)
+                    return refuse(500, "validate", "The parent page could not be read: " + Cx.errorDetail(error))
                 }
-            }
-        }
-
-        /* Read back rather than trusting the save. The id and the version that go
-         * into the response are the ones the page actually carries afterwards. */
-        Page stored = pageService.getTitleAndSpaceKeyPageLocator(space.getKey(), title).getPage()
-        if (stored == null) {
-            return refuse(500, "write", "The page could not be written: it is not readable after the save.")
-        }
-        pageId = stored.getIdAsString()
-        writtenVersion = stored.getVersion()
-
-        /* The position is read back too. A move that returned without throwing is a
-         * report about itself, not a measurement of the tree, and the create path
-         * setting an ancestor list on an entity is no different. What goes into the
-         * response is the chain the page actually carries afterwards.
-         *
-         * A chain that cannot be read leaves parentReadBackOk false, which the
-         * verdict below turns into "unknown" - never into a move that worked and
-         * never into one that failed. */
-        try {
-            List<Page> storedAncestors = stored.getAncestors()
-            List<String> ancestorIds = null
-            if (storedAncestors != null) {
-                ancestorIds = new ArrayList<String>()
-                for (Page ancestor : storedAncestors) {
-                    ancestorIds.add(ancestor == null ? null : ancestor.getIdAsString())
+                if (parentPage == null) {
+                    return refuse(400, "validate", "There is no page with the ID " + parentRaw + ".")
                 }
+                if (!spaceKey.equalsIgnoreCase(String.valueOf(parentPage.getSpaceKey()))) {
+                    return refuse(400, "validate", "The parent page " + parentRaw + " sits in space \"" +
+                        String.valueOf(parentPage.getSpaceKey()) + "\", not in \"" + spaceKey + "\".")
+                }
+                parentAction = "found"
             }
-            Map<String, Object> chain = Cx.innermostAncestor(ancestorIds)
-            parentReadBackOk = chain.get("measured") == Boolean.TRUE
-            actualParentId = chain.get("parentId") == null ? null : chain.get("parentId").toString()
-        } catch (Exception ignored) {
-            parentReadBackOk = false
-            actualParentId = null
-        }
-    } catch (Exception error) {
-        /* Nothing was written on this path, whichever failure it was: the save threw
-         * and the read-back below it never ran. What differs is what the caller is
-         * told, and one of them is not a fault at all. */
-        Map<String, Object> refusal = Cx.writeRefusal(error)
-        return refuse(((Integer) refusal.get("status")).intValue(), "write",
-            String.valueOf(refusal.get("message")))
-    }
 
-    String writtenUrl = Cw.pageUrl(identity.get("baseUrl"), pageId)
-    if (writtenUrl == null) {
-        outcome.warnings.add("The page was written, but the base URL of this instance could not be read, " +
-            "so the result carries no link to it.")
-    }
+            /* ---- Remark read ------------------------------------------------------- */
 
-    /* The measured verdict on the position. It is computed from the read-back, not
-     * from the fact that a move was attempted, and a run that named no parent gets
-     * a null rather than a claim it never made. */
-    Map<String, Object> parentVerdict = Cx.parentOutcome(requestedParentId, parentReadBackOk,
-        actualParentId, moveError)
-    if (parentVerdict.get("reason") != null) {
-        outcome.warnings.add(parentVerdict.get("reason").toString())
-    }
-
-    Map<String, Object> spaceIdentity = Cx.sub(request, "space")
-    String overviewLabel = Cx.str(spaceIdentity, "name", Cx.str(spaceIdentity, "key", title))
-    Map overview = OverviewExport.maintain("confluence", requestedParentId, pageId, title, spaceKey, overviewLabel,
-        outcome.sections,
-        { ->
-            Page current = pageService.getIdPageLocator(Long.parseLong(requestedParentId)).getPage()
-            if (current == null) { return [ok: false, error: "The overview page could not be read."] }
-            return [ok: true, id: current.getIdAsString(), title: current.getTitle(),
-                spaceKey: current.getSpaceKey(), version: current.getVersion(), storage: current.getBodyAsString(),
-                entity: current, original: (Page) current.clone()]
-        },
-        { Map page, String storage ->
-            Page current = (Page) page.get("entity")
-            current.setBodyAsString(storage)
+            /* The exact locator returns the persistence Page the remark parser and the
+             * write path below both work on. */
+            Page existingPage = null
             try {
-                pageManager.saveContentEntity(current, (Page) page.get("original"), DefaultSaveContext.SUPPRESS_NOTIFICATIONS)
+                existingPage = pageService.getTitleAndSpaceKeyPageLocator(spaceKey, title).getPage()
             } catch (Exception error) {
-                if (Cx.unreconciled(error)) { return [ok: false, refused: true, error: Cx.errorDetail(error)] }
-                throw error
+                return refuse(409, "read", "The existing page could not be read (" + Cx.errorDetail(error) +
+                    "). Nothing is written, so no remark can be lost.")
             }
-            return [ok: true]
+
+            RemarkRead read = new RemarkRead()
+            if (existingPage != null) {
+                String existingStorage = null
+                try {
+                    existingStorage = existingPage.getBodyAsString()
+                } catch (Exception error) {
+                    return refuse(409, "read", "The body of the existing page could not be read (" +
+                        Cx.errorDetail(error) + "). Nothing is written, so no remark can be lost.")
+                }
+                read = Cx.parseRemarks(existingStorage)
+                read.pageId = existingPage.getIdAsString()
+                read.pageVersion = existingPage.getVersion()
+            }
+
+            /* Fail closed. This is the only path to a write and a FAILED read never passes
+             * it: no create, no update, reported to the caller as a failure. A page that
+             * would lose an administrator's own text is never produced. */
+            if (!read.isWriteAllowed()) {
+                Map<String, Object> refusal = new LinkedHashMap<String, Object>()
+                refusal.put("ok", Boolean.FALSE)
+                refusal.put("written", Boolean.FALSE)
+                refusal.put("stage", "read")
+                refusal.put("error", read.reason)
+                refusal.put("remarkRead", read.outcome)
+                refusal.put("remarkReadDetail", read.asMap())
+                refusal.put("spaceKey", spaceKey)
+                refusal.put("title", title)
+                refusal.put("executionMs", Long.valueOf(System.currentTimeMillis() - started))
+                return Http.build(responseClass, 409,
+                    JsonOutput.prettyPrint(JsonOutput.toJson(refusal)), Http.JSON, null)
+            }
+
+            /* ---- Parent page from a typed title ------------------------------------ */
+
+            /* There is no Create button. A title that was typed and never picked is
+             * resolved here, in the generating request, which is the only moment at which
+             * the answer is still current. It sits AFTER the fail-closed remark read on
+             * purpose: a run that is about to be refused with a 409 must not leave a
+             * container page behind that nothing was ever filed under.
+             *
+             * The exact title is re-checked immediately before the create, not only in the
+             * search the browser ran earlier. That covers the page somebody else created in
+             * between and the administrator who saw a hit, did not click it and generated
+             * anyway. Neither produces a second page with the same title. A failed read
+             * stays a failed read and never degrades into "no such page", which would be
+             * answered by creating a duplicate. */
+            if (parentPage == null && !parentTitleRaw.isEmpty()) {
+                try {
+                    parentPage = pageService.getTitleAndSpaceKeyPageLocator(spaceKey, parentTitleRaw).getPage()
+                } catch (Exception error) {
+                    return refuse(500, "parent", "The parent page \"" + parentTitleRaw + "\" could not be looked " +
+                        "up in \"" + spaceKey + "\" (" + Cx.errorDetail(error) + "). That is a failed read, not a " +
+                        "space without that page, so nothing was created and nothing is written.")
+                }
+
+                if (parentPage != null) {
+                    parentAction = "found"
+                } else {
+                    try {
+                        Page container = new Page()
+                        container.setVersion(1)
+                        container.setSpace(space)
+                        container.setTitle(parentTitleRaw)
+                        container.setBodyContent(new BodyContent(container, Cx.PARENT_BODY, BodyType.XHTML))
+                        container.setCreator(AuthenticatedUserThreadLocal.get())
+                        pageManager.saveContentEntity(container, DefaultSaveContext.SUPPRESS_NOTIFICATIONS)
+                        parentPage = pageService.getTitleAndSpaceKeyPageLocator(spaceKey, parentTitleRaw).getPage()
+                    } catch (Exception error) {
+                        return refuse(500, "parent", "The parent page \"" + parentTitleRaw + "\" could not be " +
+                            "created in \"" + spaceKey + "\" (" + Cx.errorDetail(error) + "). Nothing is written: a " +
+                            "report filed at the top level of the space instead would sit where nobody looks for it.")
+                    }
+                    if (parentPage == null) {
+                        return refuse(500, "parent", "The parent page \"" + parentTitleRaw + "\" is not readable " +
+                            "after the save, so the report has no confirmed place to go. Nothing is written.")
+                    }
+                    parentAction = "created"
+                }
+            }
+
+            /* ---- Write ------------------------------------------------------------- */
+
+            /* The instance block on the page is read from this instance, never taken from
+             * the payload the browser sent back. */
+            Map<String, String> identity = Cw.instanceIdentity()
+            Object instanceNode = request.get("instance")
+            Map<String, Object> instanceMap = instanceNode instanceof Map
+                ? (Map<String, Object>) instanceNode : new LinkedHashMap<String, Object>()
+            for (String field : ["baseUrl", "title", "confluenceVersion"]) {
+                if (identity.get(field) != null) {
+                    instanceMap.put(field, identity.get(field))
+                }
+            }
+            request.put("instance", instanceMap)
+
+            ExportOutcome outcome = Cx.render(request, read)
+
+            String action = existingPage == null ? "created" : "updated"
+            int writtenVersion = existingPage == null ? 1 : read.pageVersion + 1
+            String pageId = read.pageId
+
+            /* The parent named in this run, and what this run does about the position of an
+             * existing page. Both are decided before the write so the branches below only
+             * carry it out. */
+            String requestedParentId = parentPage == null ? null : parentPage.getIdAsString()
+            String moveDecision = Cx.MOVE_NOT_REQUESTED
+            String moveError = null
+            boolean parentReadBackOk = false
+            String actualParentId = null
+
+            try {
+                if (existingPage == null) {
+                    Page fresh = new Page()
+                    fresh.setVersion(1)
+                    fresh.setSpace(space)
+                    fresh.setTitle(title)
+                    fresh.setBodyContent(new BodyContent(fresh, outcome.storage, BodyType.XHTML))
+                    fresh.setCreator(AuthenticatedUserThreadLocal.get())
+                    if (parentPage != null) {
+                        /* Ancestors run from the root of the space downwards, so the parent
+                         * is appended last. The create path carries the parent in the entity
+                         * itself; the update path below moves an existing page instead. */
+                        moveDecision = Cx.MOVE_REQUESTED
+                        fresh.setParentPage(parentPage)
+                        parentPage.addChild(fresh)
+                        List<Page> ancestors = new ArrayList<Page>()
+                        List<Page> parentAncestors = parentPage.getAncestors()
+                        if (parentAncestors != null) {
+                            ancestors.addAll(parentAncestors)
+                        }
+                        ancestors.add(parentPage)
+                        fresh.setAncestors(ancestors)
+                    }
+                    pageManager.saveContentEntity(fresh, DefaultSaveContext.SUPPRESS_NOTIFICATIONS)
+                } else {
+                    /* saveContentEntity(obj, origObj, ctx) is the documented history path:
+                     * the modified as well as the original version of the object are handed
+                     * over. The fetched entity carries the modification, so its
+                     * pre-modification state is taken first and passed as the original. The
+                     * body is all this save carries: the position is a separate operation
+                     * and is handled right after it. */
+                    Page original = (Page) existingPage.clone()
+                    existingPage.setBodyAsString(outcome.storage)
+                    pageManager.saveContentEntity(existingPage, original, DefaultSaveContext.SUPPRESS_NOTIFICATIONS)
+
+                    /* A parent named in this run is applied to a page that already exists,
+                     * not only to one this run creates. A run that names no parent still
+                     * does not touch the position, so a page an administrator moved by hand
+                     * stays moved. movePageAsChild owns the ancestor list; it is not
+                     * hand-rolled here. */
+                    Page currentParent = null
+                    try {
+                        currentParent = existingPage.getParent()
+                    } catch (Exception ignored) {
+                        currentParent = null
+                    }
+                    moveDecision = Cx.moveDecision(requestedParentId,
+                        currentParent == null ? null : currentParent.getIdAsString())
+                    if (Cx.MOVE_REQUESTED.equals(moveDecision)) {
+                        try {
+                            pageManager.movePageAsChild(existingPage, parentPage)
+                        } catch (Exception error) {
+                            /* The report is written at this point. A failed move costs the
+                             * position and is reported as such below; it never costs the
+                             * report, and it is never swallowed either. */
+                            moveError = Cx.errorDetail(error)
+                        }
+                    }
+                }
+
+                /* Read back rather than trusting the save. The id and the version that go
+                 * into the response are the ones the page actually carries afterwards. */
+                Page stored = pageService.getTitleAndSpaceKeyPageLocator(space.getKey(), title).getPage()
+                if (stored == null) {
+                    return refuse(500, "write", "The page could not be written: it is not readable after the save.")
+                }
+                pageId = stored.getIdAsString()
+                writtenVersion = stored.getVersion()
+
+                /* The position is read back too. A move that returned without throwing is a
+                 * report about itself, not a measurement of the tree, and the create path
+                 * setting an ancestor list on an entity is no different. What goes into the
+                 * response is the chain the page actually carries afterwards.
+                 *
+                 * A chain that cannot be read leaves parentReadBackOk false, which the
+                 * verdict below turns into "unknown" - never into a move that worked and
+                 * never into one that failed. */
+                try {
+                    List<Page> storedAncestors = stored.getAncestors()
+                    List<String> ancestorIds = null
+                    if (storedAncestors != null) {
+                        ancestorIds = new ArrayList<String>()
+                        for (Page ancestor : storedAncestors) {
+                            ancestorIds.add(ancestor == null ? null : ancestor.getIdAsString())
+                        }
+                    }
+                    Map<String, Object> chain = Cx.innermostAncestor(ancestorIds)
+                    parentReadBackOk = chain.get("measured") == Boolean.TRUE
+                    actualParentId = chain.get("parentId") == null ? null : chain.get("parentId").toString()
+                } catch (Exception ignored) {
+                    parentReadBackOk = false
+                    actualParentId = null
+                }
+            } catch (Exception error) {
+                /* Nothing was written on this path, whichever failure it was: the save threw
+                 * and the read-back below it never ran. What differs is what the caller is
+                 * told, and one of them is not a fault at all. */
+                Map<String, Object> refusal = Cx.writeRefusal(error)
+                return refuse(((Integer) refusal.get("status")).intValue(), "write",
+                    String.valueOf(refusal.get("message")))
+            }
+
+            String writtenUrl = Cw.pageUrl(identity.get("baseUrl"), pageId)
+            if (writtenUrl == null) {
+                outcome.warnings.add("The page was written, but the base URL of this instance could not be read, " +
+                    "so the result carries no link to it.")
+            }
+
+            /* The measured verdict on the position. It is computed from the read-back, not
+             * from the fact that a move was attempted, and a run that named no parent gets
+             * a null rather than a claim it never made. */
+            Map<String, Object> parentVerdict = Cx.parentOutcome(requestedParentId, parentReadBackOk,
+                actualParentId, moveError)
+            if (parentVerdict.get("reason") != null) {
+                outcome.warnings.add(parentVerdict.get("reason").toString())
+            }
+
+            Map<String, Object> spaceIdentity = Cx.sub(request, "space")
+            String overviewLabel = Cx.str(spaceIdentity, "name", Cx.str(spaceIdentity, "key", title))
+            Map overview = OverviewExport.maintain("confluence", requestedParentId, pageId, title, spaceKey, overviewLabel,
+                outcome.sections,
+                { ->
+                    Page current = pageService.getIdPageLocator(Long.parseLong(requestedParentId)).getPage()
+                    if (current == null) { return [ok: false, error: "The overview page could not be read."] }
+                    return [ok: true, id: current.getIdAsString(), title: current.getTitle(),
+                        spaceKey: current.getSpaceKey(), version: current.getVersion(), storage: current.getBodyAsString(),
+                        entity: current, original: (Page) current.clone()]
+                },
+                { Map page, String storage ->
+                    Page current = (Page) page.get("entity")
+                    current.setBodyAsString(storage)
+                    try {
+                        pageManager.saveContentEntity(current, (Page) page.get("original"), DefaultSaveContext.SUPPRESS_NOTIFICATIONS)
+                    } catch (Exception error) {
+                        if (Cx.unreconciled(error)) { return [ok: false, refused: true, error: Cx.errorDetail(error)] }
+                        throw error
+                    }
+                    return [ok: true]
+                })
+
+            Map<String, Object> response = new LinkedHashMap<String, Object>()
+            response.put("ok", Boolean.TRUE)
+            response.put("written", Boolean.TRUE)
+            response.put("action", action)
+            response.put("spaceKey", spaceKey)
+            response.put("title", title)
+            response.put("pageId", pageId)
+            response.put("pageVersion", Integer.valueOf(writtenVersion))
+            response.put("pageUrl", writtenUrl)
+            response.put("parentPageId", parentPage == null ? null : parentPage.getIdAsString())
+            response.put("parentAction", parentAction)
+            response.put("parentTitle", parentPage == null ? null : parentPage.getTitle())
+            response.put("parentPageUrl", parentPage == null
+                ? null : Cw.pageUrl(identity.get("baseUrl"), parentPage.getIdAsString()))
+            response.put("parentMove", moveDecision)
+            response.put("parentApplied", parentVerdict.get("applied"))
+            response.put("parentAppliedReason", parentVerdict.get("reason"))
+            response.put("remarkRead", read.outcome)
+            response.put("remarkReadDetail", read.asMap())
+            response.put("remarksRead", Integer.valueOf(outcome.remarksRead))
+            response.put("remarksCarried", Integer.valueOf(outcome.remarksCarried))
+            response.put("orphanedRemarks", Integer.valueOf(outcome.orphanKeys.size()))
+            response.put("orphanedKeys", outcome.orphanKeys)
+            response.put("overview", overview)
+            response.put("warnings", outcome.warnings)
+
+            return answer(response)
         })
+    } catch (PageExportRejected rejected) {
+        return rejected.response
+    } catch (Exception error) {
+        return refuse(500, "transaction", "The export transaction could not be confirmed (" +
+            Cx.errorDetail(error) + "). Check the destination pages before exporting again.")
+    }
 
-    Map<String, Object> response = new LinkedHashMap<String, Object>()
-    response.put("ok", Boolean.TRUE)
-    response.put("written", Boolean.TRUE)
-    response.put("action", action)
-    response.put("spaceKey", spaceKey)
-    response.put("title", title)
-    response.put("pageId", pageId)
-    response.put("pageVersion", Integer.valueOf(writtenVersion))
-    response.put("pageUrl", writtenUrl)
-    response.put("parentPageId", parentPage == null ? null : parentPage.getIdAsString())
-    response.put("parentAction", parentAction)
-    response.put("parentTitle", parentPage == null ? null : parentPage.getTitle())
-    response.put("parentPageUrl", parentPage == null
-        ? null : Cw.pageUrl(identity.get("baseUrl"), parentPage.getIdAsString()))
-    response.put("parentMove", moveDecision)
-    response.put("parentApplied", parentVerdict.get("applied"))
-    response.put("parentAppliedReason", parentVerdict.get("reason"))
-    response.put("remarkRead", read.outcome)
-    response.put("remarkReadDetail", read.asMap())
-    response.put("remarksRead", Integer.valueOf(outcome.remarksRead))
-    response.put("remarksCarried", Integer.valueOf(outcome.remarksCarried))
-    response.put("orphanedRemarks", Integer.valueOf(outcome.orphanKeys.size()))
-    response.put("orphanedKeys", outcome.orphanKeys)
-    response.put("overview", overview)
-    response.put("warnings", outcome.warnings)
-
-    return answer(response)
 }

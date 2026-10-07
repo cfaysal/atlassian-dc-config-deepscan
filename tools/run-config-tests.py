@@ -31,3 +31,5 @@ with tempfile.TemporaryDirectory(prefix="deepscan-config-tests-") as temp:
         subprocess.run(["groovy", "tools/config-overview-typecheck.groovy", endpoint], cwd=repo, check=True)
         subprocess.run(["groovy", "-DrepoRoot=" + str(repo), str(suite)], cwd=repo, check=True)
         subprocess.run(["groovy", "tools/parsecheck.groovy", endpoint], cwd=repo, check=True)
+    subprocess.run(["groovy", "-DrepoRoot=" + str(repo),
+                    "confluence/tests/confluenceDCspaceConfig.transaction.tests.groovy"], cwd=repo, check=True)
