@@ -44,7 +44,7 @@ In the HTML report, press **Export to Confluence**. Select a configured Confluen
 
 The selected parent also becomes the fixed overview page. Choose the same parent for subsequent exports. An existing export page name updates its row, section links and counts; a new name adds a row. The page ID also prevents a duplicate after a rename. Counts match the detail page, including any truncation. Existing parent text and tables outside the generated overview remain intact. Without a parent, only the detail page is written.
 
-Both writes use the selected authenticated application link. The calling user needs permission to update the parent as well as the detail page. The result links to both pages and reports overview failures or unconfirmed saves separately from detail success. Resolve the problem and re-export; matching by name avoids a duplicate. Keep the managed table and its invisible identity anchors intact; put your own notes outside it. Older detail pages appear when exported again with that parent.
+Both writes use the selected authenticated application link. The calling user needs permission to update the parent as well as the detail page. The result links to both pages and reports overview failures or unconfirmed saves separately from detail success. Resolve the problem and re-export; matching by name avoids a duplicate. Keep the managed table and its invisible identity anchors intact; put your own notes outside it. A row whose link was saved without a space key is read as a link into the overview page's own space. A read error names the row by its position and anchor. Older detail pages appear when exported again with that parent.
 
 ## Limits and troubleshooting
 

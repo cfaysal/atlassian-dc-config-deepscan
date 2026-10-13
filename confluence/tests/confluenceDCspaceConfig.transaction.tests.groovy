@@ -65,7 +65,7 @@ assert first.ok && first.written && first.parentAction == 'created' : first
 assert first.overview.state == 'updated' : first
 assert first.parentApplied == 'true' : first
 assert store.commits == 1 && store.writes.every { it.transaction } : store.writes
-assert ConfigOverview.read(store.byId(first.parentPageId as long).body, 'confluence').rows.size() == 1
+assert ConfigOverview.read(store.byId(first.parentPageId as long).body, 'confluence', 'DOC').rows.size() == 1
 store.nextRequest()
 Map again = payload()
 again.parentPageId = first.parentPageId
@@ -73,7 +73,7 @@ again.parentTitle = ''
 Map second = handler.export(again)
 assert second.ok && second.parentAction == 'found' && second.overview.state == 'updated' : second
 assert store.pages.size() == 2
-assert ConfigOverview.read(store.byId(first.parentPageId as long).body, 'confluence').rows.size() == 1
+assert ConfigOverview.read(store.byId(first.parentPageId as long).body, 'confluence', 'DOC').rows.size() == 1
 store.nextRequest()
 Map another = payload()
 another.title = 'Config export Beta'
@@ -81,7 +81,7 @@ another.space = [key: 'BETA', name: 'Beta']
 another.parentPageId = first.parentPageId
 another.parentTitle = ''
 assert handler.export(another).overview.state == 'updated'
-assert ConfigOverview.read(store.byId(first.parentPageId as long).body, 'confluence').rows.size() == 2
+assert ConfigOverview.read(store.byId(first.parentPageId as long).body, 'confluence', 'DOC').rows.size() == 2
 println 'PASS: first-run table, repeat upsert, second export and parent relationship'
 
 Map<Long, String> committedBodies = store.pages.collectEntries { id, page -> [(id): page.body] }
