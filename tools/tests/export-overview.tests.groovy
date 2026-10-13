@@ -32,34 +32,34 @@ verify(a.contains('ac:anchor="' + firstDetail.sections[0].anchor + '"'), 'sectio
 verify(a.contains('ri:content-title="Export Alpha" ri:space-key="DOC"'), 'section targets the exported page')
 verify(a.contains(firstDetail.sections[0].count), 'use the detail renderer count')
 String b = overviewClass.upsert(a, product, '102', 'Export Beta', 'DOC', 'Beta', firstDetail.sections)
-verify(overviewClass.read(b, product).rows.size() == 2, 'second exported page appends one row')
+verify(overviewClass.read(b, product, 'DOC').rows.size() == 2, 'second exported page appends one row')
 String repeat = overviewClass.upsert(b, product, '101', 'Export Alpha', 'DOC', 'Alpha updated', firstDetail.sections)
-verify(overviewClass.read(repeat, product).rows.size() == 2, 'same export name updates its row')
+verify(overviewClass.read(repeat, product, 'DOC').rows.size() == 2, 'same export name updates its row')
 verify(repeat.contains('Alpha updated'), 'updated row contains current label')
-verify(overviewClass.read(repeat, product).rows[1] == overviewClass.read(b, product).rows[1], 'keep other row verbatim')
+verify(overviewClass.read(repeat, product, 'DOC').rows[1] == overviewClass.read(b, product, 'DOC').rows[1], 'keep other row verbatim')
 String replaced = overviewClass.upsert(repeat, product, '999', 'Export Alpha', 'DOC', 'Replacement', firstDetail.sections)
-verify(overviewClass.read(replaced, product).rows.size() == 2, 'same name with a new page ID updates its row')
-verify(overviewClass.rowIdentity(overviewClass.read(replaced, product).rows[0], product).id == '999', 'replacement updates links and identity')
+verify(overviewClass.read(replaced, product, 'DOC').rows.size() == 2, 'same name with a new page ID updates its row')
+verify(overviewClass.rowIdentity(overviewClass.read(replaced, product, 'DOC').rows[0], product, 'DOC').id == '999', 'replacement updates links and identity')
 String renamed = overviewClass.upsert(replaced, product, '999', 'Renamed export', 'DOC', 'Renamed', firstDetail.sections)
-verify(overviewClass.read(renamed, product).rows.size() == 2, 'page ID also deduplicates a renamed export')
+verify(overviewClass.read(renamed, product, 'DOC').rows.size() == 2, 'page ID also deduplicates a renamed export')
 def extraSections = firstDetail.sections + [[key: 'extra', column: 'Extra', label: 'Extra', anchor: 'section-extra', count: '3 items']]
 String grown = overviewClass.upsert(renamed, product, '103', 'Export Gamma', 'DOC', 'Gamma', extraSections)
-verify(overviewClass.read(grown, product).columns.size() == 3, 'new sections extend the header')
-verify(overviewClass.read(grown, product).rows.every { it.size() == 4 }, 'older rows receive an empty new column')
+verify(overviewClass.read(grown, product, 'DOC').columns.size() == 3, 'new sections extend the header')
+verify(overviewClass.read(grown, product, 'DOC').rows.every { it.size() == 4 }, 'older rows receive an empty new column')
 String edited = grown.replace('<ac:structured-macro ', '<ac:structured-macro ac:macro-id="editor-id" ')
-verify(overviewClass.read(edited, product).rows.size() == 3, 'editor macro IDs retain identity')
+verify(overviewClass.read(edited, product, 'DOC').rows.size() == 3, 'editor macro IDs retain identity')
 String coexisting = overviewClass.upsert(edited, product == 'jira' ? 'confluence' : 'jira', '201', 'Other product', 'DOC', 'Other', firstDetail.sections)
-verify(overviewClass.read(coexisting, product).rows.size() == 3, 'product overviews coexist without losing rows')
+verify(overviewClass.read(coexisting, product, 'DOC').rows.size() == 3, 'product overviews coexist without losing rows')
 String hostile = overviewClass.upsert('', product, '104', 'Quotes " & <title>', 'DOC', '<script>bad</script>', firstDetail.sections)
 verify(!hostile.contains('<script>'), 'escape row display names')
 verify(hostile.contains('&quot;') && hostile.contains('&lt;title&gt;'), 'escape resource attributes')
 verify(overviewClass.confirmed(hostile, product, '104', 'Quotes " & <title>', 'DOC', '<script>bad</script>', firstDetail.sections), 'escaped names and titles confirm after readback')
 String numericEntities = hostile.replace('&quot;', '&#34;').replace('&lt;', '&#x3C;').replace('&gt;', '&#62;').replace('&amp;', '&#38;')
 numericEntities = overviewClass.upsert(numericEntities, product, '904', 'Quotes " & <title>', 'DOC', 'Replacement', firstDetail.sections)
-verify(overviewClass.read(numericEntities, product).rows.size() == 1, 'editor entity normalization still matches the export name')
+verify(overviewClass.read(numericEntities, product, 'DOC').rows.size() == 1, 'editor entity normalization still matches the export name')
 String spaced = overviewClass.upsert('', product, '901', 'Export  Alpha', 'DOC', 'Alpha', firstDetail.sections)
 spaced = overviewClass.upsert(spaced, product, '902', 'Export  Alpha', 'DOC', 'Replacement', firstDetail.sections)
-verify(overviewClass.read(spaced, product).rows.size() == 1, 'export name comparison preserves significant whitespace')
+verify(overviewClass.read(spaced, product, 'DOC').rows.size() == 1, 'export name comparison preserves significant whitespace')
 def refuses = { String body ->
     boolean refused = false
     try { overviewClass.upsert(body, product, '105', 'New', 'DOC', 'New', firstDetail.sections) }
@@ -72,12 +72,39 @@ refuses(a.replace('<th>', '<th colspan="2">'))
 refuses(a.replace('cfcon-overview-' + product + '-row-101', 'missing-row'))
 refuses(firstDetail.storage)
 refuses(a.replace('ri:space-key="DOC"/>', 'ri:space-key="DOC"/><ri:page ri:content-title="Another" ri:space-key="DOC"/>'))
-String duplicate = a.replace('</tbody>', '<tr>' + overviewClass.read(a, product).rows[0].collect { '<td>' + it + '</td>' }.join('') + '</tr></tbody>')
+String duplicate = a.replace('</tbody>', '<tr>' + overviewClass.read(a, product, 'DOC').rows[0].collect { '<td>' + it + '</td>' }.join('') + '</tr></tbody>')
 refuses(duplicate)
 boolean collision = false
 try { overviewClass.upsert(b, product, '101', 'Export Beta', 'DOC', 'Collision', firstDetail.sections) }
 catch (IllegalArgumentException ignored) { collision = true }
 verify(collision, 'conflicting title and ID matches refuse instead of choosing a row')
+/* Storage format makes ri:space-key optional: a link without it points into the overview page's own space. */
+String relative = b.replace('<ri:page ri:content-title="Export Alpha" ri:space-key="DOC"/>', '<ri:page ri:content-title="Export Alpha"/>')
+verify(relative != b && overviewClass.read(relative, product, 'DOC').rows.size() == 2, 'a relative page link is a readable row')
+verify(overviewClass.rowIdentity(overviewClass.read(relative, product, 'DOC').rows[0], product, 'DOC').space == 'DOC', 'a relative link reads as the overview space')
+String relativeGrown = overviewClass.upsert(relative, product, '103', 'Export Gamma', 'DOC', 'Gamma', firstDetail.sections)
+verify(overviewClass.read(relativeGrown, product, 'DOC').rows.size() == 3, 'a relative row does not block a new export row')
+verify(overviewClass.read(relativeGrown, product, 'DOC').rows[0] == overviewClass.read(relative, product, 'DOC').rows[0], 'a relative row is kept verbatim')
+String relativeRenewed = overviewClass.upsert(relative, product, '777', 'Export Alpha', 'DOC', 'Again', firstDetail.sections)
+verify(overviewClass.read(relativeRenewed, product, 'DOC').rows.size() == 2, 'a relative row still matches its export name')
+verify(overviewClass.rowIdentity(overviewClass.read(relativeRenewed, product, 'DOC').rows[0], product, 'DOC').id == '777', 'the matched relative row takes the new page ID')
+String stripped = a.replace(' ri:space-key="DOC"', '')
+verify(overviewClass.confirmed(stripped, product, '101', 'Export Alpha', 'DOC', 'Alpha', firstDetail.sections), 'relative links confirm after readback')
+String otherSpace = a.replace('ri:space-key="DOC"', 'ri:space-key="OTHER"')
+verify(!overviewClass.confirmed(otherSpace, product, '101', 'Export Alpha', 'DOC', 'Alpha', firstDetail.sections), 'a link into another space is not relative')
+verify(overviewClass.read(overviewClass.upsert(otherSpace, product, '105', 'Export Alpha', 'DOC', 'New', firstDetail.sections), product, 'DOC').rows.size() == 2,
+    'a same-title row in another space is a different export')
+refuses(a.replace('ri:content-title="Export Alpha" ', ''))
+def readError = { String body, String space ->
+    try { overviewClass.read(body, product, space); null }
+    catch (IllegalArgumentException error) { error.message }
+}
+verify(readError(b.replace('ri:content-title="Export Beta" ', ''), 'DOC') ==
+    'Overview row 2 (cfcon-overview-' + product + '-row-102): the page link has no ri:content-title.', 'a row error names position and anchor')
+verify(readError(a.replace('cfcon-overview-' + product + '-row-101', 'missing-row'), 'DOC')?.startsWith('Overview row 1: '), 'a row without an anchor is named by position')
+String duplicateError = readError(duplicate, 'DOC')
+verify(duplicateError?.startsWith('Overview row 2 (') && duplicateError.endsWith('repeats the export identity of an earlier row.'), 'a duplicate names the later row')
+verify(readError(a, null) != null && readError(a, '') != null, 'an unknown overview space fails closed')
 
 Map target = [ok: true, id: '10', title: 'Overview', spaceKey: 'DOC', version: 1, storage: original]
 int writes = 0
@@ -95,7 +122,7 @@ def maintain = { String id, String title, Closure reader, Closure writer ->
 verify(maintain('101', 'Export Alpha', readTarget, saveTarget).state == 'updated', 'save and independently verify the overview row')
 verify(maintain('102', 'Export Beta', readTarget, saveTarget).state == 'updated', 'second transport update verified')
 verify(maintain('999', 'Export Alpha', readTarget, saveTarget).state == 'updated', 'same-title replacement verified')
-verify(overviewClass.read(target.storage, product).rows.size() == 2, 'transport sequence has only two rows')
+verify(overviewClass.read(target.storage, product, 'DOC').rows.size() == 2, 'transport sequence has only two rows')
 verify(maintain('103', 'Export Gamma', { [ok: false, error: 'read denied'] }, saveTarget).state == 'failed', 'failed read never becomes empty content')
 verify(writes == 3, 'failed read performs no write')
 verify(maintain('103', 'Export Gamma', { [ok: true, id: '11', spaceKey: 'DOC', title: 'Wrong', version: 1, storage: ''] }, saveTarget).state == 'failed', 'wrong target identity performs no write')
@@ -107,6 +134,10 @@ int reads = 0
 verify(maintain('103', 'Export Gamma', { ++reads == 1 ? readTarget() : [ok: false, error: 'readback unavailable'] }, { page, storage -> [ok: true] }).state == 'unknown', 'failed readback is UNKNOWN')
 verify(maintain('103', 'Export Gamma', readTarget, { page, storage -> [ok: true] }).state == 'unknown', 'accepted save without target effect is unconfirmed')
 verify(coordinatorClass.maintain(product, null, '1', 'Title', 'DOC', 'Label', [], { assert false }, { assert false }).state == 'skipped', 'no selected parent preserves original export behavior')
+target.storage = target.storage.replace(' ri:space-key="DOC"', '')
+verify(maintain('105', 'Export Delta', readTarget, saveTarget).state == 'updated', 'an editor-normalised overview still accepts a new row')
+def strippingReader = { -> Map page = readTarget(); page.storage = page.storage.replace(' ri:space-key="DOC"', ''); page }
+verify(maintain('106', 'Export Epsilon', strippingReader, saveTarget).state == 'updated', 'a readback without space keys still confirms the row')
 
 File repo = new File(System.getProperty('repoRoot', '.'))
 /*

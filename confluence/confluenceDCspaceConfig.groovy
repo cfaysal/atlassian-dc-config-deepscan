@@ -4823,20 +4823,27 @@ class ConfigOverview {
         }
     }
     static String text(String cell) { Cx.plainText(anchors('[^<]*').matcher(cell).replaceAll('')) }
-    static Map<String, String> rowIdentity(List<String> cells, String product) {
+    static Map<String, String> rowIdentity(List<String> cells, String product, String space) {
         List<Map<String, Object>> marks = matches(cells.get(0), java.util.regex.Pattern.quote(prefix(product) + 'row-') + '[0-9]+')
         def resource = java.util.regex.Pattern.compile('<ri:page\\b[^>]*/>').matcher(cells.get(0))
-        if (marks.size() != 1 || !resource.find()) { throw new IllegalArgumentException('Overview row identity is missing or ambiguous.') }
+        if (marks.size() != 1 || !resource.find()) { throw new IllegalArgumentException('the row anchor or page link is missing or ambiguous.') }
         String target = resource.group()
-        if (resource.find()) { throw new IllegalArgumentException('Overview row has multiple page targets.') }
+        if (resource.find()) { throw new IllegalArgumentException('the row has multiple page targets.') }
         String title = attr(target, 'ri:content-title')
-        String space = attr(target, 'ri:space-key')
-        if (!title || !space) { throw new IllegalArgumentException('Overview row has no confirmed page target.') }
+        /* ri:space-key is optional in storage format; omitted (or empty) means the containing page's space. */
+        String linkSpace = attr(target, 'ri:space-key') ?: space
+        if (!title) { throw new IllegalArgumentException('the page link has no ri:content-title.') }
         String name = (String) marks.get(0).name
-        [id: name.substring((prefix(product) + 'row-').length()), title: title, space: space]
+        [id: name.substring((prefix(product) + 'row-').length()), title: title, space: linkSpace]
     }
-    static Map<String, Object> read(String body, String product) {
+    /* Row errors name the position and anchor, so an admin can find the cell to fix. */
+    static IllegalArgumentException rowError(int position, List<String> cells, String product, String reason) {
+        List<Map<String, Object>> marks = matches(cells.get(0), java.util.regex.Pattern.quote(prefix(product) + 'row-') + '[0-9]+')
+        new IllegalArgumentException('Overview row ' + position + (marks.size() == 1 ? ' (' + marks.get(0).name + ')' : '') + ': ' + reason)
+    }
+    static Map<String, Object> read(String body, String product, String space) {
         if (body == null) { throw new IllegalArgumentException('Overview body could not be read.') }
+        if (!space) { throw new IllegalArgumentException('Overview space is unknown.') }
         if (body.contains('cfcon-space-config-export/1') || body.contains('cfcon-project-config-export/1')) {
             throw new IllegalArgumentException('A detail export cannot be used as its own overview.')
         }
@@ -4859,9 +4866,10 @@ class ConfigOverview {
         while (rowMatcher.find()) {
             if (!tableBody.substring(consumed, rowMatcher.start()).trim().isEmpty()) { throw new IllegalArgumentException('Unexpected overview table content.') }
             String row = rowMatcher.group(1)
-            if (row =~ /(?i)\b(?:rowspan|colspan)\s*=/) { throw new IllegalArgumentException('Merged overview cells cannot be updated safely.') }
+            String where = rows.isEmpty() ? 'Overview header row' : 'Overview row ' + rows.size()
+            if (row =~ /(?i)\b(?:rowspan|colspan)\s*=/) { throw new IllegalArgumentException(where + ' uses merged cells, which cannot be updated safely.') }
             List<String> cells = Cx.cellsOf(row)
-            if (cells.isEmpty()) { throw new IllegalArgumentException('Overview row has no cells.') }
+            if (cells.isEmpty()) { throw new IllegalArgumentException(where + ' has no cells.') }
             rows.add(cells)
             consumed = rowMatcher.end()
         }
@@ -4883,11 +4891,14 @@ class ConfigOverview {
         }
         Set<String> ids = [] as Set
         Set<String> titles = [] as Set
-        for (List<String> row : rows) {
-            if (row.size() != header.size()) { throw new IllegalArgumentException('Overview row has the wrong number of cells.') }
-            Map<String, String> identity = rowIdentity(row, product)
+        for (int i = 0; i < rows.size(); i++) {
+            List<String> row = rows.get(i)
+            if (row.size() != header.size()) { throw rowError(i + 1, row, product, 'the row has the wrong number of cells.') }
+            Map<String, String> identity
+            try { identity = rowIdentity(row, product, space) }
+            catch (IllegalArgumentException error) { throw rowError(i + 1, row, product, error.getMessage()) }
             if (!ids.add(identity.id) || !titles.add(identity.space.toLowerCase(Locale.ROOT) + '\n' + identity.title.toLowerCase(Locale.ROOT))) {
-                throw new IllegalArgumentException('Overview contains duplicate export identities.')
+                throw rowError(i + 1, row, product, 'the row repeats the export identity of an earlier row.')
             }
         }
         [before: body.substring(0, starts.get(0).start as int), after: body.substring(ends.get(0).end as int), columns: columns, rows: rows]
@@ -4899,7 +4910,7 @@ class ConfigOverview {
     }
     static String upsert(String body, String product, String pageId, String title, String space, String label, List<Map<String, String>> sections) {
         if (!(pageId ==~ /[0-9]+/) || !title || !space) { throw new IllegalArgumentException('Export page identity is incomplete.') }
-        Map<String, Object> model = read(body, product)
+        Map<String, Object> model = read(body, product, space)
         List<Map<String, String>> columns = (List<Map<String, String>>) model.columns
         List<List<String>> rows = (List<List<String>>) model.rows
         Map<String, Map<String, String>> byKey = [:]
@@ -4912,7 +4923,7 @@ class ConfigOverview {
         }
         List<Integer> found = []
         for (int i = 0; i < rows.size(); i++) {
-            Map<String, String> identity = rowIdentity(rows.get(i), product)
+            Map<String, String> identity = rowIdentity(rows.get(i), product, space)
             if (identity.id == pageId || (identity.space.equalsIgnoreCase(space) && identity.title.equalsIgnoreCase(title))) { found.add(i) }
         }
         if (found.size() > 1) { throw new IllegalArgumentException('Export name and page ID match different overview rows.') }
@@ -4934,12 +4945,12 @@ class ConfigOverview {
         out.append('</tbody></table>').append(marker(product, 'end')).append(model.after).toString()
     }
     static boolean confirmed(String body, String product, String pageId, String title, String space, String label, List<Map<String, String>> sections) {
-        Map<String, Object> model = read(body, product)
+        Map<String, Object> model = read(body, product, space)
         List<Map<String, String>> columns = (List<Map<String, String>>) model.columns
         List<List<String>> rows = (List<List<String>>) model.rows
-        List<String> row = rows.find { rowIdentity(it, product).id == pageId }
+        List<String> row = rows.find { rowIdentity(it, product, space).id == pageId }
         if (row == null) { return false }
-        Map<String, String> identity = rowIdentity(row, product)
+        Map<String, String> identity = rowIdentity(row, product, space)
         if (identity.title != title || identity.space != space || text(row.get(0)) != Cx.plainText(Cx.esc(label))) { return false }
         for (Map<String, String> section : sections) {
             int column = columns.findIndexOf { it.key == section.key }
@@ -4948,7 +4959,7 @@ class ConfigOverview {
             def resource = java.util.regex.Pattern.compile('<ri:page\\b[^>]*/>').matcher(cell)
             def target = java.util.regex.Pattern.compile('<ac:link\\b[^>]*>').matcher(cell)
             if (text(cell) != Cx.plainText(Cx.esc(section.label + ' (' + section.count + ')')) || !resource.find() || !target.find() ||
-                attr(resource.group(), 'ri:content-title') != title || attr(resource.group(), 'ri:space-key') != space ||
+                attr(resource.group(), 'ri:content-title') != title || (attr(resource.group(), 'ri:space-key') ?: space) != space ||
                 attr(target.group(), 'ac:anchor') != section.anchor) { return false }
         }
         true
