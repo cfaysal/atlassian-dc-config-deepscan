@@ -2186,6 +2186,7 @@ function pickFirstProject(event) {
                     <input id="exportTitle" class="wide" type="text" value="${defaultTitle}">
                 </label>
                 <button id="exportRun" class="button" type="button" onclick="exportToConfluence()">Generate Confluence Page</button>
+                <button id="exportRebuild" class="button" type="button" disabled onclick="rebuildOverview()">Rebuild overview rows</button>
             </div>
         </div>
     </div>
@@ -2568,6 +2569,7 @@ function openExport() {
 /* Stage 2. A target was picked, so that target's spaces may be listed. */
 function targetChosen() {
     el('exportSpace').value = '';
+    el('exportRebuild').disabled = true;
     el('exportSpaceQuery').value = '';
     el('exportSpaceResults').innerHTML = '';
     el('exportSpaceChosen').textContent = 'No space selected.';
@@ -2620,6 +2622,7 @@ function chooseSpace(space) {
         if (exportPageTimer) { window.clearTimeout(exportPageTimer); }
         exportPageSeq++;
         el('exportParent').value = '';
+        el('exportRebuild').disabled = true;
         el('exportParentQuery').value = '';
         el('exportParentResults').innerHTML = '';
         el('exportParentChosen').textContent = 'No parent page: the page is created at the top level of the space.';
@@ -2639,6 +2642,7 @@ function parentTyped() {
        with a title the administrator has since changed. What travels then is the
        title, and the generating run adopts or creates that page. */
     el('exportParent').value = '';
+    el('exportRebuild').disabled = true;
     var query = el('exportParentQuery').value.trim();
     el('exportParentChosen').textContent = query
         ? 'Parent page "' + query + '": pick it below if it is listed, otherwise it is created when the page is generated.'
@@ -2695,7 +2699,67 @@ function chooseParent(page) {
         el('exportParentQuery').value = page.title;
         el('exportParentResults').innerHTML = '';
         el('exportParentChosen').textContent = 'Parent page: ' + page.title + ' (id ' + page.id + ')';
+        el('exportRebuild').disabled = false;
     };
+}
+
+/* Rebuild: restores the overview rows that are missing, from the detail pages
+   already under the picked overview page. It needs a PICKED page: a typed title
+   asks the server to create a parent, and a rebuild never creates one. Only the
+   pages that were not added are listed, each with its reason. */
+function rebuildOverview() {
+    var button = el('exportRebuild');
+    var parentId = el('exportParent').value.trim();
+    if (!parentId) { say('bad', 'Pick the overview page from the search first.'); return; }
+    button.disabled = true;
+    say('muted', 'Reading the child pages of the overview...');
+    exportPost({ action: 'rebuild-overview', applicationLinkId: el('exportTarget').value, spaceKey: el('exportSpace').value, parentPageId: parentId }).then(function (result) {
+        button.disabled = false;
+        var body = result.body || {};
+        if (!result.ok || body.ok !== true) {
+            say('bad', 'Nothing was written (' + result.status + '): ' + (body.error || 'unknown error'));
+            return;
+        }
+        var overview = body.overview || {};
+        var counts = body.counts || {};
+        var tone = { failed: 'bad', unknown: 'warn', updated: 'good' }[overview.state] || 'muted';
+        var text = 'Overview ' + overview.state + ': ' + counts.added + ' added, ' + counts.present + ' present, ' +
+            counts.skipped + ' skipped of ' + body.children + ' child page(s)' +
+            (overview.pageVersion == null ? '' : ' (version ' + overview.pageVersion + ')') + '.';
+        if (overview.reason) { text += ' ' + overview.reason; }
+        /* A child that was not read is not a child without a missing row. */
+        if (body.complete !== true) {
+            if (tone !== 'bad') { tone = 'warn'; }
+            text += ' NOT COMPLETE: ' + counts.unread + ' child page(s) were not read' +
+                (body.truncated === true ? ' and the child list is cut' : '') +
+                '; rows for them are UNKNOWN, run the rebuild again.';
+        }
+        if (counts.unconfirmed > 0) {
+            text += ' ' + counts.unconfirmed + ' row(s) could not be confirmed after the write.';
+        }
+        var status = say(tone, text);
+        if (body.parentPageUrl) {
+            var indexLink = document.createElement('a');
+            indexLink.href = body.parentPageUrl;
+            indexLink.target = '_blank';
+            indexLink.rel = 'noopener';
+            indexLink.textContent = ' Open the overview';
+            status.appendChild(indexLink);
+        }
+        var list = document.createElement('ul');
+        var pages = body.pages || [];
+        for (var i = 0; i < pages.length; i++) {
+            if (pages[i].result === 'added') { continue; }
+            var item = document.createElement('li');
+            item.textContent = (pages[i].title || ('page ' + pages[i].pageId)) + ': ' + pages[i].result +
+                (pages[i].reason ? ' - ' + pages[i].reason : '');
+            list.appendChild(item);
+        }
+        if (list.childNodes.length > 0) { status.appendChild(list); }
+    }).catch(function (error) {
+        button.disabled = false;
+        say('bad', 'The request failed, so the overview state is unknown; open it before rebuilding again: ' + error);
+    });
 }
 
 /* Stage 4. The write. */
@@ -3019,6 +3083,12 @@ class Cx {
      * list that looks complete. */
     static final int SPACE_PAGE_SIZE = 200
     static final int MAX_SPACE_PAGES = 20
+
+    /* Child listing of the overview page for a rebuild. 25 is the documented
+     * default of child/page; no maximum is documented, and the next link absorbs
+     * a smaller server cap. 20 pages of 25 children, then the list is truncated. */
+    static final int CHILD_PAGE_SIZE = 25
+    static final int MAX_CHILD_PAGES = 20
 
     /* Search stages. The page search asks Confluence for at most this many titles
      * and refuses a shorter term, so a single keystroke never pulls a whole space
@@ -3770,8 +3840,12 @@ class ConfigOverview {
     static String attr(String markup, String name) {
         def matcher = java.util.regex.Pattern.compile('(?:^|\\s)' + java.util.regex.Pattern.quote(name) + '\\s*=\\s*"([^"]*)"').matcher(markup)
         if (!matcher.find()) { return null }
+        decode(matcher.group(1))
+    }
+    /* Inverse of Cx.esc, named and numeric, so text an editor re-serialised still reads as written. */
+    static String decode(String markup) {
         Map<String, String> entities = [amp: '&', lt: '<', gt: '>', quot: '"', apos: "'"]
-        matcher.group(1).replaceAll(/&(#(?:x[0-9a-fA-F]+|[0-9]+)|amp|lt|gt|quot|apos);/) { String encoded, String entity ->
+        markup.replaceAll(/&(#(?:x[0-9a-fA-F]+|[0-9]+)|amp|lt|gt|quot|apos);/) { String encoded, String entity ->
             if (entities.containsKey(entity)) { return entities.get(entity) }
             boolean hex = entity.startsWith('#x')
             new String(Character.toChars(Integer.parseInt(entity.substring(hex ? 2 : 1), hex ? 16 : 10)))
@@ -3919,6 +3993,76 @@ class ConfigOverview {
         }
         true
     }
+    /* A section anchor is written immediately before its Expand, and the Expand title is the overview cell text. */
+    static final java.util.regex.Pattern SECTION_EXPAND = java.util.regex.Pattern.compile(
+        '(?s)\\s*<ac:structured-macro\\b(?=[^>]*\\bac:name="expand")[^>]*>\\s*<ac:parameter\\b(?=[^>]*\\bac:name="title")[^>]*>(.*?)</ac:parameter>')
+    /* The label and sections upsert received when this detail page was exported, read back off the page itself.
+     * Anything that does not parse exactly refuses the page: a guessed row is worse than a missing one. */
+    static Map<String, Object> detail(String body, String product) {
+        String own = product == 'jira' ? 'cfcon-project-config-export/1' : 'cfcon-space-config-export/1'
+        String foreign = product == 'jira' ? 'cfcon-space-config-export/1' : 'cfcon-project-config-export/1'
+        String noun = product == 'jira' ? 'project' : 'space'
+        if (body == null || !body.contains(own)) {
+            throw new IllegalArgumentException(body != null && body.contains(foreign)
+                ? 'The page is an export of the other product; rebuild it from that endpoint.'
+                : 'The page does not carry the ' + product + ' export marker.')
+        }
+        def header = java.util.regex.Pattern.compile('(?s)<p>Complete configuration of ' + noun + ' <strong>(.*?)</strong> \\(').matcher(body)
+        if (!header.find()) { throw new IllegalArgumentException('The page header names no ' + noun + '.') }
+        /* The renderer writes "unknown" when the payload had no name; the row label then came from elsewhere. */
+        String label = decode(header.group(1))
+        if (label == 'unknown') { throw new IllegalArgumentException('The ' + noun + ' name is not on the page.') }
+        List<Map<String, String>> sections = []
+        Set<String> keys = [] as Set
+        for (Map<String, Object> mark : matches(body, 'cfcon-config-section-[A-Za-z0-9_-]+')) {
+            String name = (String) mark.name
+            def heading = SECTION_EXPAND.matcher(body)
+            heading.region(mark.end as int, body.length())
+            if (!heading.lookingAt()) { throw new IllegalArgumentException('Section anchor ' + name + ' is not followed by its heading.') }
+            /* The count never contains a parenthesis, so the label ends at the LAST " (", as in memberLabelOf. */
+            String title = decode(heading.group(1))
+            int cut = title.lastIndexOf(' (')
+            if (cut < 0 || !title.endsWith(')')) { throw new IllegalArgumentException('Section heading "' + title + '" has no count.') }
+            String key = new String(Base64.urlDecoder.decode(name.substring('cfcon-config-section-'.length())), 'UTF-8')
+            if (!keys.add(key)) { throw new IllegalArgumentException('The page repeats section ' + key + '.') }
+            sections.add(section([kind: key], sections.size(), title.substring(0, cut), title.substring(cut + 2, title.length() - 1)))
+        }
+        [label: label, sections: sections]
+    }
+    /* Adds a row only for a page the overview does not know yet. A row with the same page ID, or with the same
+     * title and another page ID, is left exactly as it is: a rebuild restores what is missing, it never decides
+     * between two pages. Entries are [id, title, label, sections]; results keep their order. */
+    static Map<String, Object> rebuild(String body, String product, String space, List<Map<String, Object>> entries) {
+        String merged = body
+        List<Map<String, Object>> results = []
+        int added = 0
+        for (Map<String, Object> entry : entries) {
+            String id = (String) entry.get('id')
+            String title = (String) entry.get('title')
+            Map<String, Object> result = [pageId: id, title: title, result: 'skipped', reason: null]
+            results.add(result)
+            boolean present = false
+            String claimed = null
+            for (List<String> row : (List<List<String>>) read(merged, product, space).rows) {
+                Map<String, String> identity = rowIdentity(row, product, space)
+                if (identity.id == id) { present = true }
+                else if (identity.space.equalsIgnoreCase(space) && identity.title.equalsIgnoreCase(title)) { claimed = identity.id }
+            }
+            if (present) {
+                result.put('result', 'present')
+                result.put('reason', 'The overview already has a row for this page; it is left as it is.')
+            } else if (claimed != null) {
+                result.put('reason', 'A row with this title already points to page ' + claimed + '.')
+            } else {
+                try {
+                    merged = upsert(merged, product, id, title, space, (String) entry.get('label'), (List<Map<String, String>>) entry.get('sections'))
+                    result.put('result', 'added')
+                    added++
+                } catch (IllegalArgumentException error) { result.put('reason', error.getMessage()) }
+            }
+        }
+        [body: merged, results: results, added: added]
+    }
 }
 
 class OverviewExport {
@@ -3951,6 +4095,82 @@ class OverviewExport {
         } catch (Exception error) {
             [state: stage == 'verify' ? 'unknown' : 'failed', reason: 'Overview ' + stage + ': ' + Cx.errorDetail(error)]
         }
+    }
+    /* Same stages as maintain, but for all missing rows at once: one merged body, ONE save, so a parent with many
+     * children holds one optimistic-lock window instead of one per row. Each added row is still confirmed on its
+     * own after the readback. Every entry gets a result, also when nothing was written. */
+    static Map rebuild(String product, String parentId, String space, List<Map<String, Object>> entries,
+                       Closure reader, Closure writer) {
+        String stage = 'read'
+        List<Map<String, Object>> results = untouched(entries, 'Nothing was written: the overview was not updated.')
+        try {
+            Map page = (Map) reader.call()
+            Object pageVersion = page.version
+            if (page.ok != Boolean.TRUE || page.id != parentId || page.spaceKey != space || page.title == null ||
+                !(pageVersion instanceof Number) || ((Number) pageVersion).intValue() < 1 || page.storage == null) {
+                return [state: 'failed', reason: 'Overview identity, body or version could not be confirmed. ' + (page.error ?: ''), results: results]
+            }
+            Map<String, Object> merged = ConfigOverview.rebuild(page.storage.toString(), product, space, entries)
+            results = (List<Map<String, Object>>) merged.results
+            if (((Number) merged.added).intValue() == 0) {
+                return [state: 'unchanged', reason: null, pageId: parentId, pageVersion: pageVersion, results: results]
+            }
+            stage = 'write'
+            Map saved
+            try { saved = (Map) writer.call(page, merged.body) }
+            catch (Exception error) { saved = [ok: false, error: Cx.errorDetail(error)] }
+            if (saved.refused == Boolean.TRUE) {
+                mark(results, 'added', 'skipped', 'The overview write was refused.')
+                return [state: 'failed', reason: 'Overview write was refused: ' + (saved.error ?: 'write refused'), results: results]
+            }
+            stage = 'verify'
+            Map measured = (Map) reader.call()
+            Object measuredVersion = measured.version
+            boolean saveSeen = measured.ok == Boolean.TRUE && measured.id == parentId && measured.spaceKey == space &&
+                measuredVersion instanceof Number && ((Number) measuredVersion).intValue() > ((Number) pageVersion).intValue()
+            int unconfirmed = 0
+            for (int i = 0; i < results.size(); i++) {
+                Map<String, Object> result = results.get(i)
+                Map<String, Object> entry = entries.get(i)
+                if (result.get('result') != 'added') { continue }
+                if (!saveSeen || !ConfigOverview.confirmed(measured.storage as String, product, (String) entry.get('id'),
+                        (String) entry.get('title'), space, (String) entry.get('label'), (List<Map<String, String>>) entry.get('sections'))) {
+                    result.put('result', 'unconfirmed')
+                    result.put('reason', 'The row could not be confirmed after the write.')
+                    unconfirmed++
+                }
+            }
+            if (unconfirmed > 0) {
+                return [state: 'unknown', reason: 'Overview rows could not be confirmed after the write. ' + (saved.error ?: ''),
+                        pageId: parentId, pageVersion: measuredVersion, results: results]
+            }
+            [state: 'updated', reason: null, pageId: parentId, pageVersion: measuredVersion, results: results]
+        } catch (Exception error) {
+            /* After the save was sent, an added row is unconfirmed, never "not written". */
+            mark(results, 'added', stage == 'verify' ? 'unconfirmed' : 'skipped', 'Overview ' + stage + ': ' + Cx.errorDetail(error))
+            [state: stage == 'verify' ? 'unknown' : 'failed', reason: 'Overview ' + stage + ': ' + Cx.errorDetail(error), results: results]
+        }
+    }
+    static List<Map<String, Object>> untouched(List<Map<String, Object>> entries, String reason) {
+        List<Map<String, Object>> results = []
+        for (Map<String, Object> entry : entries) {
+            results.add([pageId: entry.get('id'), title: entry.get('title'), result: 'skipped', reason: reason] as Map<String, Object>)
+        }
+        results
+    }
+    static void mark(List<Map<String, Object>> results, String from, String to, String reason) {
+        for (Map<String, Object> result : results) {
+            if (result.get('result') == from) { result.put('result', to); result.put('reason', reason) }
+        }
+    }
+    /* Per-result totals for the endpoint response; a result value nobody counted would vanish from the summary. */
+    static Map<String, Integer> counts(List<Map<String, Object>> pages) {
+        Map<String, Integer> totals = [added: 0, present: 0, skipped: 0, unread: 0, unconfirmed: 0]
+        for (Map<String, Object> page : pages) {
+            String result = String.valueOf(page.get('result'))
+            totals.put(result, (totals.get(result) ?: 0) + 1)
+        }
+        totals
     }
 }
 
@@ -7385,6 +7605,69 @@ Map<String, Object> confluenceOverviewWrite(ApplicationLinkRequestFactory factor
     return [ok: call.get("ok") == Boolean.TRUE, refused: call.get("refused"), error: call.get("error")]
 }
 
+/* The direct children of the overview page, for a rebuild. GET
+ * /rest/api/content/{id}/child/page returns direct children only and pages with
+ * start and limit. No body is expanded: a batch of detail pages of several MB each
+ * in one parse is the memory risk, so each body is read on its own afterwards.
+ * The next link drives the loop, as for the spaces. A listing whose results are
+ * not a list is a failed read, never a page without children, and a row without
+ * a page ID stays in the list with an empty ID so the caller reports it unread. */
+Map<String, Object> confluenceChildPages(ApplicationLinkRequestFactory factory, String parentId) {
+    Map<String, Object> result = new LinkedHashMap<String, Object>()
+    List<Map<String, Object>> children = new ArrayList<Map<String, Object>>()
+    result.put("ok", Boolean.FALSE)
+    result.put("error", null)
+    result.put("children", children)
+    result.put("truncated", Boolean.FALSE)
+
+    Set<String> seen = new HashSet<String>()
+    int start = 0
+
+    for (int page = 0; page < Cx.MAX_CHILD_PAGES; page++) {
+        String url = "/rest/api/content/" + parentId + "/child/page?limit=" + String.valueOf(Cx.CHILD_PAGE_SIZE) +
+            "&start=" + String.valueOf(start)
+        Map<String, Object> call = confluenceCall(factory, Request.MethodType.GET, url, null)
+        if (call.get("ok") != Boolean.TRUE) {
+            result.put("error", call.get("error"))
+            return result
+        }
+
+        Map<String, Object> json = (Map<String, Object>) call.get("json")
+        if (!(json.get("results") instanceof List)) {
+            result.put("error", "The child listing of page " + parentId + " did not arrive as a list.")
+            return result
+        }
+        List<Map<String, Object>> rows = Cx.rowsOf(json, "results")
+        if (rows.size() != ((List<?>) json.get("results")).size()) {
+            result.put("error", "The child listing of page " + parentId + " carried an entry that is not a page.")
+            return result
+        }
+        for (Map<String, Object> row : rows) {
+            String id = Cx.str(row, "id", "")
+            if (!(id ==~ /[0-9]+/)) {
+                id = ""
+            } else if (!seen.add(id)) {
+                continue
+            }
+            Map<String, Object> child = new LinkedHashMap<String, Object>()
+            child.put("id", id)
+            child.put("title", Cx.str(row, "title", ""))
+            children.add(child)
+        }
+
+        boolean hasNext = Cx.str(Cx.sub(json, "_links"), "next", "").length() > 0
+        if (!hasNext || rows.isEmpty()) {
+            result.put("ok", Boolean.TRUE)
+            return result
+        }
+        start += rows.size()
+    }
+
+    result.put("ok", Boolean.TRUE)
+    result.put("truncated", Boolean.TRUE)
+    return result
+}
+
 /* The parent page, resolved and located. A parent that does not exist or sits in
  * another space is refused before anything is written. */
 Map<String, Object> confluenceParentPage(ApplicationLinkRequestFactory factory, String parentId) {
@@ -7865,7 +8148,7 @@ projectConfig(
         return Http.ok(responseClass, JsonOutput.prettyPrint(JsonOutput.toJson(data)), Http.JSON)
     }
 
-    if (action == "links" || action == "spaces" || action == "pages") {
+    if (action == "links" || action == "spaces" || action == "pages" || action == "rebuild-overview") {
         Map<String, Object> lookup = confluenceApplicationLinks()
         if (lookup.get("ok") != Boolean.TRUE) {
             return refuse(500, "link", String.valueOf(lookup.get("error")))
@@ -7943,6 +8226,91 @@ projectConfig(
             spacePayload.put("spaces", spaceRows)
             spacePayload.put("truncated", spaceResult.get("truncated"))
             return answer(spacePayload)
+        }
+
+        /* Rebuild the overview rows that are missing, from the detail pages under
+         * the overview page. Nothing is scanned again and no detail page is
+         * written: each child body is read on its own, parsed and dropped, and the
+         * overview gets ONE save for all rows that were missing. A child that could
+         * not be read is "unread" and makes the result incomplete; its row is
+         * UNKNOWN, never "not missing". */
+        if (action == "rebuild-overview") {
+            String rebuildSpace = Cx.str(request, "spaceKey", "")
+            String rebuildParent = Cx.str(request, "parentPageId", "").trim()
+            if (rebuildSpace.isEmpty()) {
+                return refuse(400, "validate", "No space was selected.")
+            }
+            if (!(rebuildParent ==~ /[0-9]+/)) {
+                return refuse(400, "validate", "Pick the overview page first; \"" + rebuildParent +
+                    "\" is not a page ID. A rebuild never creates a parent page.")
+            }
+            Map<String, Object> rebuildTarget = confluenceParentPage(targetFactory, rebuildParent)
+            if (rebuildTarget.get("ok") != Boolean.TRUE) {
+                return refuse(400, "validate", String.valueOf(rebuildTarget.get("error")))
+            }
+            String overviewSpace = String.valueOf(rebuildTarget.get("spaceKey"))
+            if (!rebuildSpace.equalsIgnoreCase(overviewSpace)) {
+                return refuse(400, "validate", "The overview page " + rebuildParent + " sits in space \"" + overviewSpace +
+                    "\", not in \"" + rebuildSpace + "\". Nothing is written.")
+            }
+            Map<String, Object> childListing = confluenceChildPages(targetFactory, rebuildParent)
+            if (childListing.get("ok") != Boolean.TRUE) {
+                return refuse(500, "children", "The child pages of " + rebuildParent + " could not be listed: " +
+                    String.valueOf(childListing.get("error")) + ". That is a failed read, not a page without children. " +
+                    "Nothing is written.")
+            }
+            List<Map<String, Object>> childRows = (List<Map<String, Object>>) childListing.get("children")
+            List<Map<String, Object>> rebuildPages = new ArrayList<Map<String, Object>>()
+            List<Map<String, Object>> parsedPages = new ArrayList<Map<String, Object>>()
+            List<Map<String, Object>> rebuildEntries = new ArrayList<Map<String, Object>>()
+            for (Map<String, Object> childRow : childRows) {
+                String childId = Cx.str(childRow, "id", "")
+                Map<String, Object> childOutcome = [pageId: childId, title: Cx.str(childRow, "title", ""),
+                    result: "unread", reason: null] as Map<String, Object>
+                rebuildPages.add(childOutcome)
+                if (childId.isEmpty()) {
+                    childOutcome.put("reason", "The child listing named no page ID for this entry.")
+                    continue
+                }
+                Map<String, Object> childRead = confluenceOverviewRead(targetFactory, childId)
+                if (childRead.get("ok") != Boolean.TRUE) {
+                    childOutcome.put("reason", "The page could not be read: " + String.valueOf(childRead.get("error")))
+                    continue
+                }
+                try {
+                    Map<String, Object> parsedDetail = ConfigOverview.detail(String.valueOf(childRead.get("storage")), "jira")
+                    rebuildEntries.add([id: childId, title: Cx.str(childRead, "title", ""),
+                        label: parsedDetail.get("label"), sections: parsedDetail.get("sections")] as Map<String, Object>)
+                    parsedPages.add(childOutcome)
+                } catch (IllegalArgumentException refusal) {
+                    childOutcome.put("result", "skipped")
+                    childOutcome.put("reason", refusal.getMessage())
+                }
+            }
+            Map rebuildOverview = OverviewExport.rebuild("jira", rebuildParent, overviewSpace, rebuildEntries,
+                { -> confluenceOverviewRead(targetFactory, rebuildParent) },
+                { Map page, String storage -> confluenceOverviewWrite(targetFactory, page, storage) })
+            List<Map<String, Object>> rebuildResults = (List<Map<String, Object>>) rebuildOverview.get("results")
+            for (int i = 0; i < parsedPages.size(); i++) {
+                parsedPages.get(i).putAll(rebuildResults.get(i))
+            }
+            Map<String, Integer> rebuildCounts = OverviewExport.counts(rebuildPages)
+            Map<String, Object> rebuildPayload = new LinkedHashMap<String, Object>()
+            rebuildPayload.put("ok", Boolean.TRUE)
+            rebuildPayload.put("action", "rebuild-overview")
+            rebuildPayload.put("target", confluenceLinkName(targetLink))
+            rebuildPayload.put("spaceKey", overviewSpace)
+            rebuildPayload.put("parentPageId", rebuildParent)
+            rebuildPayload.put("parentTitle", rebuildTarget.get("title"))
+            rebuildPayload.put("parentPageUrl", confluencePageUrl(targetLink, rebuildParent))
+            rebuildPayload.put("children", Integer.valueOf(childRows.size()))
+            rebuildPayload.put("truncated", childListing.get("truncated"))
+            rebuildPayload.put("complete", Boolean.valueOf(childListing.get("truncated") != Boolean.TRUE && rebuildCounts.get("unread") == 0))
+            rebuildPayload.put("overview", [state: rebuildOverview.get("state"), reason: rebuildOverview.get("reason"),
+                pageVersion: rebuildOverview.get("pageVersion")])
+            rebuildPayload.put("pages", rebuildPages)
+            rebuildPayload.put("counts", rebuildCounts)
+            return answer(rebuildPayload)
         }
 
         String searchSpace = Cx.str(request, "spaceKey", "")

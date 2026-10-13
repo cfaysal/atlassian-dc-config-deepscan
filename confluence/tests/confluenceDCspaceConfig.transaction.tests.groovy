@@ -84,6 +84,32 @@ assert handler.export(another).overview.state == 'updated'
 assert ConfigOverview.read(store.byId(first.parentPageId as long).body, 'confluence', 'DOC').rows.size() == 2
 println 'PASS: first-run table, repeat upsert, second export and parent relationship'
 
+/* OP-1488: the overview rows are gone, the detail pages are not. One save in the
+ * transaction restores both rows; a page without the marker and a trashed export
+ * are skipped with a reason, and a second rebuild writes nothing. */
+long overviewId = first.parentPageId as long
+store.save(new Page(version: 1, space: new Space(key: 'DOC'), title: 'Manual notes', body: '<p>Manual notes</p>'))
+store.save(new Page(version: 1, space: new Space(key: 'DOC'), title: 'Config export Old', current: false,
+    body: store.pages.values().find { it.title == 'Config export Alpha' }.body))
+store.pages[overviewId].children = store.pages.values().findAll { it.id != overviewId }.toList()
+store.pages[overviewId].body = Cx.PARENT_BODY
+store.nextRequest()
+int writesBefore = store.writes.size()
+int commitsBefore = store.commits
+Map rebuilt = handler.export([action: 'rebuild-overview', spaceKey: 'DOC', parentPageId: first.parentPageId])
+assert rebuilt.ok && rebuilt.overview.state == 'updated' && rebuilt.complete == true && rebuilt.children == 4 : rebuilt
+assert rebuilt.counts == [added: 2, present: 0, skipped: 2, unread: 0, unconfirmed: 0] : rebuilt
+assert rebuilt.pages.find { it.title == 'Manual notes' }.reason.contains('export marker') : rebuilt
+assert rebuilt.pages.find { it.title == 'Config export Old' }.reason.contains('not current') : rebuilt
+assert store.writes.size() == writesBefore + 1 && store.writes.last().overview && store.writes.last().transaction : store.writes
+assert store.commits == commitsBefore + 1
+assert ConfigOverview.read(store.pages[overviewId].body, 'confluence', 'DOC').rows.size() == 2
+store.nextRequest()
+Map unchanged = handler.export([action: 'rebuild-overview', spaceKey: 'DOC', parentPageId: first.parentPageId])
+assert unchanged.ok && unchanged.overview.state == 'unchanged' && unchanged.counts.present == 2 : unchanged
+assert store.writes.size() == writesBefore + 1
+println 'PASS: rebuild restores missing overview rows in one transactional save and then writes nothing'
+
 Map<Long, String> committedBodies = store.pages.collectEntries { id, page -> [(id): page.body] }
 store.nextRequest()
 store.failCommit = true

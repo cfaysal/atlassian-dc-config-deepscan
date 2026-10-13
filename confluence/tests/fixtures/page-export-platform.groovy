@@ -12,6 +12,7 @@ class Page implements Cloneable {
     Page parentPage
     List<Page> ancestors = []
     List<Page> children = []
+    boolean current = true
     String getIdAsString() { id.toString() }
     String getSpaceKey() { space.key }
     String getBodyAsString() { body }
@@ -23,7 +24,7 @@ class Page implements Cloneable {
     Object clone() {
         new Page(id: id, version: version, hibernateVersion: hibernateVersion,
             space: space, title: title, body: body, parentPage: parentPage,
-            ancestors: new ArrayList<Page>(ancestors))
+            ancestors: new ArrayList<Page>(ancestors), children: new ArrayList<Page>(children), current: current)
     }
 }
 class BodyContent {

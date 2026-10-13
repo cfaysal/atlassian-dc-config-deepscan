@@ -8,6 +8,8 @@ Each endpoint remains a standalone ScriptRunner file. `Cx.render` builds the exi
 
 `OverviewExport.maintain` runs after successful detail export. Its read/write callbacks keep platform APIs out of the pure helper classes. It reads a fresh parent body and version, upserts by linked title with ID fallback, saves, then verifies the actual row and newer version at the target. Its outcome is independent of the detail export: `skipped`, `updated`, `failed` or `unknown`.
 
+`OverviewExport.rebuild` restores missing rows without a detail export. The endpoint's `rebuild-overview` action lists the direct children of the selected overview page (Confluence: `Page.getChildren()` filtered by `isCurrent()`; Jira: `confluenceChildPages` over the application link, paged by `_links.next`), reads each body on its own and parses it with `ConfigOverview.detail`. That parse is the inverse of the detail renderer: the header name is the row label, and each section anchor followed by its Expand title gives the section key, label and count. Anything that does not parse exactly refuses the page. `ConfigOverview.rebuild` adds a row only for a page ID the table does not hold and skips a page whose title belongs to a row with another ID, so existing rows are never rewritten. All additions go into one versioned save; each added row is then confirmed with `confirmed()`. Its outcome is `updated`, `unchanged` (nothing missing, no write), `failed` or `unknown`. A child that could not be read is `unread` and the response is `complete: false`. On Confluence the rebuild runs in its own `PageExportTransaction` and reuses the export's overview read and save closures.
+
 ```mermaid
 flowchart LR
     Report --> Detail[Cx detail renderer and anchors]
@@ -17,6 +19,9 @@ flowchart LR
     Parent --> Verify[Read back overview row]
     Save --> Result[Detail result]
     Verify --> Result
+    Children[Child detail pages] --> Parse[ConfigOverview.detail]
+    Parse --> Rebuild[ConfigOverview.rebuild: missing rows only]
+    Rebuild --> Parent
 ```
 
 Jira retains its administrator gate and authenticated application-link factory. `confluenceOverviewRead` expands body storage, version and space through `confluenceCall`; `confluenceOverviewWrite` sends a versioned body update without changing ancestors. Confluence retains its administrator gate and existing PageService/PageManager APIs, cloning the original parent before saving with notifications suppressed. No new credentials, scopes or alternate transport are introduced.
