@@ -53,6 +53,10 @@ The selected parent also becomes the fixed overview page. To create one during e
 
 The result links to both pages and states whether the overview was updated. A parsing or verification problem can be reported separately when the transaction completes. A persistence error or failed commit instead produces a transaction error, with no claim that the detail page was written. Check the destination pages before retrying after that error. Matching by name avoids a duplicate when exporting again. The overview requires permission to update the selected parent. Keep its generated table and invisible identity anchors intact; add your own notes outside it. A row whose link was saved without a space key is read as a link into the overview page's own space. A read error names the row by its position and anchor. Older detail pages appear in the overview when exported again with that parent.
 
+### Rebuilding the overview
+
+When overview rows are missing but the detail pages still sit under the overview page, select the space, pick the overview page from the search and press **Rebuild overview rows**. The rebuild reads the direct child pages of that page and takes each row's name and section counts from the detail page itself; nothing is scanned again and no detail page is written. All missing rows are added with one save of the overview, and each added row is read back and confirmed. The rebuild never replaces or rewrites a row: a page that already has a row is reported as present, and a page whose title is already held by a row for another page ID is skipped with that page ID. A child page without the export marker, a Jira export page, a page that is not current, a page whose header names the space as "unknown" and a page whose sections do not parse exactly are skipped, each with its reason. A child page that could not be read is reported as unread and the result as not complete; its row is unknown, not absent, so run the rebuild again. A typed title that was not picked cannot be rebuilt: a rebuild never creates a parent.
+
 ## Limits and troubleshooting
 
 - **403:** use a member of `confluence-administrators` and check the group gate on both routes.

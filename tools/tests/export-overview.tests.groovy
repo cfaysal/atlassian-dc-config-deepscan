@@ -139,6 +139,89 @@ verify(maintain('105', 'Export Delta', readTarget, saveTarget).state == 'updated
 def strippingReader = { -> Map page = readTarget(); page.storage = page.storage.replace(' ri:space-key="DOC"', ''); page }
 verify(maintain('106', 'Export Epsilon', strippingReader, saveTarget).state == 'updated', 'a readback without space keys still confirms the row')
 
+/* OP-1488: a missing row is rebuilt from the detail page alone, and only exactly. */
+Map parsedDetail = overviewClass.detail(firstDetail.storage, product)
+verify(parsedDetail.sections == firstDetail.sections, 'detail parse reproduces the exported sections byte for byte')
+verify(parsedDetail.label == 'Alpha', 'detail parse reads the name the row label was taken from')
+def entry = { String id, String title, Map parsed -> [id: id, title: title, label: parsed.label, sections: parsed.sections] }
+Map rebuilt = overviewClass.rebuild(original, product, 'DOC', [entry('101', 'Export Alpha', parsedDetail)])
+verify(rebuilt.body == a && rebuilt.added == 1 && rebuilt.results[0].result == 'added', 'a rebuilt row equals the row the export wrote')
+Map kept = overviewClass.rebuild(a, product, 'DOC', [entry('101', 'Export Alpha', [label: 'Changed', sections: []]),
+    entry('555', 'export alpha', parsedDetail), entry('102', 'Export Beta', parsedDetail)])
+verify(kept.results*.result == ['present', 'skipped', 'added'] && kept.added == 1, 'present rows stay, a same-title row with another page ID is not replaced')
+verify(kept.results[1].reason.contains('101'), 'the skipped page names the row that holds its title')
+verify(overviewClass.read(kept.body, product, 'DOC').rows[0] == overviewClass.read(a, product, 'DOC').rows[0], 'a present row is kept verbatim')
+def detailError = { String body ->
+    try { overviewClass.detail(body, product); null }
+    catch (IllegalArgumentException error) { error.message }
+}
+String ownMarker = product == 'jira' ? 'cfcon-project-config-export/1' : 'cfcon-space-config-export/1'
+String otherMarker = product == 'jira' ? 'cfcon-space-config-export/1' : 'cfcon-project-config-export/1'
+String firstAnchor = overviewClass.anchor(firstDetail.sections[0].anchor)
+String expandStart = '<ac:structured-macro ac:name="expand">'
+verify(detailError(firstDetail.storage.replace(ownMarker, 'no-marker'))?.contains('export marker'), 'a page without the marker is refused')
+verify(detailError(firstDetail.storage.replace(ownMarker, otherMarker))?.contains('other product'), 'an export of the other product is refused')
+verify(detailError(firstDetail.storage.replace(firstAnchor + expandStart, firstAnchor + '<p>moved</p>' + expandStart))?.contains('not followed'),
+    'an anchor without its heading refuses the page')
+verify(detailError(firstDetail.storage.replace(firstAnchor, firstAnchor + expandStart + '<ac:parameter ac:name="title">Copy (1 item)</ac:parameter>' +
+    '<ac:rich-text-body></ac:rich-text-body></ac:structured-macro>' + firstAnchor))?.contains('repeats section'), 'a repeated section refuses the page')
+verify(detailError(firstDetail.storage.replace('<ac:parameter ac:name="title">' + firstDetail.sections[0].label + ' (',
+    '<ac:parameter ac:name="title">' + firstDetail.sections[0].label + ' ['))?.contains('has no count'), 'a heading without its count refuses the page')
+verify(detailError(firstDetail.storage.replace('<p>Complete configuration of', '<p>Configuration of'))?.contains('names no'), 'a page without its header is refused')
+Map nameless = payload('Gamma')
+nameless.space = [key: 'Gamma']
+nameless.project = [key: 'Gamma']
+verify(detailError(renderDetail(nameless).storage)?.contains('name is not on the page'), 'an unknown name is skipped, never guessed')
+Map odd = payload('R&D (EMEA) "x"')
+odd.sections[1].label = 'Grants (legacy)'
+def oddDetail = renderDetail(odd)
+Map oddParsed = overviewClass.detail(oddDetail.storage, product)
+verify(oddParsed.sections == oddDetail.sections && oddParsed.label == 'R&D (EMEA) "x"', 'parentheses and entities round-trip')
+Map reEncoded = overviewClass.detail(oddDetail.storage.replace('&amp;', '&#38;').replace('&quot;', '&#x22;'), product)
+verify(reEncoded == oddParsed, 'editor entity normalisation does not change the parse')
+
+Map hub = [ok: true, id: '20', title: 'Hub', spaceKey: 'DOC', version: 3, storage: original]
+int hubWrites = 0
+def readHub = { -> new LinkedHashMap(hub) }
+def saveHub = { Map page, String storage ->
+    assert page.version == hub.version : 'optimistic version used'
+    hubWrites++
+    hub.storage = storage
+    hub.version++
+    [ok: true]
+}
+List twoEntries = [entry('301', 'Export Alpha', parsedDetail), entry('302', 'Export Beta', parsedDetail)]
+Map built = coordinatorClass.rebuild(product, '20', 'DOC', twoEntries, readHub, saveHub)
+verify(built.state == 'updated' && hubWrites == 1 && built.pageVersion == 4, 'one save adds every missing row')
+verify(built.results*.result == ['added', 'added'] && overviewClass.read(hub.storage, product, 'DOC').rows.size() == 2, 'each added row is confirmed')
+Map repeated = coordinatorClass.rebuild(product, '20', 'DOC', twoEntries, readHub, saveHub)
+verify(repeated.state == 'unchanged' && hubWrites == 1 && repeated.results*.result == ['present', 'present'], 'nothing missing performs no write')
+String hubBefore = hub.storage
+Map refusedRebuild = coordinatorClass.rebuild(product, '20', 'DOC', [entry('303', 'Export Gamma', parsedDetail)], readHub,
+    { page, storage -> [ok: false, refused: true, error: '409 conflict'] })
+verify(refusedRebuild.state == 'failed' && refusedRebuild.results[0].result == 'skipped' && hub.storage == hubBefore, 'a refused write adds nothing')
+Map staleRebuild = coordinatorClass.rebuild(product, '20', 'DOC', [entry('303', 'Export Gamma', parsedDetail)], readHub, { page, storage -> [ok: true] })
+verify(staleRebuild.state == 'unknown' && staleRebuild.results[0].result == 'unconfirmed', 'a readback without a new version is UNKNOWN')
+Map silentRebuild = coordinatorClass.rebuild(product, '20', 'DOC', [entry('305', 'Export Zeta', parsedDetail)], readHub,
+    { page, storage -> hub.storage = storage; [ok: true] })
+verify(silentRebuild.state == 'unknown' && silentRebuild.results[0].result == 'unconfirmed', 'a row that appears without a new page version is UNKNOWN')
+hub.storage = hubBefore
+int hubReads = 0
+Map lostRebuild = coordinatorClass.rebuild(product, '20', 'DOC', [entry('303', 'Export Gamma', parsedDetail)],
+    { -> if (++hubReads > 1) { throw new IOException('readback gone') }; readHub() }, saveHub)
+verify(lostRebuild.state == 'unknown' && lostRebuild.results[0].result == 'unconfirmed', 'a failed readback leaves the row unconfirmed')
+int writesBefore = hubWrites
+Map unreadRebuild = coordinatorClass.rebuild(product, '20', 'DOC', twoEntries, { [ok: false, error: 'read denied'] }, saveHub)
+verify(unreadRebuild.state == 'failed' && unreadRebuild.results*.result == ['skipped', 'skipped'] && hubWrites == writesBefore,
+    'a failed overview read is never an empty overview')
+verify(coordinatorClass.rebuild(product, '20', 'DOC', twoEntries, { [ok: true, id: '21', spaceKey: 'DOC', title: 'Hub', version: 1, storage: ''] },
+    saveHub).state == 'failed' && hubWrites == writesBefore, 'another page is never rebuilt into')
+hub.storage = hub.storage + overviewClass.marker(product, 'start')
+verify(coordinatorClass.rebuild(product, '20', 'DOC', [entry('304', 'Export Delta', parsedDetail)], readHub, saveHub).state == 'failed' &&
+    hubWrites == writesBefore, 'a malformed overview is refused without a write')
+verify(coordinatorClass.counts([[result: 'added'], [result: 'unread'], [result: 'skipped'], [result: 'added']]) ==
+    [added: 2, present: 0, skipped: 1, unread: 1, unconfirmed: 0], 'every result value is counted')
+
 File repo = new File(System.getProperty('repoRoot', '.'))
 /*
  * Confluence application link transport
@@ -165,6 +248,38 @@ if (product == 'jira') {
     verify(!update.containsKey('ancestors') && update.title == 'Overview', 'overview update leaves page position and title intact')
     remote.body = [:]
     verify(harness.confluenceOverviewRead(factory, '10').ok == false, 'missing remote storage is a failed read')
+    /* OP-1488: the child listing of the overview page, routed by path. */
+    List childCalls = []
+    Closure respond = { String path -> [ok: false, error: 'unexpected ' + path] }
+    def childHarness = new GroovyShell(getClass().classLoader, new Binding([confluenceCall: { f, method, path, body ->
+        childCalls.add(path); respond(path) }])).evaluate(
+        'import groovy.json.JsonOutput\nclass ApplicationLinkRequestFactory {}\nclass Request { enum MethodType { GET, PUT } }\n' + transport + '\nreturn this')
+    def childFactory = childHarness.class.classLoader.loadClass('ApplicationLinkRequestFactory').getDeclaredConstructor().newInstance()
+    respond = { String path ->
+        path.endsWith('start=0') ? [ok: true, json: [results: [[id: '21', title: 'A'], [id: '22', title: 'B']], _links: [next: '/more']]]
+            : [ok: true, json: [results: [[id: '23', title: 'C'], [id: '21', title: 'A'], [title: 'No id']], _links: [:]]]
+    }
+    Map listed = childHarness.confluenceChildPages(childFactory, '10')
+    verify(childCalls == ['/rest/api/content/10/child/page?limit=25&start=0', '/rest/api/content/10/child/page?limit=25&start=2'],
+        'the child listing follows the next link and advances by the rows that came back')
+    verify(listed.ok == true && listed.truncated == false && listed.children*.id == ['21', '22', '23', ''], 'children are deduplicated and an entry without ID stays visible')
+    int served = 0
+    respond = { String path -> [ok: true, json: [results: [[id: String.valueOf(100 + served++), title: 'X']], _links: [next: '/more']]] }
+    int cap = getClass().classLoader.loadClass('Cx').MAX_CHILD_PAGES
+    Map capped = childHarness.confluenceChildPages(childFactory, '10')
+    verify(capped.ok == true && capped.truncated == true && capped.children.size() == cap, 'a listing past the cap is truncated, not complete')
+    respond = { String path -> [ok: true, json: [size: 0]] }
+    verify(childHarness.confluenceChildPages(childFactory, '10').ok == false, 'a listing without a results list is a failed read')
+    respond = { String path -> [ok: true, json: [results: ['not a page'], _links: [:]]] }
+    verify(childHarness.confluenceChildPages(childFactory, '10').ok == false, 'a listing entry that is not a page fails the read')
+    respond = { String path -> [ok: false, error: 'HTTP 403'] }
+    Map denied = childHarness.confluenceChildPages(childFactory, '10')
+    verify(denied.ok == false && denied.children.isEmpty() && denied.error == 'HTTP 403', 'a refused listing is never a page without children')
+    respond = { String path -> [ok: true, json: [id: '21', type: 'page', title: 'Export Alpha', space: [key: 'DOC'], version: [number: 2],
+        body: [storage: [value: firstDetail.storage]]]] }
+    Map childPage = childHarness.confluenceOverviewRead(childFactory, '21')
+    verify(childCalls.last() == '/rest/api/content/21?expand=body.storage,version,space' &&
+        overviewClass.detail(childPage.storage, 'jira').sections == firstDetail.sections, 'a child body read over the link parses to its exported sections')
     String callSource = source.substring(source.indexOf('Map<String, Object> confluenceCall('),
         source.indexOf('Map<String, Object> confluenceSpaces('))
     def failureHarness = new GroovyShell(getClass().classLoader).evaluate('''

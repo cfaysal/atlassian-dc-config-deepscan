@@ -183,7 +183,7 @@ link, which is the only outbound path in the file.
 
 ## Verification
 
-Both configuration endpoints can maintain a fixed overview on the selected Confluence parent page. An existing export page name updates its row; a new name appends a row with links to the detail page's sections. The detail-page layout and Remarks remain as before. See the [export architecture](ARCHITECTURE.md) and the [Jira](docs/jira-project-configuration.md) and [Confluence](docs/confluence-space-configuration.md) guides.
+Both configuration endpoints can maintain a fixed overview on the selected Confluence parent page. An existing export page name updates its row; a new name appends a row with links to the detail page's sections. The detail-page layout and Remarks remain as before. **Rebuild overview rows** restores missing rows from the detail pages already under the overview page, in one save, without replacing an existing row. See the [export architecture](ARCHITECTURE.md) and the [Jira](docs/jira-project-configuration.md) and [Confluence](docs/confluence-space-configuration.md) guides.
 
 The local Confluence export groups parent creation, detail persistence and overview persistence in one SAL transaction. Its transaction error response also covers commit failures; instance behavior still requires verification on the installed ScriptRunner endpoint.
 
@@ -194,6 +194,8 @@ flowchart LR
     Transaction --> Detail
     Detail --> Overview[Selected parent: table upsert by export name]
     Overview --> Sections[Links to detail section anchors]
+    Children[Detail pages under the parent] --> Rebuild[Rebuild: add missing rows, one save]
+    Rebuild --> Overview
 ```
 
 The offline test suite is compiled together with the Jira-free classes cut out of the
