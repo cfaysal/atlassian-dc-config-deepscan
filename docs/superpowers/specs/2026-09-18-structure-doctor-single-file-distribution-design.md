@@ -97,9 +97,8 @@ Automated checks must prove:
 - the existing modular test suites remain green; and
 - credential, outbound-network, ASCII, control-byte, and diff hygiene gates remain green.
 
-The repository has no available GitHub Actions budget. Verification is therefore local and
-must not depend on or trigger GitHub Actions. A local check mode regenerates the artifact in a
-temporary location and fails on any byte difference from the committed distribution file.
+A local check mode regenerates the artifact in a temporary location and fails on any byte
+difference from the committed distribution file.
 
 ## Error handling
 
