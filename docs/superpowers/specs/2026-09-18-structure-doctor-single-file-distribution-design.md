@@ -122,5 +122,4 @@ previous committed artifact remains unchanged when generation fails before final
 4. The generated artifact is deterministic, traceable to all maintained inputs, and guarded
    against drift by an executable local check.
 5. Existing security boundaries and runtime behavior remain unchanged.
-6. No GitHub Actions run, installation, deployment, or live mutation occurs during
-   implementation.
+6. No installation, deployment, or live mutation occurs during implementation.

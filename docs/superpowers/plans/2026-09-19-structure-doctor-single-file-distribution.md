@@ -4,7 +4,7 @@
 
 **Goal:** Generate one deterministic ScriptRunner-ready Groovy file from the maintained Structure Doctor controller and all 33 modular Core sources.
 
-**Architecture:** Keep the 34 maintained Groovy sources authoritative. A dependency-free Node ESM generator validates and normalizes them, hoists imports, emits one package declaration, embeds a source manifest and fingerprint, and atomically writes the distribution artifact. A local Node test suite proves determinism, source coverage, security invariants, and drift without invoking GitHub Actions.
+**Architecture:** Keep the 34 maintained Groovy sources authoritative. A dependency-free Node ESM generator validates and normalizes them, hoists imports, emits one package declaration, embeds a source manifest and fingerprint, and atomically writes the distribution artifact. A local Node test suite proves determinism, source coverage, security invariants, and drift.
 
 **Tech Stack:** Node.js built-ins (`fs`, `path`, `crypto`, `node:test`), Groovy source text, existing local Groovy test harnesses.
 
@@ -93,7 +93,7 @@
 
   Run: `node --test tools/tests/structure-doctor-bundle.tests.mjs`
 
-  Run the repository's existing local Structure Doctor Groovy test commands from `jira/tests/README.md`, plus both probe test scripts. GitHub Actions are not run or dispatched.
+  Run the repository's existing local Structure Doctor Groovy test commands from `jira/tests/README.md`, plus both probe test scripts.
 
 - [ ] **Step 4: Document one-file installation**
 
