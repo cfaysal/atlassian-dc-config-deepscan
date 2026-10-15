@@ -180,7 +180,7 @@ class Pc {
     /* The single place the report version lives. The file header points here and
      * every output channel prints this constant, so a report always names the
      * build that produced it. */
-    static final String VERSION = "0.3.1"
+    static final String VERSION = "0.4"
 
     /* Node states. A node is not just present or absent: it can be present but
      * unreadable, and the report has to keep those apart. */
@@ -2016,6 +2016,9 @@ class Render {
         out.append("</div></div>\n")
         out.append(instanceCard(shell))
         out.append(projectPicker(projects, selfPath))
+        if (!projects.isEmpty()) {
+            out.append(bulkExportCard())
+        }
         if (!shell.globalDiagnostics.isEmpty()) {
             out.append("<div class=\"diag diag-warn\"><strong>Some reads were suppressed.</strong><ul>")
             for (String entry : shell.globalDiagnostics) {
@@ -2046,16 +2049,21 @@ class Render {
         out.append(Pc.html(countLine(projects.size(), projects.size())))
         out.append("</div></div>")
 
+        /* The selection feeds the bulk export below the list. Selecting is all the
+         * checkboxes do: nothing is read or written until that export is started. */
+        out.append("<div class=\"bulk-select\">")
+        out.append("<button class=\"button\" type=\"button\" onclick=\"selectShown('all')\">Select all shown</button>")
+        out.append("<button class=\"button\" type=\"button\" onclick=\"selectShown('new')\">")
+        out.append("Select shown, not yet exported</button>")
+        out.append("<button class=\"button\" type=\"button\" onclick=\"selectShown('none')\">Clear selection</button>")
+        out.append("<span class=\"bulk-count\" id=\"bulkCount\">0 selected</span>")
+        out.append("<span class=\"bulk-count\" id=\"exportedNote\">")
+        out.append("Pick an overview page in the export below to mark the projects it already lists.</span>")
+        out.append("</div>")
+
         out.append("<div id=\"projectResults\" class=\"export-results project-list\">")
         for (Map<String, String> project : projects) {
-            String key = Pc.orNa(project.get("key"))
-            String name = Pc.orNa(project.get("name"))
-            out.append("<a class=\"export-hit\" href=\"")
-            out.append(Pc.html(selfPath)).append("?project=").append(Pc.html(Pc.urlQuery(key)))
-            out.append("\" data-find=\"")
-            out.append(Pc.html((key + " " + name).toLowerCase(Locale.ROOT)))
-            out.append("\"><strong>").append(Pc.html(key)).append("</strong> ")
-            out.append(Pc.html(name)).append("</a>")
+            out.append(projectRow(project, selfPath))
         }
         out.append("</div>")
         out.append("<div id=\"projectEmpty\" class=\"export-empty hidden\">No project matches that search.</div>")
@@ -2064,6 +2072,70 @@ class Render {
         out.append("and no search is run, so the run is harmless on a production instance.</div>")
         out.append("</div>\n")
         return out.toString()
+    }
+
+    /* One project in the picker. The row carries the title the single export
+     * suggests for this project, computed here by the same Cx.title, so a bulk
+     * export writes to exactly the page a single export of the project would update. */
+    static String projectRow(Map<String, String> project, String selfPath) {
+        String key = Pc.orNa(project.get("key"))
+        String name = Pc.orNa(project.get("name"))
+        StringBuilder out = new StringBuilder()
+        out.append("<div class=\"project-row\" data-key=\"").append(Pc.html(key))
+        out.append("\" data-title=\"").append(Pc.html(Cx.title(key)))
+        out.append("\" data-find=\"").append(Pc.html((key + " " + name).toLowerCase(Locale.ROOT))).append("\">")
+        out.append("<input type=\"checkbox\" class=\"bulk-pick\" onchange=\"selectionChanged()\" aria-label=\"Select ")
+        out.append(Pc.html(key)).append("\">")
+        out.append("<a class=\"export-hit\" href=\"")
+        out.append(Pc.html(selfPath)).append("?project=").append(Pc.html(Pc.urlQuery(key)))
+        out.append("\"><strong>").append(Pc.html(key)).append("</strong> ")
+        out.append(Pc.html(name)).append("</a>")
+        out.append("<span class=\"bulk-mark hidden\">exported</span>")
+        out.append("</div>")
+        return out.toString()
+    }
+
+    /* The bulk export: the same target, space and parent stages as the single
+     * export on the report page, then one write per selected project, one after the
+     * other. Each write is the single export's own request with the single export's
+     * default title, so nothing here can write a page the single export would not. */
+    static String bulkExportCard() {
+        String actions = """            <div class="export-note">
+                Each selected project is written as its own page, titled the way the single export
+                suggests it: <strong>${Pc.html(Cx.DEFAULT_TITLE_PREFIX)}KEY</strong>. A page with that title
+                is updated and its remarks are kept; otherwise it is created. The projects are exported one
+                after the other, never in parallel, because every export updates the same overview table.
+                Keep this tab open until the run has finished.
+            </div>
+            <div class="export-grid">
+                <button id="bulkRun" class="button" type="button" disabled onclick="startBulk()">Export selected (0)</button>
+                <button id="bulkStop" class="button hidden" type="button" onclick="stopBulk()">Stop after the current project</button>
+                <button id="bulkRetry" class="button hidden" type="button" onclick="retryBulk()">Retry failed</button>
+                <button id="exportRebuild" class="button" type="button" disabled onclick="rebuildOverview()">Rebuild overview rows</button>
+            </div>
+"""
+        return """<div class="export-card">
+    <div class="export-title">Export selected projects to Confluence</div>
+    <div class="export-note">
+        Writes one Confluence page per selected project over a Jira application link, exactly as the
+        export on a project's report does. The <strong>Remark</strong> column of an existing page is read
+        back and carried over; if that read fails, that project is not written. A page that does not carry
+        this export's marker is never overwritten. The selected parent keeps the overview table, one row
+        per project. Nothing is read from Confluence until the button below is pressed.
+    </div>
+    <div class="export-grid">
+        <button id="exportOpen" class="button" type="button" onclick="openExport()">Choose the Confluence target</button>
+    </div>
+${exportSettings(actions)}    <div id="exportStatus" class="export-status muted">Not written yet.</div>
+    <div id="bulkProgress" class="bulk-progress hidden">
+        <div class="bulk-track"><div id="bulkBar" class="bulk-fill"></div></div>
+        <div id="bulkText" class="bulk-text"></div>
+    </div>
+    <ul id="bulkResults" class="bulk-results"></ul>
+    <input id="exportSpace" type="hidden" value="">
+    <input id="exportParent" type="hidden" value="">
+</div>
+"""
     }
 
     /* Rendered on the server for the first paint and recomputed in the browser on
@@ -2094,7 +2166,7 @@ function projectCountLine(matching, total) {
 
 function filterProjects() {
     var query = (document.getElementById('projectQuery').value || '').trim().toLowerCase();
-    var rows = document.querySelectorAll('#projectResults .export-hit');
+    var rows = document.querySelectorAll('#projectResults .project-row');
     var matching = 0;
     for (var i = 0; i < rows.length; i++) {
         var isHit = query === '' || rows[i].getAttribute('data-find').indexOf(query) >= 0;
@@ -2110,9 +2182,293 @@ function filterProjects() {
 function pickFirstProject(event) {
     if (event.key !== 'Enter') { return; }
     event.preventDefault();
-    var first = document.querySelector('#projectResults .export-hit:not(.hidden)');
+    var first = document.querySelector('#projectResults .project-row:not(.hidden) .export-hit');
     if (first) { window.location.href = first.getAttribute('href'); }
 }
+
+""" + exportStageScript() + """
+/* ---- Bulk export ---------------------------------------------------------
+   One write per selected project, strictly one after the other: every write also
+   updates the same overview table, and two writes racing for it would refuse
+   each other. Each write is the single export's own request: the report as JSON,
+   the same target fields, and the title the row carries, which the server
+   computed with the single export's own default. */
+var bulkItems = null;
+var bulkStopping = false;
+var bulkFailed = [];
+var bulkOverviewUrl = null;
+var exportedTitles = Object.create(null);
+var exportedSeq = 0;
+
+function bulkRows() { return document.querySelectorAll('#projectResults .project-row'); }
+function titleKey(space, title) { return String(space).toLowerCase() + '|' + String(title).toLowerCase(); }
+
+/* "all" and "new" act on the rows the filter shows; "none" clears every row,
+   shown or not, so a selection made under an earlier filter cannot linger unseen. */
+function selectShown(mode) {
+    var rows = bulkRows();
+    for (var i = 0; i < rows.length; i++) {
+        var box = rows[i].querySelector('.bulk-pick');
+        if (mode === 'none') { box.checked = false; continue; }
+        if (rows[i].classList.contains('hidden')) { continue; }
+        box.checked = mode === 'all' || !rows[i].classList.contains('is-exported');
+    }
+    selectionChanged();
+}
+function selectedItems() {
+    var rows = bulkRows();
+    var items = [];
+    for (var i = 0; i < rows.length; i++) {
+        if (!rows[i].querySelector('.bulk-pick').checked) { continue; }
+        items.push({ key: rows[i].getAttribute('data-key'), title: rows[i].getAttribute('data-title'), row: rows[i] });
+    }
+    return items;
+}
+function selectionChanged() {
+    var count = selectedItems().length;
+    el('bulkCount').textContent = count + ' selected';
+    var run = el('bulkRun');
+    run.textContent = 'Export selected (' + count + ')';
+    run.disabled = bulkItems !== null || count === 0 || !el('exportSpace').value;
+}
+
+/* Marks come from the overview table of the picked parent page and from nothing
+   else: a project is marked when that table holds a row for its default title.
+   Without a picked overview nothing is marked, and a failed read says so rather
+   than leaving every row looking unexported. */
+function exportTargetChanged() {
+    exportedSeq++;
+    exportedTitles = Object.create(null);
+    paintExported();
+    var parentId = el('exportParent').value.trim();
+    var spaceKey = el('exportSpace').value;
+    if (parentId && spaceKey) {
+        loadExported(parentId, spaceKey);
+    } else {
+        el('exportedNote').textContent = 'Pick an overview page in the export below to mark the projects it already lists.';
+    }
+    selectionChanged();
+}
+function loadExported(parentId, spaceKey) {
+    var seq = exportedSeq;
+    el('exportedNote').textContent = 'Reading the overview on page ' + parentId + '...';
+    exportPost({ action: 'exported', applicationLinkId: el('exportTarget').value, spaceKey: spaceKey, parentPageId: parentId }).then(function (result) {
+        if (seq !== exportedSeq) { return; }
+        var body = result.body || {};
+        if (!result.ok || body.ok !== true) {
+            el('exportedNote').textContent = 'Already exported projects are NOT marked: ' +
+                (body.error || 'the overview could not be read.');
+            return;
+        }
+        var exports = body.exports || [];
+        for (var i = 0; i < exports.length; i++) {
+            exportedTitles[titleKey(exports[i].space || body.spaceKey, exports[i].title)] = true;
+        }
+        var marked = paintExported();
+        el('exportedNote').textContent = marked + ' of ' + bulkRows().length + ' projects already have a row in the overview "' +
+            (body.parentTitle || parentId) + '".';
+    }).catch(function (error) {
+        if (seq === exportedSeq) { el('exportedNote').textContent = 'Already exported projects are NOT marked: ' + error; }
+    });
+}
+function paintExported() {
+    var spaceKey = el('exportSpace').value;
+    var rows = bulkRows();
+    var marked = 0;
+    for (var i = 0; i < rows.length; i++) {
+        var hit = exportedTitles[titleKey(spaceKey, rows[i].getAttribute('data-title'))] === true;
+        if (hit) { marked++; }
+        markRow(rows[i], hit);
+    }
+    return marked;
+}
+function markRow(row, exported) {
+    row.classList.toggle('is-exported', exported);
+    row.querySelector('.bulk-mark').classList.toggle('hidden', !exported);
+}
+
+function startBulk() {
+    var items = selectedItems();
+    var spaceKey = el('exportSpace').value;
+    if (items.length === 0) { say('bad', 'Select at least one project first.'); return; }
+    if (!spaceKey) { say('bad', 'Select a space first.'); return; }
+    var parentId = el('exportParent').value.trim();
+    var parentTitle = el('exportParentQuery').value.trim();
+    var where = parentId ? 'under the page "' + parentTitle + '" (id ' + parentId + ')'
+        : (parentTitle ? 'under the page "' + parentTitle + '", created if it does not exist yet'
+            : 'at the top level of the space, without an overview');
+    if (!window.confirm('Export ' + items.length + ' project(s) to space ' + spaceKey + ', ' + where +
+            '? Each one is written as its own page, one after the other.')) { return; }
+    runBulk(items);
+}
+function runBulk(items) {
+    bulkItems = items;
+    bulkStopping = false;
+    bulkFailed = [];
+    var tally = { created: 0, updated: 0, warned: 0, failed: 0 };
+    lockTarget(true);
+    el('bulkResults').innerHTML = '';
+    el('bulkProgress').classList.remove('hidden');
+    el('bulkStop').disabled = false;
+    el('bulkStop').classList.remove('hidden');
+    el('bulkRetry').classList.add('hidden');
+    selectionChanged();
+    say('muted', 'Exporting ' + items.length + ' project(s). Keep this tab open.');
+    var index = 0;
+    function step() {
+        if (bulkStopping || index >= items.length) { finishBulk(items, index, tally); return; }
+        var item = items[index];
+        showProgress(index, items.length, item.key, tally);
+        exportOne(item).then(function (outcome) {
+            index++;
+            record(item, outcome, tally);
+            step();
+        });
+    }
+    step();
+}
+
+/* Never rejects: every way a write can end is an outcome in the list. A report
+   that could not be read means nothing was sent; a write request that failed in
+   transit means the page may or may not have changed, and it says so. */
+function exportOne(item) {
+    var reportUrl = window.location.pathname + '?project=' + encodeURIComponent(item.key) + '&format=json';
+    return fetch(reportUrl, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } }).then(function (response) {
+        if (!response.ok) { throw new Error('HTTP ' + response.status); }
+        return response.json();
+    }).then(function (payload) {
+        payload.applicationLinkId = el('exportTarget').value;
+        payload.spaceKey = el('exportSpace').value;
+        payload.parentPageId = el('exportParent').value.trim();
+        payload.parentTitle = payload.parentPageId ? '' : el('exportParentQuery').value.trim();
+        payload.title = item.title;
+        return exportPost(payload).then(function (result) {
+            return writeOutcome(item, result);
+        }, function (error) {
+            return { state: 'failed', reason: 'The write request failed, so whether the page changed is unknown: ' + error };
+        });
+    }, function (error) {
+        return { state: 'failed', reason: 'The report could not be read, so nothing was sent: ' + error };
+    });
+}
+function writeOutcome(item, result) {
+    var body = result.body || {};
+    if (!result.ok || body.ok !== true) {
+        return { state: 'failed', reason: 'Nothing was written (' + result.status + '): ' + (body.error || 'unknown error') };
+    }
+    adoptParent(body);
+    if (body.parentPageUrl) { bulkOverviewUrl = body.parentPageUrl; }
+    var notes = [];
+    if (body.parentApplied === 'false') {
+        notes.push('PARENT NOT APPLIED. ' + (body.parentAppliedReason || 'The page was not moved under the parent page.'));
+    } else if (body.parentApplied === 'unknown') {
+        notes.push('PARENT NOT CONFIRMED. ' + (body.parentAppliedReason || 'The position could not be read back.'));
+    }
+    var overview = body.overview || { state: 'skipped' };
+    if (overview.state === 'updated') {
+        exportedTitles[titleKey(body.spaceKey, body.title)] = true;
+        markRow(item.row, true);
+    } else if (overview.state === 'failed' || overview.state === 'unknown') {
+        notes.push('DETAIL PAGE WRITTEN; OVERVIEW ' + (overview.state === 'failed' ? 'FAILED. ' : 'NOT CONFIRMED. ') +
+            (overview.reason || ''));
+    }
+    return { state: notes.length > 0 ? 'warn' : 'ok', action: body.action, reason: notes.join(' '), pageUrl: body.pageUrl };
+}
+
+/* A parent typed by title is found or created by the first write. Every later
+   write in the run then names it by its id, so the run cannot create a second
+   parent of the same title. */
+function adoptParent(body) {
+    if (el('exportParent').value || !body.parentPageId) { return; }
+    el('exportParent').value = body.parentPageId;
+    if (body.parentTitle) { el('exportParentQuery').value = body.parentTitle; }
+    el('exportParentChosen').textContent = 'Parent page: ' + (body.parentTitle || '') + ' (id ' + body.parentPageId +
+        (body.parentAction === 'created' ? ', created by this run)' : ')');
+}
+function record(item, outcome, tally) {
+    if (outcome.state === 'failed') {
+        tally.failed++;
+        bulkFailed.push(item);
+    } else {
+        if (outcome.action === 'created') { tally.created++; } else { tally.updated++; }
+        if (outcome.state === 'warn') { tally.warned++; }
+    }
+    if (outcome.state === 'ok') { return; }
+    var line = document.createElement('li');
+    line.className = outcome.state === 'failed' ? 'bad' : 'warn';
+    line.textContent = item.key + ': ' + outcome.reason;
+    if (outcome.pageUrl) {
+        var link = document.createElement('a');
+        link.href = outcome.pageUrl;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        link.textContent = ' Open the page';
+        line.appendChild(link);
+    }
+    el('bulkResults').appendChild(line);
+}
+function tallyText(tally) {
+    return tally.created + ' created, ' + tally.updated + ' updated, ' + tally.warned + ' with a warning, ' +
+        tally.failed + ' failed.';
+}
+function showProgress(done, total, key, tally) {
+    el('bulkBar').style.width = (total === 0 ? 0 : Math.round(done * 100 / total)) + '%';
+    el('bulkText').textContent = (key ? 'Exporting ' + (done + 1) + ' of ' + total + ': ' + key + '. '
+        : done + ' of ' + total + ' handled. ') + tallyText(tally);
+}
+function finishBulk(items, reached, tally) {
+    var stopped = reached < items.length;
+    bulkItems = null;
+    lockTarget(false);
+    el('bulkStop').classList.add('hidden');
+    showProgress(reached, items.length, null, tally);
+    el('bulkRetry').textContent = 'Retry failed (' + bulkFailed.length + ')';
+    el('bulkRetry').classList.toggle('hidden', bulkFailed.length === 0);
+    var tone = tally.failed > 0 ? 'bad' : (tally.warned > 0 || stopped ? 'warn' : 'good');
+    var text = (stopped ? 'Stopped after ' + reached + ' of ' + items.length + ' project(s); the rest was not touched. '
+        : 'Finished ' + items.length + ' project(s). ') + tallyText(tally);
+    if (tally.failed > 0) {
+        text += ' The failed ones are listed below. Retrying them is safe: an existing page is updated, not duplicated.';
+    }
+    var status = say(tone, text);
+    if (bulkOverviewUrl) {
+        var indexLink = document.createElement('a');
+        indexLink.href = bulkOverviewUrl;
+        indexLink.target = '_blank';
+        indexLink.rel = 'noopener';
+        indexLink.textContent = ' Open the overview';
+        status.appendChild(indexLink);
+    }
+    selectionChanged();
+}
+function stopBulk() {
+    bulkStopping = true;
+    el('bulkStop').disabled = true;
+    say('muted', 'Stopping after the current project...');
+}
+function retryBulk() {
+    var items = bulkFailed.slice();
+    if (items.length > 0) { runBulk(items); }
+}
+/* The target cannot move under a running export: every write of one run goes
+   to the same space and the same overview. The fields are disabled, and the hit
+   lists are emptied along with any parent search still pending, because a hit
+   left on screen could still be clicked and move the rest of the run. */
+function lockTarget(locked) {
+    var ids = ['exportTarget', 'exportSpaceQuery', 'exportParentQuery'];
+    for (var i = 0; i < ids.length; i++) { el(ids[i]).disabled = locked; }
+    el('exportRebuild').disabled = locked || !el('exportParent').value;
+    if (!locked) { return; }
+    if (exportPageTimer) { window.clearTimeout(exportPageTimer); }
+    exportPageSeq++;
+    el('exportSpaceResults').innerHTML = '';
+    el('exportParentResults').innerHTML = '';
+}
+window.addEventListener('beforeunload', function (event) {
+    if (bulkItems === null) { return; }
+    event.preventDefault();
+    event.returnValue = '';
+});
 </script>
 """
     }
@@ -2125,6 +2481,14 @@ function pickFirstProject(event) {
     static String exportCard(Report report) {
         String payload = Pc.html(JsonOutput.toJson(report.toMap()))
         String defaultTitle = Pc.html(Cx.title(report.projectKey))
+        String actions = """            <div class="export-grid">
+                <label class="export-field">Page title
+                    <input id="exportTitle" class="wide" type="text" value="${defaultTitle}">
+                </label>
+                <button id="exportRun" class="button" type="button" onclick="exportToConfluence()">Generate Confluence Page</button>
+                <button id="exportRebuild" class="button" type="button" disabled onclick="rebuildOverview()">Rebuild overview rows</button>
+            </div>
+"""
         return """<div class="export-card">
     <div class="export-title">Export to Confluence</div>
     <div class="export-note">
@@ -2140,7 +2504,19 @@ function pickFirstProject(event) {
     <div class="export-grid">
         <button id="exportOpen" class="button" type="button" onclick="openExport()">Export to Confluence</button>
     </div>
-    <div id="exportSettings" class="export-settings hidden">
+${exportSettings(actions)}    <div id="exportStatus" class="export-status muted">Not written yet.</div>
+    <input id="exportPayload" type="hidden" value="${payload}">
+    <input id="exportSpace" type="hidden" value="">
+    <input id="exportParent" type="hidden" value="">
+</div>
+"""
+    }
+
+    /* The target, space and parent stages of the export form. The report page and
+     * the project picker show the same stages; only the row of buttons at the end
+     * differs, so it is passed in. */
+    static String exportSettings(String actions) {
+        return """    <div id="exportSettings" class="export-settings hidden">
         <div class="export-grid">
             <label class="export-field">Target Confluence
                 <select id="exportTarget" onchange="targetChosen()"></select>
@@ -2168,20 +2544,8 @@ function pickFirstProject(event) {
                 <div class="export-chosen" id="exportParentChosen">No parent page: the page is created at the top level of the space.</div>
             </div>
             <div id="exportParentResults" class="export-results"></div>
-            <div class="export-grid">
-                <label class="export-field">Page title
-                    <input id="exportTitle" class="wide" type="text" value="${defaultTitle}">
-                </label>
-                <button id="exportRun" class="button" type="button" onclick="exportToConfluence()">Generate Confluence Page</button>
-                <button id="exportRebuild" class="button" type="button" disabled onclick="rebuildOverview()">Rebuild overview rows</button>
-            </div>
-        </div>
+""" + actions + """        </div>
     </div>
-    <div id="exportStatus" class="export-status muted">Not written yet.</div>
-    <input id="exportPayload" type="hidden" value="${payload}">
-    <input id="exportSpace" type="hidden" value="">
-    <input id="exportParent" type="hidden" value="">
-</div>
 """
     }
 
@@ -2388,6 +2752,21 @@ details.long .long-body { margin-top: 6px; padding: 8px 10px; background: var(--
 }
 .export-hit:hover { border-color: var(--blue); background: var(--blue-soft); }
 .export-empty { color: var(--text-subtle); font-size: 12px; font-style: italic; }
+.bulk-select { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.bulk-count { color: var(--text-subtle); font-size: 12px; }
+.project-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) 72px; gap: 8px; align-items: center;
+    margin-bottom: 4px; }
+.project-row .export-hit { margin-bottom: 0; }
+.project-row .bulk-pick { width: 16px; height: 16px; margin: 0; cursor: pointer; }
+.bulk-mark { justify-self: start; padding: 1px 6px; border: 1px solid var(--green); border-radius: 3px;
+    color: var(--green); font-size: 11px; }
+.bulk-progress { margin-top: 10px; max-width: 680px; }
+.bulk-track { height: 8px; overflow: hidden; border-radius: 4px; background: var(--border-subtle); }
+.bulk-fill { width: 0; height: 100%; background: var(--blue); transition: width .2s; }
+.bulk-text { margin-top: 6px; color: var(--text-subtle); font-size: 12px; }
+.bulk-results { margin: 8px 0 0; padding-left: 18px; font-size: 12px; }
+.bulk-results li.bad { color: var(--red); }
+.bulk-results li.warn { color: var(--yellow); }
 </style>
 """
     }
@@ -2472,284 +2851,7 @@ function setView(name) {
     if (tableButton) { tableButton.classList.toggle('on', wantTable); }
 }
 
-var exportSpaceList = [];
-var exportPageSeq = 0;
-var exportPageTimer = null;
-
-function el(id) { return document.getElementById(id); }
-function say(cssClass, text) {
-    var node = el('exportStatus');
-    node.className = 'export-status ' + cssClass;
-    node.textContent = text;
-    return node;
-}
-function exportPost(payload) {
-    return fetch(window.location.pathname, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json', 'X-Atlassian-Token': 'no-check' },
-        body: JSON.stringify(payload)
-    }).then(function (response) {
-        return response.json().then(function (parsed) { return { ok: response.ok, status: response.status, body: parsed }; });
-    });
-}
-function hit(label, onPick) {
-    var button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'export-hit';
-    button.textContent = label;
-    button.onclick = onPick;
-    return button;
-}
-function emptyNote(text) {
-    var note = document.createElement('div');
-    note.className = 'export-empty';
-    note.textContent = text;
-    return note;
-}
-/* Enter picks the first hit. The results are buttons in document order, so the
-   first one in the box is the first match. Enter with no hit does nothing, the
-   default is always suppressed so Enter can never submit or reload the page, and
-   picking a hit with the mouse keeps working unchanged. */
-function pickFirstHit(event, boxId) {
-    if (event.key !== 'Enter') { return; }
-    event.preventDefault();
-    var first = el(boxId).querySelector('.export-hit');
-    if (first) { first.click(); }
-}
-
-/* Stage 1. The first lookup of the whole report: which Confluence links exist. */
-function openExport() {
-    el('exportOpen').disabled = true;
-    el('exportSettings').classList.remove('hidden');
-    say('muted', 'Reading the Confluence application links...');
-    exportPost({ action: 'links' }).then(function (result) {
-        var body = result.body || {};
-        var select = el('exportTarget');
-        if (!result.ok || body.ok !== true) {
-            el('exportSettings').classList.add('hidden');
-            el('exportOpen').disabled = false;
-            say('bad', body.error || 'The Confluence application links could not be read.');
-            return;
-        }
-        var links = body.links || [];
-        select.innerHTML = '';
-        if (links.length > 1) { select.appendChild(new Option('Select a Confluence...', '')); }
-        for (var i = 0; i < links.length; i++) {
-            var label = links[i].name + (links[i].primary ? ' (primary)' : '') +
-                (links[i].displayUrl ? ' - ' + links[i].displayUrl : '');
-            var option = new Option(label, links[i].id);
-            if (links[i].primary || links.length === 1) { option.selected = true; }
-            select.appendChild(option);
-        }
-        el('exportTargetNote').textContent = links.length === 1
-            ? 'One Confluence application link, preselected.'
-            : String(links.length) + ' Confluence application links configured.';
-        say('muted', 'Pick the target Confluence, then the space.');
-        targetChosen();
-    }).catch(function (error) {
-        el('exportOpen').disabled = false;
-        say('bad', 'The Confluence application links could not be read: ' + error);
-    });
-}
-
-/* Stage 2. A target was picked, so that target's spaces may be listed. */
-function targetChosen() {
-    el('exportSpace').value = '';
-    el('exportRebuild').disabled = true;
-    el('exportSpaceQuery').value = '';
-    el('exportSpaceResults').innerHTML = '';
-    el('exportSpaceChosen').textContent = 'No space selected.';
-    el('exportPageStage').classList.add('hidden');
-    exportSpaceList = [];
-    if (!el('exportTarget').value) { el('exportSpaceStage').classList.add('hidden'); return; }
-    el('exportSpaceStage').classList.remove('hidden');
-    say('muted', 'Reading the spaces of the selected Confluence...');
-    exportPost({ action: 'spaces', applicationLinkId: el('exportTarget').value }).then(function (result) {
-        var body = result.body || {};
-        if (!result.ok || body.ok !== true) {
-            el('exportSpaceStage').classList.add('hidden');
-            say('bad', body.error || 'The Confluence space list could not be read.');
-            return;
-        }
-        exportSpaceList = body.spaces || [];
-        say('muted', String(exportSpaceList.length) + ' space(s) available' +
-            (body.truncated === true ? ', and the list is truncated - the instance has more' : '') +
-            '. Type at least ${Cx.MIN_SEARCH_CHARS} characters to search by name or key.');
-    }).catch(function (error) {
-        el('exportSpaceStage').classList.add('hidden');
-        say('bad', 'The Confluence space list could not be read: ' + error);
-    });
-}
-
-/* Stage 3a. Search, not a dropdown: only matches are ever put into the page. */
-function searchSpaces() {
-    var query = el('exportSpaceQuery').value.trim().toLowerCase();
-    var box = el('exportSpaceResults');
-    box.innerHTML = '';
-    if (query.length < ${Cx.MIN_SEARCH_CHARS}) { return; }
-    var shown = 0;
-    for (var i = 0; i < exportSpaceList.length && shown < ${Cx.SEARCH_LIMIT}; i++) {
-        var space = exportSpaceList[i];
-        if (space.name.toLowerCase().indexOf(query) < 0 && space.key.toLowerCase().indexOf(query) < 0) { continue; }
-        box.appendChild(hit(space.name + '  (' + space.key + ')', chooseSpace(space)));
-        shown++;
-    }
-    if (shown === 0) { box.appendChild(emptyNote('No space matches "' + query + '".')); }
-}
-function chooseSpace(space) {
-    return function () {
-        el('exportSpace').value = space.key;
-        el('exportSpaceQuery').value = space.name;
-        el('exportSpaceResults').innerHTML = '';
-        el('exportSpaceChosen').textContent = 'Space: ' + space.name + ' (' + space.key + ')';
-        /* A parent search that is still running belongs to the previous space, so
-           it is discarded here as well - otherwise its answer would drop a list of
-           foreign pages into the field of the space just picked. */
-        if (exportPageTimer) { window.clearTimeout(exportPageTimer); }
-        exportPageSeq++;
-        el('exportParent').value = '';
-        el('exportRebuild').disabled = true;
-        el('exportParentQuery').value = '';
-        el('exportParentResults').innerHTML = '';
-        el('exportParentChosen').textContent = 'No parent page: the page is created at the top level of the space.';
-        el('exportPageStage').classList.remove('hidden');
-        say('muted', 'Space ' + space.key + ' selected. Pick a parent page or leave it empty, then generate.');
-    };
-}
-
-/* Stage 3b. The parent field has no button: typing is what starts the search,
-   after a short idle pause rather than on every keystroke. The list that comes
-   back STAYS until an entry is picked or the field falls below the minimum - a
-   list that disappears while it is being read cannot confirm anything, which is
-   what made the previous version unusable. Out-of-order answers are dropped, so
-   a slow answer to an older term never replaces the list of the current one. */
-function parentTyped() {
-    /* Editing the term drops the picked parent, so a stale id can never travel
-       with a title the administrator has since changed. What travels then is the
-       title, and the generating run adopts or creates that page. */
-    el('exportParent').value = '';
-    el('exportRebuild').disabled = true;
-    var query = el('exportParentQuery').value.trim();
-    el('exportParentChosen').textContent = query
-        ? 'Parent page "' + query + '": pick it below if it is listed, otherwise it is created when the page is generated.'
-        : 'No parent page: the page is created at the top level of the space.';
-    if (exportPageTimer) { window.clearTimeout(exportPageTimer); }
-    if (query.length < ${Cx.MIN_SEARCH_CHARS}) {
-        /* Bumping the sequence here discards an answer that is still in flight,
-           so an empty field never fills back up on its own. */
-        exportPageSeq++;
-        el('exportParentResults').innerHTML = '';
-        return;
-    }
-    exportPageTimer = window.setTimeout(searchParents, ${Cx.SEARCH_IDLE_MS});
-}
-function searchParents() {
-    var query = el('exportParentQuery').value.trim();
-    var box = el('exportParentResults');
-    if (query.length < ${Cx.MIN_SEARCH_CHARS}) { box.innerHTML = ''; return; }
-    var seq = ++exportPageSeq;
-    exportPost({
-        action: 'pages',
-        applicationLinkId: el('exportTarget').value,
-        spaceKey: el('exportSpace').value,
-        query: query
-    }).then(function (result) {
-        if (seq !== exportPageSeq) { return; }
-        var body = result.body || {};
-        box.innerHTML = '';
-        if (!result.ok || body.ok !== true) {
-            box.appendChild(emptyNote(body.error || 'The page search failed.'));
-            return;
-        }
-        var pages = body.pages || [];
-        if (pages.length === 0) {
-            box.appendChild(emptyNote('Not found - will be created'));
-            return;
-        }
-        for (var i = 0; i < pages.length; i++) {
-            box.appendChild(hit(pages[i].title + '  #' + pages[i].id, chooseParent(pages[i])));
-        }
-        if (body.truncated === true) {
-            box.appendChild(emptyNote('More pages match than are listed here. Type more of the title to narrow it down.'));
-        }
-    }).catch(function (error) {
-        if (seq === exportPageSeq) {
-            box.innerHTML = '';
-            box.appendChild(emptyNote('The page search failed: ' + error));
-        }
-    });
-}
-function chooseParent(page) {
-    return function () {
-        el('exportParent').value = page.id;
-        el('exportParentQuery').value = page.title;
-        el('exportParentResults').innerHTML = '';
-        el('exportParentChosen').textContent = 'Parent page: ' + page.title + ' (id ' + page.id + ')';
-        el('exportRebuild').disabled = false;
-    };
-}
-
-/* Rebuild: restores the overview rows that are missing, from the detail pages
-   already under the picked overview page. It needs a PICKED page: a typed title
-   asks the server to create a parent, and a rebuild never creates one. Only the
-   pages that were not added are listed, each with its reason. */
-function rebuildOverview() {
-    var button = el('exportRebuild');
-    var parentId = el('exportParent').value.trim();
-    if (!parentId) { say('bad', 'Pick the overview page from the search first.'); return; }
-    button.disabled = true;
-    say('muted', 'Reading the child pages of the overview...');
-    exportPost({ action: 'rebuild-overview', applicationLinkId: el('exportTarget').value, spaceKey: el('exportSpace').value, parentPageId: parentId }).then(function (result) {
-        button.disabled = false;
-        var body = result.body || {};
-        if (!result.ok || body.ok !== true) {
-            say('bad', 'Nothing was written (' + result.status + '): ' + (body.error || 'unknown error'));
-            return;
-        }
-        var overview = body.overview || {};
-        var counts = body.counts || {};
-        var tone = { failed: 'bad', unknown: 'warn', updated: 'good' }[overview.state] || 'muted';
-        var text = 'Overview ' + overview.state + ': ' + counts.added + ' added, ' + counts.present + ' present, ' +
-            counts.skipped + ' skipped of ' + body.children + ' child page(s)' +
-            (overview.pageVersion == null ? '' : ' (version ' + overview.pageVersion + ')') + '.';
-        if (overview.reason) { text += ' ' + overview.reason; }
-        /* A child that was not read is not a child without a missing row. */
-        if (body.complete !== true) {
-            if (tone !== 'bad') { tone = 'warn'; }
-            text += ' NOT COMPLETE: ' + counts.unread + ' child page(s) were not read' +
-                (body.truncated === true ? ' and the child list is cut' : '') +
-                '; rows for them are UNKNOWN, run the rebuild again.';
-        }
-        if (counts.unconfirmed > 0) {
-            text += ' ' + counts.unconfirmed + ' row(s) could not be confirmed after the write.';
-        }
-        var status = say(tone, text);
-        if (body.parentPageUrl) {
-            var indexLink = document.createElement('a');
-            indexLink.href = body.parentPageUrl;
-            indexLink.target = '_blank';
-            indexLink.rel = 'noopener';
-            indexLink.textContent = ' Open the overview';
-            status.appendChild(indexLink);
-        }
-        var list = document.createElement('ul');
-        var pages = body.pages || [];
-        for (var i = 0; i < pages.length; i++) {
-            if (pages[i].result === 'added') { continue; }
-            var item = document.createElement('li');
-            item.textContent = (pages[i].title || ('page ' + pages[i].pageId)) + ': ' + pages[i].result +
-                (pages[i].reason ? ' - ' + pages[i].reason : '');
-            list.appendChild(item);
-        }
-        if (list.childNodes.length > 0) { status.appendChild(list); }
-    }).catch(function (error) {
-        button.disabled = false;
-        say('bad', 'The request failed, so the overview state is unknown; open it before rebuilding again: ' + error);
-    });
-}
-
-/* Stage 4. The write. */
+""" + exportStageScript() + """/* Stage 4. The write. */
 function exportToConfluence() {
     var button = el('exportRun');
     function fail(text) { say('bad', text); }
@@ -2836,6 +2938,302 @@ function exportToConfluence() {
     });
 }
 </script>
+"""
+    }
+
+    /* The staged lookups of the export: target, space, parent. The report page and
+     * the project picker both use them, so a fix to one stage reaches both pages.
+     * The picker lists many projects and reacts when the target moves, through
+     * exportTargetChanged; the report page defines no such function. */
+    static String exportStageScript() {
+        return """var exportSpaceList = [];
+var exportPageSeq = 0;
+var exportPageTimer = null;
+
+function el(id) { return document.getElementById(id); }
+/* Called whenever the space or the overview page changes. Only a page that lists
+   several projects defines exportTargetChanged; on the report page this does nothing. */
+function exportTargetMoved() {
+    if (typeof exportTargetChanged === 'function') { exportTargetChanged(); }
+}
+function say(cssClass, text) {
+    var node = el('exportStatus');
+    node.className = 'export-status ' + cssClass;
+    node.textContent = text;
+    return node;
+}
+function exportPost(payload) {
+    return fetch(window.location.pathname, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-Atlassian-Token': 'no-check' },
+        body: JSON.stringify(payload)
+    }).then(function (response) {
+        return response.json().then(function (parsed) { return { ok: response.ok, status: response.status, body: parsed }; });
+    });
+}
+function hit(label, onPick) {
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'export-hit';
+    button.textContent = label;
+    button.onclick = onPick;
+    return button;
+}
+function emptyNote(text) {
+    var note = document.createElement('div');
+    note.className = 'export-empty';
+    note.textContent = text;
+    return note;
+}
+/* Enter picks the first hit. The results are buttons in document order, so the
+   first one in the box is the first match. Enter with no hit does nothing, the
+   default is always suppressed so Enter can never submit or reload the page, and
+   picking a hit with the mouse keeps working unchanged. */
+function pickFirstHit(event, boxId) {
+    if (event.key !== 'Enter') { return; }
+    event.preventDefault();
+    var first = el(boxId).querySelector('.export-hit');
+    if (first) { first.click(); }
+}
+
+/* Stage 1. The first lookup of the whole report: which Confluence links exist. */
+function openExport() {
+    el('exportOpen').disabled = true;
+    el('exportSettings').classList.remove('hidden');
+    say('muted', 'Reading the Confluence application links...');
+    exportPost({ action: 'links' }).then(function (result) {
+        var body = result.body || {};
+        var select = el('exportTarget');
+        if (!result.ok || body.ok !== true) {
+            el('exportSettings').classList.add('hidden');
+            el('exportOpen').disabled = false;
+            say('bad', body.error || 'The Confluence application links could not be read.');
+            return;
+        }
+        var links = body.links || [];
+        select.innerHTML = '';
+        if (links.length > 1) { select.appendChild(new Option('Select a Confluence...', '')); }
+        for (var i = 0; i < links.length; i++) {
+            var label = links[i].name + (links[i].primary ? ' (primary)' : '') +
+                (links[i].displayUrl ? ' - ' + links[i].displayUrl : '');
+            var option = new Option(label, links[i].id);
+            if (links[i].primary || links.length === 1) { option.selected = true; }
+            select.appendChild(option);
+        }
+        el('exportTargetNote').textContent = links.length === 1
+            ? 'One Confluence application link, preselected.'
+            : String(links.length) + ' Confluence application links configured.';
+        say('muted', 'Pick the target Confluence, then the space.');
+        targetChosen();
+    }).catch(function (error) {
+        el('exportOpen').disabled = false;
+        say('bad', 'The Confluence application links could not be read: ' + error);
+    });
+}
+
+/* Stage 2. A target was picked, so that target's spaces may be listed. */
+function targetChosen() {
+    el('exportSpace').value = '';
+    el('exportRebuild').disabled = true;
+    el('exportSpaceQuery').value = '';
+    el('exportSpaceResults').innerHTML = '';
+    el('exportSpaceChosen').textContent = 'No space selected.';
+    el('exportPageStage').classList.add('hidden');
+    exportSpaceList = [];
+    exportTargetMoved();
+    if (!el('exportTarget').value) { el('exportSpaceStage').classList.add('hidden'); return; }
+    el('exportSpaceStage').classList.remove('hidden');
+    say('muted', 'Reading the spaces of the selected Confluence...');
+    exportPost({ action: 'spaces', applicationLinkId: el('exportTarget').value }).then(function (result) {
+        var body = result.body || {};
+        if (!result.ok || body.ok !== true) {
+            el('exportSpaceStage').classList.add('hidden');
+            say('bad', body.error || 'The Confluence space list could not be read.');
+            return;
+        }
+        exportSpaceList = body.spaces || [];
+        say('muted', String(exportSpaceList.length) + ' space(s) available' +
+            (body.truncated === true ? ', and the list is truncated - the instance has more' : '') +
+            '. Type at least ${Cx.MIN_SEARCH_CHARS} characters to search by name or key.');
+    }).catch(function (error) {
+        el('exportSpaceStage').classList.add('hidden');
+        say('bad', 'The Confluence space list could not be read: ' + error);
+    });
+}
+
+/* Stage 3a. Search, not a dropdown: only matches are ever put into the page. */
+function searchSpaces() {
+    var query = el('exportSpaceQuery').value.trim().toLowerCase();
+    var box = el('exportSpaceResults');
+    box.innerHTML = '';
+    if (query.length < ${Cx.MIN_SEARCH_CHARS}) { return; }
+    var shown = 0;
+    for (var i = 0; i < exportSpaceList.length && shown < ${Cx.SEARCH_LIMIT}; i++) {
+        var space = exportSpaceList[i];
+        if (space.name.toLowerCase().indexOf(query) < 0 && space.key.toLowerCase().indexOf(query) < 0) { continue; }
+        box.appendChild(hit(space.name + '  (' + space.key + ')', chooseSpace(space)));
+        shown++;
+    }
+    if (shown === 0) { box.appendChild(emptyNote('No space matches "' + query + '".')); }
+}
+function chooseSpace(space) {
+    return function () {
+        el('exportSpace').value = space.key;
+        el('exportSpaceQuery').value = space.name;
+        el('exportSpaceResults').innerHTML = '';
+        el('exportSpaceChosen').textContent = 'Space: ' + space.name + ' (' + space.key + ')';
+        /* A parent search that is still running belongs to the previous space, so
+           it is discarded here as well - otherwise its answer would drop a list of
+           foreign pages into the field of the space just picked. */
+        if (exportPageTimer) { window.clearTimeout(exportPageTimer); }
+        exportPageSeq++;
+        el('exportParent').value = '';
+        el('exportRebuild').disabled = true;
+        el('exportParentQuery').value = '';
+        el('exportParentResults').innerHTML = '';
+        el('exportParentChosen').textContent = 'No parent page: the page is created at the top level of the space.';
+        el('exportPageStage').classList.remove('hidden');
+        say('muted', 'Space ' + space.key + ' selected. Pick a parent page or leave it empty, then generate.');
+        exportTargetMoved();
+    };
+}
+
+/* Stage 3b. The parent field has no button: typing is what starts the search,
+   after a short idle pause rather than on every keystroke. The list that comes
+   back STAYS until an entry is picked or the field falls below the minimum - a
+   list that disappears while it is being read cannot confirm anything, which is
+   what made the previous version unusable. Out-of-order answers are dropped, so
+   a slow answer to an older term never replaces the list of the current one. */
+function parentTyped() {
+    /* Editing the term drops the picked parent, so a stale id can never travel
+       with a title the administrator has since changed. What travels then is the
+       title, and the generating run adopts or creates that page. */
+    var hadParent = el('exportParent').value !== '';
+    el('exportParent').value = '';
+    el('exportRebuild').disabled = true;
+    if (hadParent) { exportTargetMoved(); }
+    var query = el('exportParentQuery').value.trim();
+    el('exportParentChosen').textContent = query
+        ? 'Parent page "' + query + '": pick it below if it is listed, otherwise it is created when the page is generated.'
+        : 'No parent page: the page is created at the top level of the space.';
+    if (exportPageTimer) { window.clearTimeout(exportPageTimer); }
+    if (query.length < ${Cx.MIN_SEARCH_CHARS}) {
+        /* Bumping the sequence here discards an answer that is still in flight,
+           so an empty field never fills back up on its own. */
+        exportPageSeq++;
+        el('exportParentResults').innerHTML = '';
+        return;
+    }
+    exportPageTimer = window.setTimeout(searchParents, ${Cx.SEARCH_IDLE_MS});
+}
+function searchParents() {
+    var query = el('exportParentQuery').value.trim();
+    var box = el('exportParentResults');
+    if (query.length < ${Cx.MIN_SEARCH_CHARS}) { box.innerHTML = ''; return; }
+    var seq = ++exportPageSeq;
+    exportPost({
+        action: 'pages',
+        applicationLinkId: el('exportTarget').value,
+        spaceKey: el('exportSpace').value,
+        query: query
+    }).then(function (result) {
+        if (seq !== exportPageSeq) { return; }
+        var body = result.body || {};
+        box.innerHTML = '';
+        if (!result.ok || body.ok !== true) {
+            box.appendChild(emptyNote(body.error || 'The page search failed.'));
+            return;
+        }
+        var pages = body.pages || [];
+        if (pages.length === 0) {
+            box.appendChild(emptyNote('Not found - will be created'));
+            return;
+        }
+        for (var i = 0; i < pages.length; i++) {
+            box.appendChild(hit(pages[i].title + '  #' + pages[i].id, chooseParent(pages[i])));
+        }
+        if (body.truncated === true) {
+            box.appendChild(emptyNote('More pages match than are listed here. Type more of the title to narrow it down.'));
+        }
+    }).catch(function (error) {
+        if (seq === exportPageSeq) {
+            box.innerHTML = '';
+            box.appendChild(emptyNote('The page search failed: ' + error));
+        }
+    });
+}
+function chooseParent(page) {
+    return function () {
+        el('exportParent').value = page.id;
+        el('exportParentQuery').value = page.title;
+        el('exportParentResults').innerHTML = '';
+        el('exportParentChosen').textContent = 'Parent page: ' + page.title + ' (id ' + page.id + ')';
+        el('exportRebuild').disabled = false;
+        exportTargetMoved();
+    };
+}
+
+/* Rebuild: restores the overview rows that are missing, from the detail pages
+   already under the picked overview page. It needs a PICKED page: a typed title
+   asks the server to create a parent, and a rebuild never creates one. Only the
+   pages that were not added are listed, each with its reason. */
+function rebuildOverview() {
+    var button = el('exportRebuild');
+    var parentId = el('exportParent').value.trim();
+    if (!parentId) { say('bad', 'Pick the overview page from the search first.'); return; }
+    button.disabled = true;
+    say('muted', 'Reading the child pages of the overview...');
+    exportPost({ action: 'rebuild-overview', applicationLinkId: el('exportTarget').value, spaceKey: el('exportSpace').value, parentPageId: parentId }).then(function (result) {
+        button.disabled = false;
+        var body = result.body || {};
+        if (!result.ok || body.ok !== true) {
+            say('bad', 'Nothing was written (' + result.status + '): ' + (body.error || 'unknown error'));
+            return;
+        }
+        var overview = body.overview || {};
+        var counts = body.counts || {};
+        var tone = { failed: 'bad', unknown: 'warn', updated: 'good' }[overview.state] || 'muted';
+        var text = 'Overview ' + overview.state + ': ' + counts.added + ' added, ' + counts.present + ' present, ' +
+            counts.skipped + ' skipped of ' + body.children + ' child page(s)' +
+            (overview.pageVersion == null ? '' : ' (version ' + overview.pageVersion + ')') + '.';
+        if (overview.reason) { text += ' ' + overview.reason; }
+        /* A child that was not read is not a child without a missing row. */
+        if (body.complete !== true) {
+            if (tone !== 'bad') { tone = 'warn'; }
+            text += ' NOT COMPLETE: ' + counts.unread + ' child page(s) were not read' +
+                (body.truncated === true ? ' and the child list is cut' : '') +
+                '; rows for them are UNKNOWN, run the rebuild again.';
+        }
+        if (counts.unconfirmed > 0) {
+            text += ' ' + counts.unconfirmed + ' row(s) could not be confirmed after the write.';
+        }
+        exportTargetMoved();
+        var status = say(tone, text);
+        if (body.parentPageUrl) {
+            var indexLink = document.createElement('a');
+            indexLink.href = body.parentPageUrl;
+            indexLink.target = '_blank';
+            indexLink.rel = 'noopener';
+            indexLink.textContent = ' Open the overview';
+            status.appendChild(indexLink);
+        }
+        var list = document.createElement('ul');
+        var pages = body.pages || [];
+        for (var i = 0; i < pages.length; i++) {
+            if (pages[i].result === 'added') { continue; }
+            var item = document.createElement('li');
+            item.textContent = (pages[i].title || ('page ' + pages[i].pageId)) + ': ' + pages[i].result +
+                (pages[i].reason ? ' - ' + pages[i].reason : '');
+            list.appendChild(item);
+        }
+        if (list.childNodes.length > 0) { status.appendChild(list); }
+    }).catch(function (error) {
+        button.disabled = false;
+        say('bad', 'The request failed, so the overview state is unknown; open it before rebuilding again: ' + error);
+    });
+}
+
 """
     }
 }
@@ -3918,6 +4316,16 @@ class ConfigOverview {
             }
         }
         [before: body.substring(0, starts.get(0).start as int), after: body.substring(ends.get(0).end as int), columns: columns, rows: rows]
+    }
+    /* The export identities an overview already lists, so a list of projects or spaces can
+     * mark what was exported before. Read only, through the same parse an update takes: a
+     * table this exporter would refuse to update is refused here as well, never shown as
+     * an overview without exports. */
+    static List<Map<String, String>> exported(String body, String product, String space) {
+        Map<String, Object> model = read(body, product, space)
+        List<Map<String, String>> identities = []
+        for (List<String> row : (List<List<String>>) model.rows) { identities.add(rowIdentity(row, product, space)) }
+        identities
     }
     static String link(String title, String space, String label, String sectionAnchor) {
         '<ac:link' + (sectionAnchor ? ' ac:anchor="' + Cx.esc(sectionAnchor) + '"' : '') + '>' +
@@ -8135,7 +8543,8 @@ projectConfig(
         return Http.ok(responseClass, JsonOutput.prettyPrint(JsonOutput.toJson(data)), Http.JSON)
     }
 
-    if (action == "links" || action == "spaces" || action == "pages" || action == "rebuild-overview") {
+    if (action == "links" || action == "spaces" || action == "pages" || action == "rebuild-overview" ||
+        action == "exported") {
         Map<String, Object> lookup = confluenceApplicationLinks()
         if (lookup.get("ok") != Boolean.TRUE) {
             return refuse(500, "link", String.valueOf(lookup.get("error")))
@@ -8221,6 +8630,49 @@ projectConfig(
          * overview gets ONE save for all rows that were missing. A child that could
          * not be read is "unread" and makes the result incomplete; its row is
          * UNKNOWN, never "not missing". */
+        /* Which exports the picked overview already lists, so the project list can mark
+         * them. One read of the overview page and nothing else: no detail page is
+         * opened and nothing is written. An overview that cannot be read, or whose
+         * table this exporter would refuse to update, is refused here as well. A
+         * failed read must never come back as "nothing exported yet". */
+        if (action == "exported") {
+            String exportedSpace = Cx.str(request, "spaceKey", "")
+            String exportedParent = Cx.str(request, "parentPageId", "").trim()
+            if (exportedSpace.isEmpty()) {
+                return refuse(400, "exported", "No space was selected.")
+            }
+            if (!(exportedParent ==~ /[0-9]+/)) {
+                return refuse(400, "exported", "Pick the overview page first; \"" + exportedParent +
+                    "\" is not a page ID.")
+            }
+            Map<String, Object> exportedPage = confluenceOverviewRead(targetFactory, exportedParent)
+            if (exportedPage.get("ok") != Boolean.TRUE) {
+                return refuse(500, "exported", "The overview page " + exportedParent + " could not be read: " +
+                    String.valueOf(exportedPage.get("error")) + ". That is a failed read, not an overview without exports.")
+            }
+            String exportedPageSpace = Cx.str(exportedPage, "spaceKey", "")
+            if (!exportedSpace.equalsIgnoreCase(exportedPageSpace)) {
+                return refuse(400, "exported", "The overview page " + exportedParent + " sits in space \"" +
+                    exportedPageSpace + "\", not in \"" + exportedSpace + "\".")
+            }
+            List<Map<String, String>> exportedRows
+            try {
+                exportedRows = ConfigOverview.exported(String.valueOf(exportedPage.get("storage")), "jira", exportedPageSpace)
+            } catch (IllegalArgumentException refusal) {
+                return refuse(409, "exported", "The overview table on page " + exportedParent +
+                    " cannot be read: " + refusal.getMessage())
+            }
+            Map<String, Object> exportedPayload = new LinkedHashMap<String, Object>()
+            exportedPayload.put("ok", Boolean.TRUE)
+            exportedPayload.put("action", "exported")
+            exportedPayload.put("target", confluenceLinkName(targetLink))
+            exportedPayload.put("spaceKey", exportedPageSpace)
+            exportedPayload.put("parentPageId", exportedParent)
+            exportedPayload.put("parentTitle", exportedPage.get("title"))
+            exportedPayload.put("exports", exportedRows)
+            return answer(exportedPayload)
+        }
+
         if (action == "rebuild-overview") {
             String rebuildSpace = Cx.str(request, "spaceKey", "")
             String rebuildParent = Cx.str(request, "parentPageId", "").trim()

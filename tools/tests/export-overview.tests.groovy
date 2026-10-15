@@ -33,6 +33,14 @@ verify(a.contains('ri:content-title="Export Alpha" ri:space-key="DOC"'), 'sectio
 verify(a.contains(firstDetail.sections[0].count), 'use the detail renderer count')
 String b = overviewClass.upsert(a, product, '102', 'Export Beta', 'DOC', 'Beta', firstDetail.sections)
 verify(overviewClass.read(b, product, 'DOC').rows.size() == 2, 'second exported page appends one row')
+verify(overviewClass.exported(b, product, 'DOC').collect { it.id + ' ' + it.title + ' ' + it.space } ==
+    ['101 Export Alpha DOC', '102 Export Beta DOC'], 'the overview lists the identity of every export it holds')
+verify(overviewClass.exported(original, product, 'DOC').isEmpty(), 'a parent without an overview table lists no export')
+verify(overviewClass.exported(b, product == 'jira' ? 'confluence' : 'jira', 'DOC').isEmpty(),
+    'the other product\'s overview is not this product\'s exports')
+boolean brokenRefused = false
+try { overviewClass.exported(b.replace('</tbody>', ''), product, 'DOC') } catch (IllegalArgumentException expected) { brokenRefused = true }
+verify(brokenRefused, 'a table this exporter would refuse to update is refused, not read as no exports')
 String repeat = overviewClass.upsert(b, product, '101', 'Export Alpha', 'DOC', 'Alpha updated', firstDetail.sections)
 verify(overviewClass.read(repeat, product, 'DOC').rows.size() == 2, 'same export name updates its row')
 verify(repeat.contains('Alpha updated'), 'updated row contains current label')

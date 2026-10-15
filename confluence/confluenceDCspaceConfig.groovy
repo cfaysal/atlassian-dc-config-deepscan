@@ -254,7 +254,7 @@ class Pc {
     /* The single place the report version lives. The file header points here and
      * every output channel prints this constant, so a report always names the
      * build that produced it. */
-    static final String VERSION = "0.3"
+    static final String VERSION = "0.4"
 
     /* Node states. A node is not just present or absent: it can be present but
      * unreadable, and the report has to keep those apart.
@@ -2207,10 +2207,56 @@ class Render {
          * statement about a population that was never read. */
         if (failure == null) {
             out.append(estateTable(rows, columnFailures, selfPath))
+            if (!rows.isEmpty()) {
+                out.append(bulkExportCard())
+            }
         }
         out.append(footer(shell))
         out.append("</div>\n").append(estateScript()).append("</body>\n</html>\n")
         return out.toString()
+    }
+
+    /* The bulk export: the same space and parent stages as the single export on the
+     * report page, then one write per selected space, one after the other. Each
+     * write is the single export's own request with the single export's default
+     * title, so nothing here can write a page the single export would not. */
+    static String bulkExportCard() {
+        String actions = """            <div class="export-note">
+                Each selected space is written as its own page, titled the way the single export
+                suggests it: <strong>${Pc.html(Cx.DEFAULT_TITLE_PREFIX)}KEY</strong>. A page with that title
+                is updated and its remarks are kept; otherwise it is created. The spaces are exported one
+                after the other, never in parallel, because every export updates the same overview table.
+                Keep this tab open until the run has finished.
+            </div>
+            <div class="export-grid">
+                <button id="bulkRun" class="button" type="button" disabled onclick="startBulk()">Export selected (0)</button>
+                <button id="bulkStop" class="button hidden" type="button" onclick="stopBulk()">Stop after the current space</button>
+                <button id="bulkRetry" class="button hidden" type="button" onclick="retryBulk()">Retry failed</button>
+                <button id="exportRebuild" class="button" type="button" disabled onclick="rebuildOverview()">Rebuild overview rows</button>
+            </div>
+"""
+        return """<div class="export-card">
+    <div class="export-title">Export selected spaces to Confluence pages</div>
+    <div class="export-note">
+        Writes one page of this instance per selected space, exactly as the export on a space's report
+        does. The <strong>Remark</strong> column of an existing page is read back and carried over; if
+        that read fails, that space is not written. A page that does not carry this export's marker is
+        never overwritten. The selected parent keeps the overview table, one row per space. Nothing is
+        read until the button below is pressed, and nothing is sent anywhere outside this instance.
+    </div>
+    <div class="export-grid">
+        <button id="exportOpen" class="button" type="button" onclick="openExport()">Choose the target space</button>
+    </div>
+${exportSettings(actions)}    <div id="exportStatus" class="export-status muted">Not written yet.</div>
+    <div id="bulkProgress" class="bulk-progress hidden">
+        <div class="bulk-track"><div id="bulkBar" class="bulk-fill"></div></div>
+        <div id="bulkText" class="bulk-text"></div>
+    </div>
+    <ul id="bulkResults" class="bulk-results"></ul>
+    <input id="exportSpace" type="hidden" value="">
+    <input id="exportParent" type="hidden" value="">
+</div>
+"""
     }
 
     static String columnHeading(String id) {
@@ -2359,6 +2405,18 @@ class Render {
         out.append(Pc.html(estateCountLine(rows.size(), rows.size())))
         out.append("</div></div>")
 
+        /* The selection feeds the bulk export below the table. Selecting is all the
+         * checkboxes do: nothing is read or written until that export is started. */
+        out.append("<div class=\"bulk-select\">")
+        out.append("<button class=\"button\" type=\"button\" onclick=\"selectShown('all')\">Select all shown</button>")
+        out.append("<button class=\"button\" type=\"button\" onclick=\"selectShown('new')\">")
+        out.append("Select shown, not yet exported</button>")
+        out.append("<button class=\"button\" type=\"button\" onclick=\"selectShown('none')\">Clear selection</button>")
+        out.append("<span class=\"bulk-count\" id=\"bulkCount\">0 selected</span>")
+        out.append("<span class=\"bulk-count\" id=\"exportedNote\">")
+        out.append("Pick an overview page in the export below to mark the spaces it already lists.</span>")
+        out.append("</div>")
+
         out.append("<div class=\"view-table estate-scroll\"><table class=\"flat estate\" id=\"estateTable\">")
         out.append("<thead><tr>")
         for (int index = 0; index < SWEEP_COLUMNS.size(); index++) {
@@ -2385,7 +2443,8 @@ class Render {
         out.append("page: an effective permission with its groups expanded, or a theme resolved ")
         out.append("through its inheritance, is answered by the per-space report and not guessed at ")
         out.append("here. No content is counted, no search is run and no query leaves this page: ")
-        out.append("filtering and sorting work on the rows already delivered.</div>")
+        out.append("filtering and sorting work on the rows already delivered. The bulk export below ")
+        out.append("reads and writes only once its own button is pressed.</div>")
         out.append("</div>\n")
         return out.toString()
     }
@@ -2435,16 +2494,28 @@ class Render {
         StringBuilder out = new StringBuilder()
         out.append("<tr data-find=\"")
         out.append(Pc.html((Pc.orNa(key) + " " + Pc.orNa(name)).toLowerCase(Locale.ROOT)))
-        out.append("\" data-flags=\"").append(Pc.html(flags.join(" "))).append("\">")
+        out.append("\" data-flags=\"").append(Pc.html(flags.join(" "))).append("\"")
+        /* A space whose key could not be read cannot be exported: the export names
+         * the space by its key. Its row has no checkbox and no title. The title is the
+         * one the single export suggests, computed here by the same Cx.title, so a bulk
+         * export writes to exactly the page a single export of the space would update. */
+        if (key != null) {
+            out.append(" data-key=\"").append(Pc.html(key))
+            out.append("\" data-title=\"").append(Pc.html(Cx.title(key))).append("\"")
+        }
+        out.append(">")
 
         out.append("<td class=\"col-key mono\">")
         if (key == null) {
             out.append("<span class=\"state state-unreadable\">").append(Pc.html(Pc.UNREADABLE))
             out.append("</span>")
         } else {
+            out.append("<input type=\"checkbox\" class=\"bulk-pick\" onchange=\"selectionChanged()\" aria-label=\"Select ")
+            out.append(Pc.html(key)).append("\">")
             out.append("<a class=\"node-link\" href=\"").append(Pc.html(selfPath))
             out.append("?space=").append(Pc.html(Pc.urlQuery(key))).append("\">")
             out.append(Pc.html(key)).append("</a>")
+            out.append("<span class=\"bulk-mark hidden\">exported</span>")
         }
         out.append("</td>")
 
@@ -2599,6 +2670,293 @@ function openFirstSpace(event) {
         }
     }
 }
+
+""" + exportStageScript() + """
+/* ---- Bulk export ---------------------------------------------------------
+   One write per selected space, strictly one after the other: every write also
+   updates the same overview table, and two writes racing for it would refuse
+   each other. Each write is the single export's own request: the report as JSON,
+   the same target fields, and the title the row carries, which the server
+   computed with the single export's own default. */
+var bulkItems = null;
+var bulkStopping = false;
+var bulkFailed = [];
+var bulkOverviewUrl = null;
+var exportedTitles = Object.create(null);
+var exportedSeq = 0;
+/* A landing page opened with values=true exports what the single export of such a
+   report would: the property values, not only their keys. */
+var bulkValues = new URLSearchParams(window.location.search).get('values') === 'true';
+
+function bulkRows() { return document.querySelectorAll('#estateBody tr[data-key]'); }
+function titleKey(space, title) { return String(space).toLowerCase() + '|' + String(title).toLowerCase(); }
+
+/* "all" and "new" act on the rows the filter shows; "none" clears every row,
+   shown or not, so a selection made under an earlier filter cannot linger unseen. */
+function selectShown(mode) {
+    var rows = bulkRows();
+    for (var i = 0; i < rows.length; i++) {
+        var box = rows[i].querySelector('.bulk-pick');
+        if (mode === 'none') { box.checked = false; continue; }
+        if (rows[i].classList.contains('hidden')) { continue; }
+        box.checked = mode === 'all' || !rows[i].classList.contains('is-exported');
+    }
+    selectionChanged();
+}
+function selectedItems() {
+    var rows = bulkRows();
+    var items = [];
+    for (var i = 0; i < rows.length; i++) {
+        if (!rows[i].querySelector('.bulk-pick').checked) { continue; }
+        items.push({ key: rows[i].getAttribute('data-key'), title: rows[i].getAttribute('data-title'), row: rows[i] });
+    }
+    return items;
+}
+function selectionChanged() {
+    var count = selectedItems().length;
+    el('bulkCount').textContent = count + ' selected';
+    var run = el('bulkRun');
+    run.textContent = 'Export selected (' + count + ')';
+    run.disabled = bulkItems !== null || count === 0 || !el('exportSpace').value;
+}
+
+/* Marks come from the overview table of the picked parent page and from nothing
+   else: a space is marked when that table holds a row for its default title.
+   Without a picked overview nothing is marked, and a failed read says so rather
+   than leaving every row looking unexported. */
+function exportTargetChanged() {
+    exportedSeq++;
+    exportedTitles = Object.create(null);
+    paintExported();
+    var parentId = el('exportParent').value.trim();
+    var spaceKey = el('exportSpace').value;
+    if (parentId && spaceKey) {
+        loadExported(parentId, spaceKey);
+    } else {
+        el('exportedNote').textContent = 'Pick an overview page in the export below to mark the spaces it already lists.';
+    }
+    selectionChanged();
+}
+function loadExported(parentId, spaceKey) {
+    var seq = exportedSeq;
+    el('exportedNote').textContent = 'Reading the overview on page ' + parentId + '...';
+    exportPost({ action: 'exported', spaceKey: spaceKey, parentPageId: parentId }).then(function (result) {
+        if (seq !== exportedSeq) { return; }
+        var body = result.body || {};
+        if (!result.ok || body.ok !== true) {
+            el('exportedNote').textContent = 'Already exported spaces are NOT marked: ' +
+                (body.error || 'the overview could not be read.');
+            return;
+        }
+        var exports = body.exports || [];
+        for (var i = 0; i < exports.length; i++) {
+            exportedTitles[titleKey(exports[i].space || body.spaceKey, exports[i].title)] = true;
+        }
+        var marked = paintExported();
+        el('exportedNote').textContent = marked + ' of ' + bulkRows().length + ' spaces already have a row in the overview "' +
+            (body.parentTitle || parentId) + '".';
+    }).catch(function (error) {
+        if (seq === exportedSeq) { el('exportedNote').textContent = 'Already exported spaces are NOT marked: ' + error; }
+    });
+}
+function paintExported() {
+    var spaceKey = el('exportSpace').value;
+    var rows = bulkRows();
+    var marked = 0;
+    for (var i = 0; i < rows.length; i++) {
+        var hit = exportedTitles[titleKey(spaceKey, rows[i].getAttribute('data-title'))] === true;
+        if (hit) { marked++; }
+        markRow(rows[i], hit);
+    }
+    return marked;
+}
+function markRow(row, exported) {
+    row.classList.toggle('is-exported', exported);
+    row.querySelector('.bulk-mark').classList.toggle('hidden', !exported);
+}
+
+function startBulk() {
+    var items = selectedItems();
+    var spaceKey = el('exportSpace').value;
+    if (items.length === 0) { say('bad', 'Select at least one space first.'); return; }
+    if (!spaceKey) { say('bad', 'Select a space first.'); return; }
+    var parentId = el('exportParent').value.trim();
+    var parentTitle = el('exportParentQuery').value.trim();
+    var where = parentId ? 'under the page "' + parentTitle + '" (id ' + parentId + ')'
+        : (parentTitle ? 'under the page "' + parentTitle + '", created if it does not exist yet'
+            : 'at the top level of the space, without an overview');
+    if (!window.confirm('Export ' + items.length + ' space(s) to space ' + spaceKey + ', ' + where +
+            '? Each one is written as its own page, one after the other.')) { return; }
+    runBulk(items);
+}
+function runBulk(items) {
+    bulkItems = items;
+    bulkStopping = false;
+    bulkFailed = [];
+    var tally = { created: 0, updated: 0, warned: 0, failed: 0 };
+    lockTarget(true);
+    el('bulkResults').innerHTML = '';
+    el('bulkProgress').classList.remove('hidden');
+    el('bulkStop').disabled = false;
+    el('bulkStop').classList.remove('hidden');
+    el('bulkRetry').classList.add('hidden');
+    selectionChanged();
+    say('muted', 'Exporting ' + items.length + ' space(s). Keep this tab open.');
+    var index = 0;
+    function step() {
+        if (bulkStopping || index >= items.length) { finishBulk(items, index, tally); return; }
+        var item = items[index];
+        showProgress(index, items.length, item.key, tally);
+        exportOne(item).then(function (outcome) {
+            index++;
+            record(item, outcome, tally);
+            step();
+        });
+    }
+    step();
+}
+
+/* Never rejects: every way a write can end is an outcome in the list. A report
+   that could not be read means nothing was sent; a write request that failed in
+   transit means the page may or may not have changed, and it says so. */
+function exportOne(item) {
+    var reportUrl = window.location.pathname + '?space=' + encodeURIComponent(item.key) + '&format=json' + (bulkValues ? '&values=true' : '');
+    return fetch(reportUrl, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } }).then(function (response) {
+        if (!response.ok) { throw new Error('HTTP ' + response.status); }
+        return response.json();
+    }).then(function (payload) {
+        payload.options = { values: bulkValues };
+        payload.spaceKey = el('exportSpace').value;
+        payload.parentPageId = el('exportParent').value.trim();
+        payload.parentTitle = payload.parentPageId ? '' : el('exportParentQuery').value.trim();
+        payload.title = item.title;
+        return exportPost(payload).then(function (result) {
+            return writeOutcome(item, result);
+        }, function (error) {
+            return { state: 'failed', reason: 'The write request failed, so whether the page changed is unknown: ' + error };
+        });
+    }, function (error) {
+        return { state: 'failed', reason: 'The report could not be read, so nothing was sent: ' + error };
+    });
+}
+function writeOutcome(item, result) {
+    var body = result.body || {};
+    if (!result.ok || body.ok !== true) {
+        return { state: 'failed', reason: 'Nothing was written (' + result.status + '): ' + (body.error || 'unknown error') };
+    }
+    adoptParent(body);
+    if (body.parentPageUrl) { bulkOverviewUrl = body.parentPageUrl; }
+    var notes = [];
+    if (body.parentApplied === 'false') {
+        notes.push('PARENT NOT APPLIED. ' + (body.parentAppliedReason || 'The page was not moved under the parent page.'));
+    } else if (body.parentApplied === 'unknown') {
+        notes.push('PARENT NOT CONFIRMED. ' + (body.parentAppliedReason || 'The position could not be read back.'));
+    }
+    var overview = body.overview || { state: 'skipped' };
+    if (overview.state === 'updated') {
+        exportedTitles[titleKey(body.spaceKey, body.title)] = true;
+        markRow(item.row, true);
+    } else if (overview.state === 'failed' || overview.state === 'unknown') {
+        notes.push('DETAIL PAGE WRITTEN; OVERVIEW ' + (overview.state === 'failed' ? 'FAILED. ' : 'NOT CONFIRMED. ') +
+            (overview.reason || ''));
+    }
+    return { state: notes.length > 0 ? 'warn' : 'ok', action: body.action, reason: notes.join(' '), pageUrl: body.pageUrl };
+}
+
+/* A parent typed by title is found or created by the first write. Every later
+   write in the run then names it by its id, so the run cannot create a second
+   parent of the same title. */
+function adoptParent(body) {
+    if (el('exportParent').value || !body.parentPageId) { return; }
+    el('exportParent').value = body.parentPageId;
+    if (body.parentTitle) { el('exportParentQuery').value = body.parentTitle; }
+    el('exportParentChosen').textContent = 'Parent page: ' + (body.parentTitle || '') + ' (id ' + body.parentPageId +
+        (body.parentAction === 'created' ? ', created by this run)' : ')');
+}
+function record(item, outcome, tally) {
+    if (outcome.state === 'failed') {
+        tally.failed++;
+        bulkFailed.push(item);
+    } else {
+        if (outcome.action === 'created') { tally.created++; } else { tally.updated++; }
+        if (outcome.state === 'warn') { tally.warned++; }
+    }
+    if (outcome.state === 'ok') { return; }
+    var line = document.createElement('li');
+    line.className = outcome.state === 'failed' ? 'bad' : 'warn';
+    line.textContent = item.key + ': ' + outcome.reason;
+    if (outcome.pageUrl) {
+        var link = document.createElement('a');
+        link.href = outcome.pageUrl;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        link.textContent = ' Open the page';
+        line.appendChild(link);
+    }
+    el('bulkResults').appendChild(line);
+}
+function tallyText(tally) {
+    return tally.created + ' created, ' + tally.updated + ' updated, ' + tally.warned + ' with a warning, ' +
+        tally.failed + ' failed.';
+}
+function showProgress(done, total, key, tally) {
+    el('bulkBar').style.width = (total === 0 ? 0 : Math.round(done * 100 / total)) + '%';
+    el('bulkText').textContent = (key ? 'Exporting ' + (done + 1) + ' of ' + total + ': ' + key + '. '
+        : done + ' of ' + total + ' handled. ') + tallyText(tally);
+}
+function finishBulk(items, reached, tally) {
+    var stopped = reached < items.length;
+    bulkItems = null;
+    lockTarget(false);
+    el('bulkStop').classList.add('hidden');
+    showProgress(reached, items.length, null, tally);
+    el('bulkRetry').textContent = 'Retry failed (' + bulkFailed.length + ')';
+    el('bulkRetry').classList.toggle('hidden', bulkFailed.length === 0);
+    var tone = tally.failed > 0 ? 'bad' : (tally.warned > 0 || stopped ? 'warn' : 'good');
+    var text = (stopped ? 'Stopped after ' + reached + ' of ' + items.length + ' space(s); the rest was not touched. '
+        : 'Finished ' + items.length + ' space(s). ') + tallyText(tally);
+    if (tally.failed > 0) {
+        text += ' The failed ones are listed below. Retrying them is safe: an existing page is updated, not duplicated.';
+    }
+    var status = say(tone, text);
+    if (bulkOverviewUrl) {
+        var indexLink = document.createElement('a');
+        indexLink.href = bulkOverviewUrl;
+        indexLink.target = '_blank';
+        indexLink.rel = 'noopener';
+        indexLink.textContent = ' Open the overview';
+        status.appendChild(indexLink);
+    }
+    selectionChanged();
+}
+function stopBulk() {
+    bulkStopping = true;
+    el('bulkStop').disabled = true;
+    say('muted', 'Stopping after the current space...');
+}
+function retryBulk() {
+    var items = bulkFailed.slice();
+    if (items.length > 0) { runBulk(items); }
+}
+/* The target cannot move under a running export: every write of one run goes
+   to the same space and the same overview. The fields are disabled, and the hit
+   lists are emptied along with any parent search still pending, because a hit
+   left on screen could still be clicked and move the rest of the run. */
+function lockTarget(locked) {
+    var ids = ['exportSpaceQuery', 'exportParentQuery'];
+    for (var i = 0; i < ids.length; i++) { el(ids[i]).disabled = locked; }
+    el('exportRebuild').disabled = locked || !el('exportParent').value;
+    if (!locked) { return; }
+    if (exportPageTimer) { window.clearTimeout(exportPageTimer); }
+    exportPageSeq++;
+    el('exportSpaceResults').innerHTML = '';
+    el('exportParentResults').innerHTML = '';
+}
+window.addEventListener('beforeunload', function (event) {
+    if (bulkItems === null) { return; }
+    event.preventDefault();
+    event.returnValue = '';
+});
 </script>
 """
     }
@@ -2619,6 +2977,14 @@ function openFirstSpace(event) {
         model.put("options", options)
         String payload = Pc.html(JsonOutput.toJson(model))
         String defaultTitle = Pc.html(Cx.title(report.spaceKey))
+        String actions = """            <div class="export-grid">
+                <label class="export-field">Page title
+                    <input id="exportTitle" class="wide" type="text" value="${defaultTitle}">
+                </label>
+                <button id="exportRun" class="button" type="button" onclick="exportToPage()">Generate the page</button>
+                <button id="exportRebuild" class="button" type="button" disabled onclick="rebuildOverview()">Rebuild overview rows</button>
+            </div>
+"""
         return """<div class="export-card">
     <div class="export-title">Export to a Confluence page</div>
     <div class="export-note">
@@ -2634,7 +3000,19 @@ function openFirstSpace(event) {
     <div class="export-grid">
         <button id="exportOpen" class="button" type="button" onclick="openExport()">Export to a page</button>
     </div>
-    <div id="exportSettings" class="export-settings hidden">
+${exportSettings(actions)}    <div id="exportStatus" class="export-status muted">Not written yet.</div>
+    <input id="exportPayload" type="hidden" value="${payload}">
+    <input id="exportSpace" type="hidden" value="">
+    <input id="exportParent" type="hidden" value="">
+</div>
+"""
+    }
+
+    /* The space and parent stages of the export form. The report page and the
+     * space list show the same stages; only the row of buttons at the end differs,
+     * so it is passed in. */
+    static String exportSettings(String actions) {
+        return """    <div id="exportSettings" class="export-settings hidden">
         <div id="exportSpaceStage">
             <div class="export-grid">
                 <label class="export-field">Space - search by name or key
@@ -2656,20 +3034,8 @@ function openFirstSpace(event) {
                 <div class="export-chosen" id="exportParentChosen">No parent page: the page is created at the top level of the space.</div>
             </div>
             <div id="exportParentResults" class="export-results"></div>
-            <div class="export-grid">
-                <label class="export-field">Page title
-                    <input id="exportTitle" class="wide" type="text" value="${defaultTitle}">
-                </label>
-                <button id="exportRun" class="button" type="button" onclick="exportToPage()">Generate the page</button>
-                <button id="exportRebuild" class="button" type="button" disabled onclick="rebuildOverview()">Rebuild overview rows</button>
-            </div>
-        </div>
+""" + actions + """        </div>
     </div>
-    <div id="exportStatus" class="export-status muted">Not written yet.</div>
-    <input id="exportPayload" type="hidden" value="${payload}">
-    <input id="exportSpace" type="hidden" value="">
-    <input id="exportParent" type="hidden" value="">
-</div>
 """
     }
 
@@ -2792,6 +3158,18 @@ table.flat tr:nth-child(even) td { background: var(--surface-subtle); }
    way down: table.flat th is already sticky, and it only works inside a scroll
    container, which is what this rule provides. */
 .estate-scroll { max-height: 70vh; overflow-y: auto; margin-top: 10px; }
+.bulk-select { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.bulk-count { color: var(--text-subtle); font-size: 12px; }
+table.estate td.col-key .bulk-pick { width: 15px; height: 15px; margin: 0 6px 0 0; vertical-align: middle; cursor: pointer; }
+.bulk-mark { margin-left: 6px; padding: 1px 6px; border: 1px solid var(--green); border-radius: 3px;
+    color: var(--green); font-family: inherit; font-size: 11px; }
+.bulk-progress { margin-top: 10px; max-width: 680px; }
+.bulk-track { height: 8px; overflow: hidden; border-radius: 4px; background: var(--border-subtle); }
+.bulk-fill { width: 0; height: 100%; background: var(--blue); transition: width .2s; }
+.bulk-text { margin-top: 6px; color: var(--text-subtle); font-size: 12px; }
+.bulk-results { margin: 8px 0 0; padding-left: 18px; font-size: 12px; }
+.bulk-results li.bad { color: var(--red); }
+.bulk-results li.warn { color: var(--yellow); }
 table.estate td.num { text-align: right; font-variant-numeric: tabular-nums; }
 table.estate td.nowrap, table.estate th { white-space: nowrap; }
 table.estate td.col-key a { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo,
@@ -2999,11 +3377,108 @@ function setView(name) {
    POST branch of this same endpoint for exactly what it needs, and no further.
    Three stages, not four: this endpoint writes into its own instance, so there is
    no target to pick and no request ever leaves this Confluence. */
-var exportSpaceList = [];
+""" + exportStageScript() + """/* Stage 4 of the interaction, stage 3 of the endpoint: the write. */
+function exportToPage() {
+    var button = el('exportRun');
+    function fail(text) { say('bad', text); }
+    var payload;
+    try { payload = JSON.parse(el('exportPayload').value); }
+    catch (error) { fail('Export payload could not be read: ' + error); return; }
+    payload.spaceKey = el('exportSpace').value;
+    /* Either the id of a page that was picked, or the title that was typed and
+       never picked - never both. The server refuses a request that carries two
+       parent instructions, so the choice is made here and only here. */
+    payload.parentPageId = el('exportParent').value.trim();
+    payload.parentTitle = payload.parentPageId ? '' : el('exportParentQuery').value.trim();
+    payload.title = el('exportTitle').value.trim();
+    if (!payload.spaceKey) { fail('Select a space first.'); return; }
+    if (!payload.title) { fail('Enter a page title first.'); return; }
+    button.disabled = true;
+    say('muted', 'Writing page...');
+    exportPost(payload).then(function (result) {
+        button.disabled = false;
+        var body = result.body || {};
+        if (!result.ok || body.ok !== true) {
+            fail('Nothing was written (' + result.status + '): ' + (body.error || 'unknown error'));
+            return;
+        }
+        /* Found and created are reported apart. An administrator who reads "found"
+           believes the parent was already there and stops looking for the page this
+           run has just made. */
+        var parent = '';
+        if (body.parentAction === 'created') {
+            parent = ' Parent page created: "' + body.parentTitle + '" (id ' + body.parentPageId + ').';
+        } else if (body.parentAction === 'found') {
+            parent = ' Parent page found: "' + body.parentTitle + '" (id ' + body.parentPageId + ').';
+        }
+        /* A parent that was named and not applied is said plainly, and the line
+           stops reading as a plain success. A silent mismatch is the worst outcome
+           here: the run looks like it worked and the report is not where it was
+           put. The three states are compared as strings on purpose - "unknown" is
+           not a failure and is never reported as one. */
+        var tone = 'good';
+        if (body.parentApplied === 'false') {
+            tone = 'bad';
+            parent += ' PARENT NOT APPLIED. ' +
+                (body.parentAppliedReason || 'The page was not moved under the parent page.');
+        } else if (body.parentApplied === 'unknown') {
+            tone = 'warn';
+            parent += ' PARENT NOT CONFIRMED. ' +
+                (body.parentAppliedReason || 'The position could not be read back.');
+        }
+        var overview = body.overview || { state: 'skipped' };
+        var overviewText = '';
+        if (overview.state === 'updated') {
+            overviewText = ' Overview updated.';
+        } else if (overview.state === 'failed' || overview.state === 'unknown') {
+            if (tone === 'good') { tone = 'warn'; }
+            overviewText = ' DETAIL PAGE WRITTEN; OVERVIEW ' +
+                (overview.state === 'failed' ? 'FAILED. ' : 'NOT CONFIRMED. ') + (overview.reason || '');
+        }
+        var status = say(tone, 'Page ' + body.action + ': "' + body.title + '" in ' + body.spaceKey +
+            ' (version ' + body.pageVersion + '). Remark read: ' + body.remarkRead +
+            ', carried over: ' + body.remarksCarried + ' of ' + body.remarksRead +
+            ', without a matching item: ' + body.orphanedRemarks + '.' + parent + overviewText);
+        if (body.pageUrl) {
+            var link = document.createElement('a');
+            link.href = body.pageUrl;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.textContent = ' Open the page';
+            status.appendChild(link);
+        }
+        if (body.parentPageUrl && overview.state !== 'skipped') {
+            var indexLink = document.createElement('a');
+            indexLink.href = body.parentPageUrl;
+            indexLink.target = '_blank';
+            indexLink.rel = 'noopener';
+            indexLink.textContent = ' Open the overview';
+            status.appendChild(indexLink);
+        }
+    }).catch(function (error) {
+        button.disabled = false;
+        fail('Request failed, nothing was written: ' + error);
+    });
+}
+</script>
+"""
+    }
+
+    /* The staged lookups of the export: space and parent. The report page and the
+     * space list both use them, so a fix to one stage reaches both pages. The space
+     * list reacts when the target moves, through exportTargetChanged; the report
+     * page defines no such function. */
+    static String exportStageScript() {
+        return """var exportSpaceList = [];
 var exportPageSeq = 0;
 var exportPageTimer = null;
 
 function el(id) { return document.getElementById(id); }
+/* Called whenever the space or the overview page changes. Only a page that lists
+   several spaces defines exportTargetChanged; on the report page this does nothing. */
+function exportTargetMoved() {
+    if (typeof exportTargetChanged === 'function') { exportTargetChanged(); }
+}
 function say(cssClass, text) {
     var node = el('exportStatus');
     node.className = 'export-status ' + cssClass;
@@ -3110,6 +3585,7 @@ function chooseSpace(space) {
         el('exportParentChosen').textContent = 'No parent page: the page is created at the top level of the space.';
         el('exportPageStage').classList.remove('hidden');
         say('muted', 'Space ' + space.key + ' selected. Pick a parent page or leave it empty, then generate.');
+        exportTargetMoved();
     };
 }
 
@@ -3123,8 +3599,10 @@ function parentTyped() {
     /* Editing the term drops the picked parent, so a stale id can never travel
        with a title the administrator has since changed. What travels then is the
        title, and the generating run adopts or creates that page. */
+    var hadParent = el('exportParent').value !== '';
     el('exportParent').value = '';
     el('exportRebuild').disabled = true;
+    if (hadParent) { exportTargetMoved(); }
     var query = el('exportParentQuery').value.trim();
     el('exportParentChosen').textContent = query
         ? 'Parent page "' + query + '": pick it below if it is listed, otherwise it is created when the page is generated.'
@@ -3177,6 +3655,7 @@ function chooseParent(page) {
         el('exportParentResults').innerHTML = '';
         el('exportParentChosen').textContent = 'Parent page: ' + page.title + ' (id ' + page.id + ')';
         el('exportRebuild').disabled = false;
+        exportTargetMoved();
     };
 }
 
@@ -3214,6 +3693,7 @@ function rebuildOverview() {
         if (counts.unconfirmed > 0) {
             text += ' ' + counts.unconfirmed + ' row(s) could not be confirmed after the write.';
         }
+        exportTargetMoved();
         var status = say(tone, text);
         if (body.parentPageUrl) {
             var indexLink = document.createElement('a');
@@ -3239,90 +3719,6 @@ function rebuildOverview() {
     });
 }
 
-/* Stage 4 of the interaction, stage 3 of the endpoint: the write. */
-function exportToPage() {
-    var button = el('exportRun');
-    function fail(text) { say('bad', text); }
-    var payload;
-    try { payload = JSON.parse(el('exportPayload').value); }
-    catch (error) { fail('Export payload could not be read: ' + error); return; }
-    payload.spaceKey = el('exportSpace').value;
-    /* Either the id of a page that was picked, or the title that was typed and
-       never picked - never both. The server refuses a request that carries two
-       parent instructions, so the choice is made here and only here. */
-    payload.parentPageId = el('exportParent').value.trim();
-    payload.parentTitle = payload.parentPageId ? '' : el('exportParentQuery').value.trim();
-    payload.title = el('exportTitle').value.trim();
-    if (!payload.spaceKey) { fail('Select a space first.'); return; }
-    if (!payload.title) { fail('Enter a page title first.'); return; }
-    button.disabled = true;
-    say('muted', 'Writing page...');
-    exportPost(payload).then(function (result) {
-        button.disabled = false;
-        var body = result.body || {};
-        if (!result.ok || body.ok !== true) {
-            fail('Nothing was written (' + result.status + '): ' + (body.error || 'unknown error'));
-            return;
-        }
-        /* Found and created are reported apart. An administrator who reads "found"
-           believes the parent was already there and stops looking for the page this
-           run has just made. */
-        var parent = '';
-        if (body.parentAction === 'created') {
-            parent = ' Parent page created: "' + body.parentTitle + '" (id ' + body.parentPageId + ').';
-        } else if (body.parentAction === 'found') {
-            parent = ' Parent page found: "' + body.parentTitle + '" (id ' + body.parentPageId + ').';
-        }
-        /* A parent that was named and not applied is said plainly, and the line
-           stops reading as a plain success. A silent mismatch is the worst outcome
-           here: the run looks like it worked and the report is not where it was
-           put. The three states are compared as strings on purpose - "unknown" is
-           not a failure and is never reported as one. */
-        var tone = 'good';
-        if (body.parentApplied === 'false') {
-            tone = 'bad';
-            parent += ' PARENT NOT APPLIED. ' +
-                (body.parentAppliedReason || 'The page was not moved under the parent page.');
-        } else if (body.parentApplied === 'unknown') {
-            tone = 'warn';
-            parent += ' PARENT NOT CONFIRMED. ' +
-                (body.parentAppliedReason || 'The position could not be read back.');
-        }
-        var overview = body.overview || { state: 'skipped' };
-        var overviewText = '';
-        if (overview.state === 'updated') {
-            overviewText = ' Overview updated.';
-        } else if (overview.state === 'failed' || overview.state === 'unknown') {
-            if (tone === 'good') { tone = 'warn'; }
-            overviewText = ' DETAIL PAGE WRITTEN; OVERVIEW ' +
-                (overview.state === 'failed' ? 'FAILED. ' : 'NOT CONFIRMED. ') + (overview.reason || '');
-        }
-        var status = say(tone, 'Page ' + body.action + ': "' + body.title + '" in ' + body.spaceKey +
-            ' (version ' + body.pageVersion + '). Remark read: ' + body.remarkRead +
-            ', carried over: ' + body.remarksCarried + ' of ' + body.remarksRead +
-            ', without a matching item: ' + body.orphanedRemarks + '.' + parent + overviewText);
-        if (body.pageUrl) {
-            var link = document.createElement('a');
-            link.href = body.pageUrl;
-            link.target = '_blank';
-            link.rel = 'noopener';
-            link.textContent = ' Open the page';
-            status.appendChild(link);
-        }
-        if (body.parentPageUrl && overview.state !== 'skipped') {
-            var indexLink = document.createElement('a');
-            indexLink.href = body.parentPageUrl;
-            indexLink.target = '_blank';
-            indexLink.rel = 'noopener';
-            indexLink.textContent = ' Open the overview';
-            status.appendChild(indexLink);
-        }
-    }).catch(function (error) {
-        button.disabled = false;
-        fail('Request failed, nothing was written: ' + error);
-    });
-}
-</script>
 """
     }
 }
@@ -4969,6 +5365,16 @@ class ConfigOverview {
             }
         }
         [before: body.substring(0, starts.get(0).start as int), after: body.substring(ends.get(0).end as int), columns: columns, rows: rows]
+    }
+    /* The export identities an overview already lists, so a list of projects or spaces can
+     * mark what was exported before. Read only, through the same parse an update takes: a
+     * table this exporter would refuse to update is refused here as well, never shown as
+     * an overview without exports. */
+    static List<Map<String, String>> exported(String body, String product, String space) {
+        Map<String, Object> model = read(body, product, space)
+        List<Map<String, String>> identities = []
+        for (List<String> row : (List<List<String>>) model.rows) { identities.add(rowIdentity(row, product, space)) }
+        identities
     }
     static String link(String title, String space, String label, String sectionAnchor) {
         '<ac:link' + (sectionAnchor ? ' ac:anchor="' + Cx.esc(sectionAnchor) + '"' : '') + '>' +
@@ -7527,6 +7933,65 @@ spaceConfig(
         pagePayload.put("pages", found.get("pages"))
         pagePayload.put("truncated", found.get("truncated"))
         return answer(pagePayload)
+    }
+
+    /* Which exports the picked overview already lists, so the space list can mark
+     * them. One read of the overview page and nothing else: no detail page is
+     * opened and nothing is written, which is why this sits before the export
+     * transaction. An overview that cannot be read, or whose table this exporter
+     * would refuse to update, is refused here as well. A failed read must never
+     * come back as "nothing exported yet". */
+    if (requestedAction == "exported") {
+        String exportedSpace = Cx.str(request, "spaceKey", "")
+        String exportedParent = Cx.str(request, "parentPageId", "").trim()
+        if (exportedSpace.isEmpty()) {
+            return refuse(400, "exported", "No space was selected.")
+        }
+        if (!(exportedParent ==~ /[0-9]+/)) {
+            return refuse(400, "exported", "Pick the overview page first; \"" + exportedParent +
+                "\" is not a page ID.")
+        }
+        PageService exportedLookup = null
+        try {
+            exportedLookup = ComponentLocator.getComponent(PageService.class)
+        } catch (Throwable error) {
+            return refuse(500, "exported", "PageService could not be obtained (" + Db.why(error) +
+                "). That is a failed lookup, not an overview without exports.")
+        }
+        if (exportedLookup == null) {
+            return refuse(500, "exported", "PageService could not be resolved. That is a failed lookup, " +
+                "not an overview without exports.")
+        }
+        Page exportedPage = null
+        try {
+            exportedPage = exportedLookup.getIdPageLocator(Long.parseLong(exportedParent)).getPage()
+        } catch (Exception error) {
+            return refuse(500, "exported", "The overview page could not be read: " + Cx.errorDetail(error) +
+                ". That is a failed read, not an overview without exports.")
+        }
+        if (exportedPage == null) {
+            return refuse(400, "exported", "There is no page with the ID " + exportedParent + ".")
+        }
+        String exportedPageSpace = String.valueOf(exportedPage.getSpaceKey())
+        if (!exportedSpace.equalsIgnoreCase(exportedPageSpace)) {
+            return refuse(400, "exported", "The overview page " + exportedParent + " sits in space \"" +
+                exportedPageSpace + "\", not in \"" + exportedSpace + "\".")
+        }
+        List<Map<String, String>> exportedRows
+        try {
+            exportedRows = ConfigOverview.exported(exportedPage.getBodyAsString(), "confluence", exportedPageSpace)
+        } catch (IllegalArgumentException refusal) {
+            return refuse(409, "exported", "The overview table on page " + exportedParent +
+                " cannot be read: " + refusal.getMessage())
+        }
+        Map<String, Object> exportedPayload = new LinkedHashMap<String, Object>()
+        exportedPayload.put("ok", Boolean.TRUE)
+        exportedPayload.put("action", "exported")
+        exportedPayload.put("spaceKey", exportedPageSpace)
+        exportedPayload.put("parentPageId", exportedParent)
+        exportedPayload.put("parentTitle", exportedPage.getTitle())
+        exportedPayload.put("exports", exportedRows)
+        return answer(exportedPayload)
     }
 
     /* ---- Page export: validate --------------------------------------------- */

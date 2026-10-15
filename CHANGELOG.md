@@ -4,6 +4,38 @@ All notable changes to this project are documented here. Each endpoint carries i
 version, declared once in its helper class and printed by every output channel, so the
 sections below are grouped by endpoint rather than by a single repository version.
 
+## confluenceDCspaceConfig 0.4 and jiraDCprojectConfig 0.4
+
+### Added
+
+- **Bulk export from the project picker and the space inventory.** Each project or space now has
+  a checkbox, with **Select all shown**, **Select shown, not yet exported** and **Clear
+  selection** above the list. The target, space and parent are chosen once with the same stages
+  as the single export, then **Export selected (N)** writes one page per selection, strictly one
+  after the other, because every write also updates the same overview table. Each write is the
+  single export's own request: the report is read as JSON and posted to the same route, under the
+  title the single export suggests (`Jira project configuration - KEY`, `Confluence space
+  configuration - KEY`). The row carries that title, computed on the server by the same
+  `Cx.title`, so a bulk export can only update the page a single export of the same project or
+  space would update, with its remarks carried over. A progress bar shows the run; a failed item
+  does not stop it and is listed with its reason; **Retry failed** runs only the failed items
+  again, and **Stop after the current project/space** ends the run cleanly. A parent typed by
+  title is found or created by the first write and named by its ID in every later write.
+- **Already exported projects and spaces are marked.** Once an overview page is picked, a new
+  read-only POST action `exported` reads that page's overview table and the list marks every
+  project or space that already has a row for its default title. The read goes through the same
+  parse as an update (`ConfigOverview.exported`, identical in both endpoints): a table the
+  exporter would refuse to update is refused here as well and the list says so, instead of
+  showing every row as not exported.
+
+### Changed
+
+- The target, space and parent stages of the export form are shared between the report page
+  and the new bulk export, in both endpoints (`exportStageScript`, `exportSettings`). The report
+  page renders the same export form as before.
+- The Confluence inventory note now says that the bulk export below the table reads and writes
+  only once its own button is pressed. Filtering and sorting still issue no request.
+
 ## jiraDCprojectConfig 0.3.1
 
 ### Changed

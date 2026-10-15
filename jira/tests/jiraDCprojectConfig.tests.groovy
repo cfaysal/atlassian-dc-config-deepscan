@@ -662,6 +662,33 @@ ok("the count line carries no cap", !bigPicker.contains("showing the first"))
 ok("the count line names the full population",
     bigPicker.contains(String.valueOf(manyProjects.size()) + " projects"))
 
+/* ---- 17b. the bulk export from the picker ------------------------------- */
+
+/* A bulk export must write exactly the page a single export of the same project
+ * would update. That page is found by its title, so the row carries the title the
+ * single export suggests, from the same Cx.title, and the script sends it as is. */
+check("one checkbox per project", pickerHtml.split("class=\"bulk-pick\"", -1).length - 1, projectRows.size())
+check("the default title of the single export", Cx.title("OPS"), "Jira project configuration - OPS")
+ok("a row carries the single export's default title",
+    pickerHtml.contains("data-title=\"" + Pc.html(Cx.title("OPS")) + "\""))
+ok("a row carries its project key", pickerHtml.contains("data-key=\"SCRUM\""))
+ok("the picker offers the bulk export", pickerHtml.contains("id=\"bulkRun\"") && pickerHtml.contains("function startBulk"))
+ok("the bulk export reuses the single export's stages",
+    pickerHtml.contains("function openExport") && pickerHtml.contains("function chooseParent") &&
+    pickerHtml.contains("id=\"exportTarget\""))
+ok("the bulk export sends the row's title", pickerHtml.contains("payload.title = item.title;"))
+ok("the bulk export reads each report as JSON", pickerHtml.contains("'&format=json'"))
+ok("already exported projects are read from the overview", pickerHtml.contains("action: 'exported'"))
+ok("the selection can be cleared and narrowed to new projects",
+    pickerHtml.contains("selectShown('none')") && pickerHtml.contains("selectShown('new')"))
+ok("an empty picker offers no bulk export", !Render.picker(new Report(), [], "").contains("id=\"bulkRun\""))
+String reportScript = Render.script()
+ok("the report page keeps its single export",
+    reportScript.contains("function exportToConfluence") && reportScript.contains("function openExport"))
+ok("and carries no bulk export", !reportScript.contains("function startBulk"))
+ok("the report export form is unchanged in its fields",
+    Render.exportCard(new Report()).contains("id=\"exportTitle\"") && Render.exportCard(new Report()).contains("id=\"exportRun\""))
+
 Report failedShell = new Report()
 failedShell.globalDiagnostics.add("The project list could not be read: RuntimeException. " +
     "This is a failed read, not an empty instance.")
