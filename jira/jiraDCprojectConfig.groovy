@@ -2027,14 +2027,12 @@ class Render {
         return out.toString()
     }
 
-    /* How many project rows are visible at once. An instance with several hundred
-     * projects turns a dropdown into a scroll hunt, so the list is searched rather
-     * than scrolled. Every project is already in the page, which is what makes the
-     * search instant and keeps it from costing a request per keystroke. The cap is
-     * on what is shown, and the count line always names the full population, so a
-     * filtered list can never be mistaken for the whole one. */
-    static final int PROJECT_ROWS = 40
-
+    /* Every project is in the page and visible. The list scrolls inside its own box
+     * (.project-list) and the search narrows it, which is instant because nothing
+     * is fetched per keystroke. There used to be a cap of forty visible rows; on an
+     * instance with a hundred projects it hid the rest behind the search field, and
+     * an administrator who cannot see every project cannot pick from all of them.
+     * The Confluence endpoint dropped the same cap for the same reason. */
     static String projectPicker(List<Map<String, String>> projects, String selfPath) {
         StringBuilder out = new StringBuilder()
         out.append("<div class=\"export-card\">")
@@ -2049,15 +2047,10 @@ class Render {
         out.append("</div></div>")
 
         out.append("<div id=\"projectResults\" class=\"export-results project-list\">")
-        int shown = 0
         for (Map<String, String> project : projects) {
             String key = Pc.orNa(project.get("key"))
             String name = Pc.orNa(project.get("name"))
-            boolean visible = shown < PROJECT_ROWS
-            if (visible) {
-                shown++
-            }
-            out.append("<a class=\"export-hit").append(visible ? "" : " hidden").append("\" href=\"")
+            out.append("<a class=\"export-hit\" href=\"")
             out.append(Pc.html(selfPath)).append("?project=").append(Pc.html(Pc.urlQuery(key)))
             out.append("\" data-find=\"")
             out.append(Pc.html((key + " " + name).toLowerCase(Locale.ROOT)))
@@ -2076,16 +2069,16 @@ class Render {
     /* Rendered on the server for the first paint and recomputed in the browser on
      * every keystroke. The two must agree, so the wording lives here and the script
      * below mirrors it; the offline suite checks this one, which is the one a reader
-     * without JavaScript ever sees. */
+     * without JavaScript ever sees. There is no "showing the first N" tail: every
+     * matching row is visible. */
     static String countLine(int matching, int total) {
         if (matching == 0) {
             return "no match out of " + String.valueOf(total) + " projects"
         }
-        String tail = matching > PROJECT_ROWS ? ", showing the first " + String.valueOf(PROJECT_ROWS) : ""
         if (matching == total) {
-            return String.valueOf(total) + " projects" + tail
+            return String.valueOf(total) + " projects"
         }
-        return String.valueOf(matching) + " of " + String.valueOf(total) + " projects match" + tail
+        return String.valueOf(matching) + " of " + String.valueOf(total) + " projects match"
     }
 
     /* The picker carries its own script rather than the report's: it has no tree to
@@ -2093,26 +2086,20 @@ class Render {
      * pages sharing code only one of them can use. */
     private static String pickerScript() {
         return """<script>
-var PROJECT_ROWS = ${PROJECT_ROWS};
-
 function projectCountLine(matching, total) {
     if (matching === 0) { return 'no match out of ' + total + ' projects'; }
-    var tail = matching > PROJECT_ROWS ? ', showing the first ' + PROJECT_ROWS : '';
-    if (matching === total) { return total + ' projects' + tail; }
-    return matching + ' of ' + total + ' projects match' + tail;
+    if (matching === total) { return total + ' projects'; }
+    return matching + ' of ' + total + ' projects match';
 }
 
 function filterProjects() {
     var query = (document.getElementById('projectQuery').value || '').trim().toLowerCase();
     var rows = document.querySelectorAll('#projectResults .export-hit');
     var matching = 0;
-    var shown = 0;
     for (var i = 0; i < rows.length; i++) {
         var isHit = query === '' || rows[i].getAttribute('data-find').indexOf(query) >= 0;
         if (isHit) { matching++; }
-        var show = isHit && shown < PROJECT_ROWS;
-        if (show) { shown++; }
-        rows[i].classList.toggle('hidden', !show);
+        rows[i].classList.toggle('hidden', !isHit);
     }
     document.getElementById('projectCount').textContent = projectCountLine(matching, rows.length);
     document.getElementById('projectEmpty').classList.toggle('hidden', matching !== 0);
