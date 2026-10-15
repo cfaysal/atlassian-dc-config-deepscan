@@ -471,6 +471,37 @@ ok("the report page keeps its single export",
     spaceReportScript.contains("function exportToPage") && spaceReportScript.contains("function openExport"))
 ok("and carries no bulk export", !spaceReportScript.contains("function startBulk"))
 
+/* ---- 9b3. the export log in the estate and on the report ----------------- */
+
+List<Map<String, String>> loggedEstate = [
+    sweepRow("DEV", "Development", "global", "CURRENT", "4", "0", "1", "0", "0", "", "0"),
+    sweepRow("HR", "People", "global", "CURRENT", "4", "0", "1", "0", "0", "", "0")
+]
+loggedEstate[0].put("logLabel", "exported 2026-10-15 to DOC / Config overview")
+loggedEstate[0].put("logDetail", "Exported 2026-10-15 10:52 UTC by cfaysal to space DOC")
+String loggedPage = Render.estate(shell, sweepOf(loggedEstate, [:] as LinkedHashMap), "")
+ok("a logged space carries its mark", rowText(loggedPage, "DEV").contains(">exported 2026-10-15 to DOC / Config overview</span>"))
+ok("and the full entry as its tooltip", rowText(loggedPage, "DEV").contains("title=\"Exported 2026-10-15 10:52 UTC by cfaysal"))
+ok("and counts as logged for the selection", rowText(loggedPage, "DEV").startsWith("<tr class=\"is-logged\""))
+ok("a space not in the log is not marked", !rowText(loggedPage, "HR").contains("is-logged"))
+ok("but carries an empty mark the bulk export can fill", rowText(loggedPage, "HR").contains("<span class=\"log-mark hidden\"></span>"))
+ok("the note counts the logged spaces", loggedPage.contains("1 of 2 spaces are in the export log."))
+ok("the overview mark says where it comes from", loggedPage.contains(">in overview</span>"))
+ok("the bulk export updates the log mark after a write", loggedPage.contains("markLogged(item.row, exportLog.label, exportLog.detail)"))
+Report loggedSpace = new Report()
+loggedSpace.spaceKey = "DEV"
+check("a space without an entry says so", Render.lastExportLine(loggedSpace),
+    "This space is not in the export log of this instance yet.")
+loggedSpace.lastExportProblem = "store down"
+ok("a log that cannot be read says so instead of claiming no export",
+    Render.lastExportLine(loggedSpace).contains("could not be read") && Render.lastExportLine(loggedSpace).contains("store down"))
+loggedSpace.lastExport = ExportLog.entry("confluence", "DEV", "2026-10-15 10:52 UTC", "cfaysal", [spaceKey: "DOC", title: "T"] as Map<String, Object>)
+ok("an entry is shown above the export form",
+    Render.lastExportLine(loggedSpace).startsWith("Last export: Exported 2026-10-15 10:52 UTC by cfaysal"))
+ok("in its own line the single export updates", Render.exportCard(loggedSpace, false).contains("id=\"exportLastLine\""))
+ok("the single export reports a log it could not update", Render.script().contains("EXPORT LOG NOT UPDATED"))
+ok("the log is not part of the report model", !Render.json(loggedSpace).contains("lastExport") && !Render.json(loggedSpace).contains("cfaysal"))
+
 /* ---- 9c. a failed sweep is not an empty instance ------------------------- */
 
 Map<String, Object> deadSweep = [rows: [], columnFailures: [:] as LinkedHashMap,
@@ -2273,6 +2304,7 @@ ok("OP-1458 the JSON carries no dropped link either",
     !Render.json(rpReport).contains("edit level"))
 
 new GroovyShell(getClass().classLoader, new Binding([product: 'confluence', renderDetail: { Map request -> Cx.render(request, null) }])).evaluate(new File(System.getProperty('repoRoot', '.'), 'tools/tests/export-overview.tests.groovy'))
+new GroovyShell(getClass().classLoader, new Binding([product: 'confluence'])).evaluate(new File(System.getProperty('repoRoot', '.'), 'tools/tests/export-log.tests.groovy'))
 
 /* ---- result --------------------------------------------------------------- */
 

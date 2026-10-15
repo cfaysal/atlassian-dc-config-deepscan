@@ -57,13 +57,21 @@ The result links to both pages and states whether the overview was updated. A pa
 
 When overview rows are missing but the detail pages still sit under the overview page, select the space, pick the overview page from the search and press **Rebuild overview rows**. The rebuild reads the direct child pages of that page and takes each row's name and section counts from the detail page itself; nothing is scanned again and no detail page is written. All missing rows are added with one save of the overview, and each added row is read back and confirmed. The rebuild never replaces or rewrites a row: a page that already has a row is reported as present, and a page whose title is already held by a row for another page ID is skipped with that page ID. A child page without the export marker, a Jira export page, a page that is not current, a page whose header names the space as "unknown" and a page whose sections do not parse exactly are skipped, each with its reason. A child page that could not be read is reported as unread and the result as not complete; its row is unknown, not absent, so run the rebuild again. A typed title that was not picked cannot be rebuilt: a rebuild never creates a parent.
 
+### Export log
+
+Every successful export of a space, single or bulk and by any administrator, is recorded in the export log of this instance: when, by whom, to which space and page, and under which parent. The space inventory shows the entry as a mark on the space, and the report page shows it above the export form as **Last export**. The log is read without any request to Confluence.
+
+The log is stored in the application's own settings store (SAL plugin settings, global scope), one small entry per space under the key `cfcon.cfgexport.<product>.<KEY>`; a key that would be longer than 100 characters is stored under its SHA-256. Every node of a Data Center cluster reads the same store from the database. Only the latest export of a space is kept. The entry is written after the export transaction has committed, so a failed export leaves no entry.
+
+The log records exports; it does not follow Confluence. A page or an overview row deleted later is still in the log, so check the overview from the export form when the current state matters. A log entry that cannot be written is reported with the export as **EXPORT LOG NOT UPDATED**; the page itself is written all the same. The export log has not yet been measured on an instance: if the settings store cannot be reached from the endpoint, every page says so and the overview check still works.
+
 ### Export several spaces at once
 
 The space inventory exports a selection of spaces in one run, so an instance with hundreds of spaces does not need one export per report page.
 
 1. Tick the spaces in the inventory. **Select all shown** ticks every space the search and the **Show** filter currently show, **Clear selection** clears every tick, shown or not. A space whose key could not be read has no checkbox, because the export names a space by its key.
 2. Press **Choose the target space**, then pick the space and the overview page with the same stages as the single export.
-3. Once an overview page is picked, every space that already has a row in its overview table is marked **exported**. **Select shown, not yet exported** then ticks only the spaces still missing. The marks come from that one overview table: a space exported without this parent, or under a title of its own, is not marked.
+3. Every space in the export log of this instance carries a blue mark such as **exported 2026-10-15 to DOC / Config overview**; hover it for the time, the administrator, the target and the page. Once an overview page is picked, every space that has a row in its overview table also gets a green **in overview** mark. **Select shown, not yet exported** ticks only the shown spaces that carry neither mark.
 4. Press **Export selected (N)** and confirm. The spaces are exported one after the other, never in parallel, because every export updates the same overview table. A progress bar shows how far the run is.
 
 Each space is written exactly as the single export on its report page would write it: the report is read as JSON (`?space=KEY&format=json`) and posted to the same export route, under the title the single export suggests, `Confluence space configuration - KEY`. A page with that title is updated and keeps its remarks; otherwise it is created. Property values are exported only when the inventory itself was opened with `values=true`, which is the same rule as for a single report. A parent typed by title is found or created by the first write, and every later write in the run names it by its ID, so one run cannot create the parent twice.
@@ -77,6 +85,6 @@ A failed space does not stop the run. After the run, every space that failed or 
 - **Missing values:** `values=false` is the default. Secret-like keys stay redacted with `values=true`.
 - **Incomplete inventory or section:** read diagnostics and check database/API access and schema compatibility. A failed read is unknown, not zero.
 - **Export refused:** check permissions, destination, parent, and the marker on an existing page. Do not remove the marker to force an overwrite.
-- **No space marked as exported:** marks need a picked overview page. A typed title that was not picked marks nothing, and an overview table that cannot be read says so in the note above the table instead of marking nothing silently.
+- **No space marked as exported:** the blue marks come from the export log; if the log cannot be read, the page says so at the top instead of showing every space as not exported. The green marks need a picked overview page; a typed title that was not picked marks nothing, and an overview table that cannot be read says so in the note above the table.
 
 This endpoint does not count pages or run CQL. Use [Space information](confluence-space-information.md) for a page inventory. Treat reports and exported pages as administrator data, especially with `values=true`.

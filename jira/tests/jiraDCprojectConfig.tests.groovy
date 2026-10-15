@@ -689,6 +689,37 @@ ok("and carries no bulk export", !reportScript.contains("function startBulk"))
 ok("the report export form is unchanged in its fields",
     Render.exportCard(new Report()).contains("id=\"exportTitle\"") && Render.exportCard(new Report()).contains("id=\"exportRun\""))
 
+/* ---- 17c. the export log in the picker and on the report ---------------- */
+
+List<Map<String, String>> loggedRows = [
+    [key: "SCRUM", name: "Scrum Project", logLabel: "exported 2026-10-15 to DOC / Config overview",
+     logDetail: "Exported 2026-10-15 10:52 UTC by cfaysal to Confluence, space DOC"] as LinkedHashMap,
+    [key: "OPS", name: "Operations"] as LinkedHashMap
+]
+String loggedPicker = Render.picker(shell, loggedRows, "")
+ok("a logged project carries its mark", loggedPicker.contains(">exported 2026-10-15 to DOC / Config overview</span>"))
+ok("and the full entry as its tooltip", loggedPicker.contains("title=\"Exported 2026-10-15 10:52 UTC by cfaysal"))
+ok("and counts as logged for the selection", loggedPicker.contains("class=\"project-row is-logged\" data-key=\"SCRUM\""))
+ok("a project not in the log is not marked", loggedPicker.contains("class=\"project-row\" data-key=\"OPS\""))
+ok("but carries an empty mark the bulk export can fill", loggedPicker.contains("<span class=\"log-mark hidden\"></span>"))
+ok("the note counts the logged projects", loggedPicker.contains("1 of 2 projects are in the export log."))
+ok("the overview mark says where it comes from", loggedPicker.contains(">in overview</span>"))
+ok("the bulk export updates the log mark after a write", loggedPicker.contains("markLogged(item.row, exportLog.label, exportLog.detail)"))
+ok("and reports a log it could not update", loggedPicker.contains("EXPORT LOG NOT UPDATED"))
+Report logged = new Report()
+logged.projectKey = "OPS"
+check("a project without an entry says so", Render.lastExportLine(logged),
+    "This project is not in the export log of this instance yet.")
+logged.lastExportProblem = "store down"
+ok("a log that cannot be read says so instead of claiming no export",
+    Render.lastExportLine(logged).contains("could not be read") && Render.lastExportLine(logged).contains("store down"))
+logged.lastExport = ExportLog.entry("jira", "OPS", "2026-10-15 10:52 UTC", "cfaysal", [spaceKey: "DOC", title: "T"] as Map<String, Object>)
+ok("an entry is shown above the export form",
+    Render.lastExportLine(logged).startsWith("Last export: Exported 2026-10-15 10:52 UTC by cfaysal"))
+ok("in its own line the single export updates", Render.exportCard(logged).contains("id=\"exportLastLine\""))
+ok("the single export reports a log it could not update", Render.script().contains("EXPORT LOG NOT UPDATED"))
+ok("the log is not part of the report model", !Render.json(logged).contains("lastExport") && !Render.json(logged).contains("cfaysal"))
+
 Report failedShell = new Report()
 failedShell.globalDiagnostics.add("The project list could not be read: RuntimeException. " +
     "This is a failed read, not an empty instance.")
@@ -1627,6 +1658,7 @@ ok("OP-1458 the JSON carries no dropped link either",
     !Render.json(rpReport).contains("edit level"))
 
 new GroovyShell(getClass().classLoader, new Binding([product: 'jira', renderDetail: { Map request -> Cx.render(request, null) }])).evaluate(new File(System.getProperty('repoRoot', '.'), 'tools/tests/export-overview.tests.groovy'))
+new GroovyShell(getClass().classLoader, new Binding([product: 'jira'])).evaluate(new File(System.getProperty('repoRoot', '.'), 'tools/tests/export-log.tests.groovy'))
 
 /* ---- result --------------------------------------------------------------- */
 

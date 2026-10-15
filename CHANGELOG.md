@@ -4,6 +4,42 @@ All notable changes to this project are documented here. Each endpoint carries i
 version, declared once in its helper class and printed by every output channel, so the
 sections below are grouped by endpoint rather than by a single repository version.
 
+## confluenceDCspaceConfig 0.5 and jiraDCprojectConfig 0.5
+
+### Added
+
+- **Export log.** Every successful export, single or bulk and by any administrator, writes one
+  small entry to the application's own settings store (SAL plugin settings, global scope): the
+  item key, when, by whom, the target, the space, the page and the parent. One entry per project
+  or space, so two administrators exporting at the same time cannot overwrite each other. The
+  entry is read back after writing and only then reported as recorded; a log that cannot be
+  written is reported with the export as `EXPORT LOG NOT UPDATED` and never fails it. In
+  Confluence the entry is written after the export transaction has committed, so a failed export
+  leaves no entry and a failing settings store cannot roll an export back.
+- **Marks from the export log.** The project picker and the space inventory show each logged
+  item with a blue mark such as `exported 2026-10-15 to DOC / Config overview`, with the full
+  entry as tooltip, and count the logged items above the list. The report page shows the entry
+  above the export form as **Last export**. The marks are read on the server when the page is
+  rendered, so they survive a reload and are the same for every administrator and browser, with
+  no request to Confluence. A log that cannot be read is said on the page instead of showing
+  every item as not exported.
+- The new helper `ExportLog` is identical in both endpoints and names no platform type: the
+  settings store is resolved by name and called by name, so the class is tested offline, and a
+  store the instance does not provide is a reported failure rather than a broken endpoint.
+
+### Changed
+
+- The mark from the overview check is now labelled **in overview**, so it reads apart from the
+  export log mark. **Select shown, not yet exported** leaves out items that carry either mark.
+
+### Not yet measured
+
+- That SAL's `PluginSettingsFactory` resolves from a ScriptRunner endpoint on Jira and on
+  Confluence and that its global settings take these keys. The settings key is kept to 100
+  characters or fewer because the key columns of the settings tables are not measured either.
+- How long the picker takes to read the log for several hundred items: it reads one entry per
+  item.
+
 ## confluenceDCspaceConfig 0.4 and jiraDCprojectConfig 0.4
 
 ### Added
