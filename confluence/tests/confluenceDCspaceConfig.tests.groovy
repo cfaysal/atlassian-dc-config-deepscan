@@ -341,7 +341,7 @@ String estatePage = Render.estate(shell, sweepOf(estateRows, [:] as LinkedHashMa
 ok("the sweep links a space by key", estatePage.contains("?space=DEV"))
 ok("a personal space key is encoded", estatePage.contains("?space=%7Ecfaysal"))
 ok("every delivered row is on the page", estatePage.contains("?space=OLD"))
-check("and no row was dropped", estatePage.split("[?]space=", -1).length - 1, estateRows.size())
+check("and no row was dropped", estatePage.split("href=\"[?]space=", -1).length - 1, estateRows.size())
 ok("a personal space says so", estatePage.contains("Personal space"))
 ok("an archived space says so", estatePage.contains("Archived"))
 ok("the sweep does not claim a cap it did not hit", !estatePage.contains("This sweep is not complete"))
@@ -442,6 +442,35 @@ ok("a column that WAS read is untouched by another column failing",
 ok("and the other columns still carry their numbers",
     rowText(brokenColumn, "DEV").contains(">44<"))
 
+/* ---- 9b2. the bulk export from the estate -------------------------------- */
+
+/* A bulk export must write exactly the page a single export of the same space
+ * would update. That page is found by its title, so the row carries the title the
+ * single export suggests, from the same Cx.title, and the script sends it as is. */
+check("one checkbox per readable space", estatePage.split("class=\"bulk-pick\"", -1).length - 1, estateRows.size())
+check("the default title of the single export", Cx.title("DEV"), "Confluence space configuration - DEV")
+ok("a row carries the single export's default title",
+    rowText(estatePage, "DEV").contains("data-title=\"" + Pc.html(Cx.title("DEV")) + "\""))
+ok("a personal space carries its own key, not the encoded one",
+    rowText(estatePage, "%7Ecfaysal").contains("data-key=\"~cfaysal\""))
+ok("the estate offers the bulk export", estatePage.contains("id=\"bulkRun\"") && estatePage.contains("function startBulk"))
+ok("the bulk export reuses the single export's stages",
+    estatePage.contains("function openExport") && estatePage.contains("function chooseParent"))
+ok("the bulk export sends the row's title", estatePage.contains("payload.title = item.title;"))
+ok("the bulk export carries the values option of the single export",
+    estatePage.contains("payload.options = { values: bulkValues };"))
+ok("already exported spaces are read from the overview", estatePage.contains("action: 'exported'"))
+Map<String, String> keyless = ([key: null, name: "Nameless", type: "global", status: "CURRENT",
+    grants: "1", anon: "0", admins: "1", categories: "0", stylesheet: "0",
+    appconfig: "", appconfigCount: "0"] as LinkedHashMap)
+String keylessPage = Render.estate(shell, sweepOf([keyless], [:] as LinkedHashMap), "")
+ok("a space whose key was not read cannot be selected", !keylessPage.contains("class=\"bulk-pick\""))
+ok("and carries no export title", !keylessPage.contains("data-title="))
+String spaceReportScript = Render.script()
+ok("the report page keeps its single export",
+    spaceReportScript.contains("function exportToPage") && spaceReportScript.contains("function openExport"))
+ok("and carries no bulk export", !spaceReportScript.contains("function startBulk"))
+
 /* ---- 9c. a failed sweep is not an empty instance ------------------------- */
 
 Map<String, Object> deadSweep = [rows: [], columnFailures: [:] as LinkedHashMap,
@@ -457,6 +486,7 @@ ok("and prints no summary it did not measure", !deadPage.contains("spaces, every
  * line, and "no match out of 0 spaces" is a measurement of a population that was
  * never read. */
 ok("and no table at all", !deadPage.contains("<tbody id=\"estateBody\">"))
+ok("and no bulk export over spaces it never read", !deadPage.contains("id=\"bulkRun\""))
 ok("so it cannot report a population it never read",
     !deadPage.contains("out of 0 spaces"))
 
@@ -488,9 +518,24 @@ ok("and calls the number its own rather than the population",
 /* ---- 9e. no round trip, and no state-changing address -------------------- */
 
 /* Filtering and sorting are client-side over the delivered rows on purpose: the
- * page has to keep working after it has been saved or mailed on. */
-ok("the sweep issues no request of its own",
-    !estatePage.contains("XMLHttpRequest") && !estatePage.contains("fetch("))
+ * page has to keep working after it has been saved or mailed on. The only requests
+ * on the page belong to the bulk export below the table, which sends nothing until
+ * its own button is pressed: one fetch in exportPost and one in exportOne. */
+def scriptFunction = { String page, String name ->
+    int at = page.indexOf("function " + name + "(")
+    if (at < 0) { return "" }
+    int next = page.indexOf("\nfunction ", at + 1)
+    return next < 0 ? page.substring(at) : page.substring(at, next)
+}
+check("the page carries the two requests of the bulk export and no other",
+    estatePage.split("fetch[(]", -1).length - 1, 2)
+ok("one of them is the export's own transport", scriptFunction(estatePage, "exportPost").contains("fetch("))
+ok("and the other reads one report for the bulk export", scriptFunction(estatePage, "exportOne").contains("fetch("))
+ok("no XMLHttpRequest reaches the sweep", !estatePage.contains("XMLHttpRequest"))
+ok("the filter issues no request",
+    !scriptFunction(estatePage, "filterEstate").contains("fetch(") && !scriptFunction(estatePage, "filterEstate").contains("exportPost"))
+ok("and the sort issues none either",
+    !scriptFunction(estatePage, "sortEstate").contains("fetch(") && !scriptFunction(estatePage, "sortEstate").contains("exportPost"))
 String estateLower = estatePage.toLowerCase(Locale.ROOT)
 boolean estateForbidden = false
 for (String word : forbidden) {

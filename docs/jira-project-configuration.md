@@ -10,7 +10,7 @@ You need Jira Data Center, ScriptRunner, and membership in `jira-administrators`
 https://<jira-base-url>/rest/scriptrunner/latest/custom/projectConfig
 ~~~
 
-Opening the URL without `project` shows the project picker. Search by key or name, select a project, and bookmark the resulting URL. Both the GET report and POST export routes are restricted to `jira-administrators`.
+Opening the URL without `project` shows the project picker. Search by key or name, select a project, and bookmark the resulting URL. The checkboxes in the picker select projects for the bulk export described below. Both the GET report and POST export routes are restricted to `jira-administrators`.
 
 ## Run a scan
 
@@ -48,6 +48,19 @@ Both writes use the selected authenticated application link. The calling user ne
 
 To restore missing overview rows without exporting again, pick the target, the space and the overview page from the search, then press **Rebuild overview rows**. Over the same application link, the rebuild lists the direct child pages of the overview page (`GET /rest/api/content/{id}/child/page`, paged by its next link), reads each body on its own and takes the row from the detail page itself. All missing rows are added with one save, and each is confirmed after a read back. Existing rows are never replaced: a page that already has a row is reported as present, and a same-title row for another page ID makes the page skipped. Pages without the Jira export marker, Confluence export pages, a project named "unknown" on the page and pages whose sections do not parse are skipped with their reason. A child page that could not be read, or a child list cut at its cap of 20 listing requests (500 pages at the requested 25 per request), makes the result not complete; rows for those pages are unknown, so run the rebuild again.
 
+### Export several projects at once
+
+The project picker exports a selection of projects in one run, so an instance with hundreds of projects does not need one export per report page.
+
+1. Tick the projects in the picker. **Select all shown** ticks every project the search currently shows, **Clear selection** clears every tick, shown or not.
+2. Press **Choose the Confluence target**, then pick the application link, the space and the overview page with the same stages as the single export.
+3. Once an overview page is picked, every project that already has a row in its overview table is marked **exported**. **Select shown, not yet exported** then ticks only the projects still missing. The marks come from that one overview table: a project exported without this parent, or under a title of its own, is not marked.
+4. Press **Export selected (N)** and confirm. The projects are exported one after the other, never in parallel, because every export updates the same overview table. A progress bar shows how far the run is.
+
+Each project is written exactly as the single export on its report page would write it: the report is read as JSON (`?project=KEY&format=json`) and posted to the same export route, under the title the single export suggests, `Jira project configuration - KEY`. A page with that title is updated and keeps its remarks; otherwise it is created. A parent typed by title is found or created by the first write, and every later write in the run names it by its ID, so one run cannot create the parent twice.
+
+A failed project does not stop the run. After the run, every project that failed or was written with a warning is listed with its reason, and **Retry failed** runs only the failed ones again. Retrying is safe: an existing page is updated, not duplicated. **Stop after the current project** ends the run after the write in progress; the rest is not touched. Keep the tab open until the run has finished: the run happens in the browser, and the page warns before it is closed during a run.
+
 ## Limits and troubleshooting
 
 - **403:** sign in as a member of `jira-administrators` and verify the group gate on both routes.
@@ -55,5 +68,6 @@ To restore missing overview rows without exporting again, pick the target, the s
 - **Partial node or absent link:** read its diagnostic or link note. A failed read is not proof that the setting is absent.
 - **Large page:** keep the default collapsed depth and expand only relevant branches.
 - **Export refused:** check application link, target permissions, selected space and parent, and the marker on an existing page. Do not bypass a remark-read failure.
+- **No project marked as exported:** marks need a picked overview page. A typed title that was not picked marks nothing, and an overview table that cannot be read says so in the note above the list instead of marking nothing silently.
 
 The GET scan stays on Jira. The explicit page export contacts Confluence. Treat downloaded reports and exported pages as administrator data because they can contain people, configuration values, and links.
