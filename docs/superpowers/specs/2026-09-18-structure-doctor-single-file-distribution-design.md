@@ -97,10 +97,8 @@ Automated checks must prove:
 - the existing modular test suites remain green; and
 - credential, outbound-network, ASCII, control-byte, and diff hygiene gates remain green.
 
-The repository has no available GitHub Actions budget. Verification is therefore local and
-must not depend on or trigger GitHub Actions. A local check mode regenerates the artifact in a
-temporary location and fails on any byte difference from the committed distribution file.
-Every commit that may be pushed for this work carries `[skip ci]` in the HEAD commit message.
+A local check mode regenerates the artifact in a temporary location and fails on any byte
+difference from the committed distribution file.
 
 ## Error handling
 
@@ -124,5 +122,4 @@ previous committed artifact remains unchanged when generation fails before final
 4. The generated artifact is deterministic, traceable to all maintained inputs, and guarded
    against drift by an executable local check.
 5. Existing security boundaries and runtime behavior remain unchanged.
-6. No GitHub Actions run, installation, deployment, or live mutation occurs during
-   implementation.
+6. No installation, deployment, or live mutation occurs during implementation.

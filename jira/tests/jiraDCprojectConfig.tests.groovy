@@ -639,26 +639,26 @@ ok("the base URL identifies the instance", pickerHtml.contains("<strong>Address<
 /* The count line is the guard against a filtered list reading as the whole one, so
  * every branch of it is pinned. */
 check("all projects, short list", Render.countLine(3, 3), "3 projects")
-check("all projects, long list", Render.countLine(600, 600),
-    "600 projects, showing the first " + Render.PROJECT_ROWS)
+check("all projects, long list", Render.countLine(600, 600), "600 projects")
 check("a filtered subset names the population", Render.countLine(2, 600),
     "2 of 600 projects match")
-check("a capped subset says it is capped", Render.countLine(120, 600),
-    "120 of 600 projects match, showing the first " + Render.PROJECT_ROWS)
+check("a large subset is shown whole", Render.countLine(120, 600),
+    "120 of 600 projects match")
 check("no match says so against the population", Render.countLine(0, 600),
     "no match out of 600 projects")
 
-/* A long list is capped in the markup, not just in the browser, so the first paint
- * is short even before any script runs. */
+/* A long list is not capped: every project is visible on first paint, before any
+ * script runs, and none is hidden behind the search field. */
 List<Map<String, String>> manyProjects = new ArrayList<Map<String, String>>()
-for (int i = 0; i < Render.PROJECT_ROWS + 25; i++) {
+for (int i = 0; i < 110; i++) {
     manyProjects.add([key: "P" + i, name: "Project " + i] as LinkedHashMap)
 }
 String bigPicker = Render.picker(new Report(), manyProjects, "")
 int visibleRows = bigPicker.split("class=\"export-hit\"", -1).length - 1
-check("only the cap is visible on first paint", visibleRows, Render.PROJECT_ROWS)
-ok("every project is still in the page, just hidden",
-    bigPicker.contains("?project=P" + (Render.PROJECT_ROWS + 24)))
+check("every project is visible on first paint", visibleRows, manyProjects.size())
+ok("no project row starts hidden", !bigPicker.contains("export-hit hidden"))
+ok("the last project is in the page", bigPicker.contains("?project=P109"))
+ok("the count line carries no cap", !bigPicker.contains("showing the first"))
 ok("the count line names the full population",
     bigPicker.contains(String.valueOf(manyProjects.size()) + " projects"))
 

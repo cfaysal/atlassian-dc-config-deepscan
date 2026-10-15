@@ -4,7 +4,7 @@
 
 **Goal:** Generate one deterministic ScriptRunner-ready Groovy file from the maintained Structure Doctor controller and all 33 modular Core sources.
 
-**Architecture:** Keep the 34 maintained Groovy sources authoritative. A dependency-free Node ESM generator validates and normalizes them, hoists imports, emits one package declaration, embeds a source manifest and fingerprint, and atomically writes the distribution artifact. A local Node test suite proves determinism, source coverage, security invariants, and drift without invoking GitHub Actions.
+**Architecture:** Keep the 34 maintained Groovy sources authoritative. A dependency-free Node ESM generator validates and normalizes them, hoists imports, emits one package declaration, embeds a source manifest and fingerprint, and atomically writes the distribution artifact. A local Node test suite proves determinism, source coverage, security invariants, and drift.
 
 **Tech Stack:** Node.js built-ins (`fs`, `path`, `crypto`, `node:test`), Groovy source text, existing local Groovy test harnesses.
 
@@ -35,7 +35,7 @@
 
   Run: `git add tools/tests/structure-doctor-bundle.tests.mjs docs/superpowers/plans/2026-09-19-structure-doctor-single-file-distribution.md`
 
-  Run: `git commit -m "OP-1371 test single-file Doctor distribution [skip ci]"`
+  Run: `git commit -m "OP-1371 test single-file Doctor distribution"`
 
 ### Task 2: Implement the deterministic generator
 
@@ -69,7 +69,7 @@
 
   Run: `git add tools/build-structure-doctor-bundle.mjs tools/tests/structure-doctor-bundle.tests.mjs`
 
-  Run: `git commit -m "OP-1371 build deterministic Doctor bundle [skip ci]"`
+  Run: `git commit -m "OP-1371 build deterministic Doctor bundle"`
 
 ### Task 3: Generate and verify the deployable Groovy
 
@@ -93,7 +93,7 @@
 
   Run: `node --test tools/tests/structure-doctor-bundle.tests.mjs`
 
-  Run the repository's existing local Structure Doctor Groovy test commands from `jira/tests/README.md`, plus both probe test scripts. GitHub Actions are not run or dispatched.
+  Run the repository's existing local Structure Doctor Groovy test commands from `jira/tests/README.md`, plus both probe test scripts.
 
 - [ ] **Step 4: Document one-file installation**
 
@@ -109,7 +109,7 @@
 
   Run: `git add dist/structuredoctor/structureIssueDoctor.groovy README.md`
 
-  Run: `git commit -m "OP-1371 distribute Doctor as one Groovy [skip ci]"`
+  Run: `git commit -m "OP-1371 distribute Doctor as one Groovy"`
 
 ### Task 4: Final acceptance
 

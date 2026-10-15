@@ -4,6 +4,17 @@ All notable changes to this project are documented here. Each endpoint carries i
 version, declared once in its helper class and printed by every output channel, so the
 sections below are grouped by endpoint rather than by a single repository version.
 
+## jiraDCprojectConfig 0.3.1
+
+### Changed
+
+- **The project picker shows every project.** The picker already rendered all projects into
+  the page but hid every row after the first 40, so on an instance with 110 projects the
+  rest was only reachable by searching for it. The cap is gone: every project is visible in
+  the scrolling list, the search still narrows it instantly, and the count line reads
+  "110 projects" or "12 of 110 projects match" without the "showing the first 40" tail. The
+  Confluence space configuration endpoint dropped the same cap earlier.
+
 ## confluenceDCspaceConfig 0.3 and jiraDCprojectConfig 0.3
 
 ### Fixed
