@@ -47,6 +47,11 @@ class ActualExportBranch {
         long started = System.currentTimeMillis()
         Class responseClass = Object
 ''' + branch + '\n} }', 'ActualExportBranch.groovy')
+// SAL's documented settings factory, so the export log of the actual branch can be
+// exercised against a store; without a component behind it the log reports failure.
+loader.parseClass('''package com.atlassian.sal.api.pluginsettings
+interface PluginSettingsFactory { Object createGlobalSettings() }
+''')
 new GroovyShell(loader).evaluate('''
 def payload = { -> [spaceKey: 'DOC', title: 'Config export Alpha', parentPageId: '', parentTitle: 'Config overview',
     space: [key: 'ALPHA', name: 'Alpha'], sections: [[kind: 'details', label: 'Details', children:
@@ -164,4 +169,51 @@ invalid.parentPageId = '123'
 assert handler.export(invalid).stage == 'validate'
 assert guarded.writes.isEmpty()
 println 'PASS: foreign detail/remarks guard, unavailable transaction and conflicting parent input'
+
+/* The export log: written by the export itself, read back before it counts, and
+ * never the reason an export fails. */
+class FakeSettings {
+    Map<String, Object> values = [:]
+    boolean refuse = false
+    Object get(String key) { values[key] }
+    Object put(String key, Object value) {
+        if (refuse) { throw new IllegalStateException('settings refused') }
+        values[key] = value
+    }
+}
+class FakeSettingsFactory {
+    FakeSettings settings = new FakeSettings()
+    Object createGlobalSettings() { settings }
+}
+Class settingsType = Class.forName('com.atlassian.sal.api.pluginsettings.PluginSettingsFactory', true, ComponentLocator.classLoader)
+Store unlogged = new Store()
+wire(unlogged)
+Map noStore = handler.export(payload())
+assert noStore.ok && noStore.written && noStore.exportLog.state == 'failed' : noStore
+assert noStore.exportLog.reason.contains('no component') : noStore
+Store logged = new Store()
+wire(logged)
+FakeSettingsFactory settingsFactory = new FakeSettingsFactory()
+ComponentLocator.components[settingsType] = settingsFactory
+Map loggedExport = handler.export(payload())
+assert loggedExport.ok && loggedExport.exportLog.state == 'recorded' : loggedExport
+Map logEntry = loggedExport.exportLog.entry
+assert logEntry.key == 'ALPHA' && logEntry.product == 'confluence' && logEntry.spaceKey == 'DOC' : logEntry
+assert logEntry.pageId == loggedExport.pageId && logEntry.title == 'Config export Alpha' : logEntry
+assert logEntry.parentTitle == 'Config overview' && logEntry.parentPageId == loggedExport.parentPageId : logEntry
+assert settingsFactory.settings.values.keySet() == ['cfcon.cfgexport.confluence.ALPHA'] as Set : settingsFactory.settings.values
+assert ExportLog.read(settingsFactory.settings, 'confluence', ['ALPHA', 'BETA']).entries.keySet() == ['ALPHA'] as Set
+settingsFactory.settings.refuse = true
+logged.nextRequest()
+Map refusedLog = handler.export(payload())
+assert refusedLog.ok && refusedLog.written && refusedLog.exportLog.state == 'failed' : refusedLog
+assert refusedLog.exportLog.reason.contains('settings refused') : refusedLog
+Store rolledBack = new Store(failCommit: true)
+wire(rolledBack)
+FakeSettingsFactory untouchedSettings = new FakeSettingsFactory()
+ComponentLocator.components[settingsType] = untouchedSettings
+Map lostExport = handler.export(payload())
+assert !lostExport.ok && !lostExport.written : lostExport
+assert untouchedSettings.settings.values.isEmpty() : 'a rolled-back export must leave no log entry: ' + untouchedSettings.settings.values
+println 'PASS: the export log is written after the commit, read back, and never fails the export'
 ''', 'ExportLifecycleTests.groovy')

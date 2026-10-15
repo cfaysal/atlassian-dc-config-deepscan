@@ -180,7 +180,7 @@ class Pc {
     /* The single place the report version lives. The file header points here and
      * every output channel prints this constant, so a report always names the
      * build that produced it. */
-    static final String VERSION = "0.4"
+    static final String VERSION = "0.5"
 
     /* Node states. A node is not just present or absent: it can be present but
      * unreadable, and the report has to keep those apart. */
@@ -1010,6 +1010,11 @@ class Report {
     String projectKey
     String projectName
     String projectId
+
+    /* The export log entry of this project, or why it could not be read. Shown on
+     * the export form only; it is not part of the report model or its JSON. */
+    Map<String, Object> lastExport
+    String lastExportProblem
 
     /* Top-level sections, each the root of one subtree. */
     List<Nd> sections = new ArrayList<Nd>()
@@ -2057,8 +2062,18 @@ class Render {
         out.append("Select shown, not yet exported</button>")
         out.append("<button class=\"button\" type=\"button\" onclick=\"selectShown('none')\">Clear selection</button>")
         out.append("<span class=\"bulk-count\" id=\"bulkCount\">0 selected</span>")
+        int logged = 0
+        for (Map<String, String> project : projects) {
+            if (project.get("logLabel") != null) {
+                logged++
+            }
+        }
+        out.append("<span class=\"bulk-count\" id=\"logNote\">")
+        out.append(Pc.html(String.valueOf(logged) + " of " + String.valueOf(projects.size()) +
+            " projects are in the export log."))
+        out.append("</span>")
         out.append("<span class=\"bulk-count\" id=\"exportedNote\">")
-        out.append("Pick an overview page in the export below to mark the projects it already lists.</span>")
+        out.append("Pick an overview page in the export below to check the projects against its table.</span>")
         out.append("</div>")
 
         out.append("<div id=\"projectResults\" class=\"export-results project-list\">")
@@ -2080,8 +2095,10 @@ class Render {
     static String projectRow(Map<String, String> project, String selfPath) {
         String key = Pc.orNa(project.get("key"))
         String name = Pc.orNa(project.get("name"))
+        String logLabel = project.get("logLabel")
         StringBuilder out = new StringBuilder()
-        out.append("<div class=\"project-row\" data-key=\"").append(Pc.html(key))
+        out.append("<div class=\"project-row").append(logLabel == null ? "" : " is-logged")
+        out.append("\" data-key=\"").append(Pc.html(key))
         out.append("\" data-title=\"").append(Pc.html(Cx.title(key)))
         out.append("\" data-find=\"").append(Pc.html((key + " " + name).toLowerCase(Locale.ROOT))).append("\">")
         out.append("<input type=\"checkbox\" class=\"bulk-pick\" onchange=\"selectionChanged()\" aria-label=\"Select ")
@@ -2090,8 +2107,23 @@ class Render {
         out.append(Pc.html(selfPath)).append("?project=").append(Pc.html(Pc.urlQuery(key)))
         out.append("\"><strong>").append(Pc.html(key)).append("</strong> ")
         out.append(Pc.html(name)).append("</a>")
-        out.append("<span class=\"bulk-mark hidden\">exported</span>")
+        out.append("<span class=\"bulk-marks\">")
+        out.append(logMark(logLabel, project.get("logDetail")))
+        out.append("<span class=\"bulk-mark hidden\" title=\"The picked overview table holds a row for this project.\">in overview</span>")
+        out.append("</span>")
         out.append("</div>")
+        return out.toString()
+    }
+
+    /* The export log mark of one row. Rendered empty and hidden when the project is
+     * not in the log, so the bulk export can fill it in after it wrote the page. */
+    static String logMark(String label, String detail) {
+        StringBuilder out = new StringBuilder()
+        out.append("<span class=\"log-mark").append(label == null ? " hidden" : "").append("\"")
+        if (detail != null) {
+            out.append(" title=\"").append(Pc.html(detail)).append("\"")
+        }
+        out.append(">").append(label == null ? "" : Pc.html(label)).append("</span>")
         return out.toString()
     }
 
@@ -2204,14 +2236,16 @@ function bulkRows() { return document.querySelectorAll('#projectResults .project
 function titleKey(space, title) { return String(space).toLowerCase() + '|' + String(title).toLowerCase(); }
 
 /* "all" and "new" act on the rows the filter shows; "none" clears every row,
-   shown or not, so a selection made under an earlier filter cannot linger unseen. */
+   shown or not, so a selection made under an earlier filter cannot linger unseen.
+   "new" leaves out what the export log lists and what the picked overview lists. */
 function selectShown(mode) {
     var rows = bulkRows();
     for (var i = 0; i < rows.length; i++) {
         var box = rows[i].querySelector('.bulk-pick');
         if (mode === 'none') { box.checked = false; continue; }
         if (rows[i].classList.contains('hidden')) { continue; }
-        box.checked = mode === 'all' || !rows[i].classList.contains('is-exported');
+        box.checked = mode === 'all' ||
+            (!rows[i].classList.contains('is-exported') && !rows[i].classList.contains('is-logged'));
     }
     selectionChanged();
 }
@@ -2245,7 +2279,7 @@ function exportTargetChanged() {
     if (parentId && spaceKey) {
         loadExported(parentId, spaceKey);
     } else {
-        el('exportedNote').textContent = 'Pick an overview page in the export below to mark the projects it already lists.';
+        el('exportedNote').textContent = 'Pick an overview page in the export below to check the projects against its table.';
     }
     selectionChanged();
 }
@@ -2281,6 +2315,18 @@ function paintExported() {
         markRow(rows[i], hit);
     }
     return marked;
+}
+/* The export log mark of a row, filled in from the entry the server wrote. */
+function markLogged(row, label, detail) {
+    var mark = row.querySelector('.log-mark');
+    mark.textContent = label;
+    mark.title = detail;
+    mark.classList.remove('hidden');
+    row.classList.add('is-logged');
+    var rows = bulkRows();
+    var logged = 0;
+    for (var i = 0; i < rows.length; i++) { if (rows[i].classList.contains('is-logged')) { logged++; } }
+    el('logNote').textContent = logged + ' of ' + rows.length + ' projects are in the export log.';
 }
 function markRow(row, exported) {
     row.classList.toggle('is-exported', exported);
@@ -2363,6 +2409,12 @@ function writeOutcome(item, result) {
         notes.push('PARENT NOT APPLIED. ' + (body.parentAppliedReason || 'The page was not moved under the parent page.'));
     } else if (body.parentApplied === 'unknown') {
         notes.push('PARENT NOT CONFIRMED. ' + (body.parentAppliedReason || 'The position could not be read back.'));
+    }
+    var exportLog = body.exportLog || {};
+    if (exportLog.state === 'recorded') {
+        markLogged(item.row, exportLog.label, exportLog.detail);
+    } else {
+        notes.push('EXPORT LOG NOT UPDATED. ' + (exportLog.reason || 'The server did not report it.'));
     }
     var overview = body.overview || { state: 'skipped' };
     if (overview.state === 'updated') {
@@ -2478,8 +2530,20 @@ window.addEventListener('beforeunload', function (event) {
      * target loads that target's spaces, choosing a space opens the parent search,
      * and only then can a page be written. Each stage is one POST to this same
      * endpoint. Nothing leaves this instance until the button is pressed. */
+    /* What the export log says about this project, above the export form. */
+    static String lastExportLine(Report report) {
+        if (report.lastExport != null) {
+            return "Last export: " + ExportLog.detail(report.lastExport)
+        }
+        if (report.lastExportProblem != null) {
+            return "The export log could not be read, so an earlier export is not shown: " + report.lastExportProblem
+        }
+        return "This project is not in the export log of this instance yet."
+    }
+
     static String exportCard(Report report) {
         String payload = Pc.html(JsonOutput.toJson(report.toMap()))
+        String lastLine = Pc.html(lastExportLine(report))
         String defaultTitle = Pc.html(Cx.title(report.projectKey))
         String actions = """            <div class="export-grid">
                 <label class="export-field">Page title
@@ -2501,6 +2565,7 @@ window.addEventListener('beforeunload', function (event) {
         The selected parent keeps an overview table: an existing export name updates its row,
         and a new export adds a row with section links. Without a parent, only the detail page is written.
     </div>
+    <div class="export-note" id="exportLastLine">${lastLine}</div>
     <div class="export-grid">
         <button id="exportOpen" class="button" type="button" onclick="openExport()">Export to Confluence</button>
     </div>
@@ -2754,12 +2819,15 @@ details.long .long-body { margin-top: 6px; padding: 8px 10px; background: var(--
 .export-empty { color: var(--text-subtle); font-size: 12px; font-style: italic; }
 .bulk-select { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
 .bulk-count { color: var(--text-subtle); font-size: 12px; }
-.project-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) 72px; gap: 8px; align-items: center;
+.project-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) minmax(0, 440px); gap: 8px; align-items: center;
     margin-bottom: 4px; }
 .project-row .export-hit { margin-bottom: 0; }
 .project-row .bulk-pick { width: 16px; height: 16px; margin: 0; cursor: pointer; }
-.bulk-mark { justify-self: start; padding: 1px 6px; border: 1px solid var(--green); border-radius: 3px;
-    color: var(--green); font-size: 11px; }
+.bulk-marks { display: flex; gap: 4px; min-width: 0; }
+.bulk-mark { padding: 1px 6px; border: 1px solid var(--green); border-radius: 3px; color: var(--green); font-size: 11px;
+    white-space: nowrap; }
+.log-mark { padding: 1px 6px; border: 1px solid var(--blue); border-radius: 3px; background: var(--blue-soft);
+    color: var(--blue); font-size: 11px; white-space: nowrap; cursor: help; }
 .bulk-progress { margin-top: 10px; max-width: 680px; }
 .bulk-track { height: 8px; overflow: hidden; border-radius: 4px; background: var(--border-subtle); }
 .bulk-fill { width: 0; height: 100%; background: var(--blue); transition: width .2s; }
@@ -2912,10 +2980,18 @@ function exportToConfluence() {
             overviewText = ' DETAIL PAGE WRITTEN; OVERVIEW ' +
                 (overview.state === 'failed' ? 'FAILED. ' : 'NOT CONFIRMED. ') + (overview.reason || '');
         }
+        var exportLog = body.exportLog || {};
+        var logText = '';
+        if (exportLog.state === 'recorded') {
+            el('exportLastLine').textContent = 'Last export: ' + exportLog.detail;
+        } else {
+            if (tone === 'good') { tone = 'warn'; }
+            logText = ' EXPORT LOG NOT UPDATED. ' + (exportLog.reason || 'The server did not report it.');
+        }
         var status = say(tone, 'Page ' + body.action + ': "' + body.title + '" in ' + body.spaceKey +
             ' (version ' + version + '). Remark read: ' + body.remarkRead +
             ', carried over: ' + body.remarksCarried + ' of ' + body.remarksRead +
-            ', without a matching item: ' + body.orphanedRemarks + '.' + parent + overviewText);
+            ', without a matching item: ' + body.orphanedRemarks + '.' + parent + overviewText + logText);
         if (body.pageUrl) {
             var link = document.createElement('a');
             link.href = body.pageUrl;
@@ -4614,6 +4690,194 @@ class ExportOutcome {
     int remarksCarried
     List<String> orphanKeys = new ArrayList<String>()
     List<String> warnings = new ArrayList<String>()
+}
+
+/* The export log: one small entry per exported project or space, so every
+ * administrator sees what was exported, when, by whom and where, in any browser
+ * and without a request to Confluence. The entries live in the application's own
+ * settings store (SAL PluginSettings, global scope), which every node of a Data
+ * Center cluster reads from the same database. There is one entry per item rather
+ * than one list: two administrators exporting at the same time write different
+ * keys, so neither can overwrite the other's entry.
+ *
+ * The log is a record of exports, not of what Confluence holds today. A page or an
+ * overview row deleted later is still in the log; the overview check of the export
+ * form reads the overview itself and is the one to trust for the current state.
+ *
+ * This class names no platform type. The settings store is resolved by name and
+ * called by name, through a locator the endpoint passes in, so the class stays
+ * testable offline and a store this instance does not provide is a reported
+ * failure, never a broken endpoint. NOT YET MEASURED on an instance: that SAL's
+ * PluginSettingsFactory resolves from a ScriptRunner endpoint here, and that its
+ * global settings take these keys. The settings key is kept to 100 characters or
+ * fewer because the key columns of the settings tables are not measured either;
+ * an item key that would make it longer is stored under its SHA-256, and the entry
+ * still names the real key. */
+class ExportLog {
+    static final String FACTORY = 'com.atlassian.sal.api.pluginsettings.PluginSettingsFactory'
+    static final String PREFIX = 'cfcon.cfgexport.'
+    static final int MAX_KEY = 100
+    static final int MAX_FAILURES_SHOWN = 5
+
+    static String settingsKey(String product, String itemKey) {
+        String plain = PREFIX + product + '.' + itemKey
+        if (plain.length() <= MAX_KEY) { return plain }
+        byte[] digest = java.security.MessageDigest.getInstance('SHA-256').digest(itemKey.getBytes('UTF-8'))
+        return PREFIX + product + '.h.' + digest.encodeHex().toString()
+    }
+
+    static String stamp() {
+        return java.time.ZonedDateTime.now(java.time.ZoneOffset.UTC)
+            .format(java.time.format.DateTimeFormatter.ofPattern('yyyy-MM-dd HH:mm')) + ' UTC'
+    }
+
+    /* Resolve the factory type by name through the given class loaders, ask the
+     * locator for that component, then for its global settings. */
+    static Map<String, Object> open(List<ClassLoader> loaders, Closure locate) {
+        Class factoryType = null
+        List<String> misses = new ArrayList<String>()
+        for (ClassLoader loader : loaders) {
+            if (loader == null) { continue }
+            try {
+                factoryType = Class.forName(FACTORY, true, loader)
+                break
+            } catch (Throwable error) {
+                misses.add(error.getClass().getSimpleName())
+            }
+        }
+        if (factoryType == null) {
+            return [ok: false, error: 'The settings store type ' + FACTORY + ' is not visible from this script (' +
+                misses.join(', ') + ').'] as Map<String, Object>
+        }
+        Object factory
+        try {
+            factory = locate.call(factoryType)
+        } catch (Throwable error) {
+            return [ok: false, error: 'The settings store could not be obtained: ' + why(error)] as Map<String, Object>
+        }
+        if (factory == null) {
+            return [ok: false, error: 'The settings store resolved to no component.'] as Map<String, Object>
+        }
+        try {
+            Object settings = InvokerHelper.invokeMethod(factory, 'createGlobalSettings', null)
+            if (settings == null) {
+                return [ok: false, error: 'The settings store returned no global settings.'] as Map<String, Object>
+            }
+            return [ok: true, settings: settings] as Map<String, Object>
+        } catch (Throwable error) {
+            return [ok: false, error: 'The global settings could not be opened: ' + why(error)] as Map<String, Object>
+        }
+    }
+
+    static Map<String, Object> entry(String product, String itemKey, String exportedAt, String by,
+                                     Map<String, Object> target) {
+        Map<String, Object> out = new LinkedHashMap<String, Object>()
+        out.put('v', Integer.valueOf(1))
+        out.put('product', product)
+        out.put('key', itemKey)
+        out.put('exportedAt', exportedAt)
+        out.put('by', by)
+        for (String field : ['target', 'spaceKey', 'pageId', 'title', 'parentPageId', 'parentTitle']) {
+            Object value = target.get(field)
+            out.put(field, value == null ? null : value.toString())
+        }
+        return out
+    }
+
+    /* A stored value that is absent is "not in the log". A value that is there and
+     * cannot be read, or names another item, is refused: it is not "not exported". */
+    static Map<String, Object> decode(Object stored, String product, String itemKey) {
+        if (stored == null || (stored instanceof String && ((String) stored).isEmpty())) { return null }
+        if (!(stored instanceof String)) {
+            throw new IllegalArgumentException('the stored value is not text but ' + stored.getClass().getSimpleName() + '.')
+        }
+        Object parsed
+        try {
+            parsed = new groovy.json.JsonSlurper().parseText((String) stored)
+        } catch (Exception error) {
+            throw new IllegalArgumentException('the stored value is not valid JSON.')
+        }
+        if (!(parsed instanceof Map)) { throw new IllegalArgumentException('the stored value is not an entry.') }
+        Map<String, Object> found = (Map<String, Object>) parsed
+        if (product != found.get('product') || itemKey != found.get('key')) {
+            throw new IllegalArgumentException('the stored entry names another item.')
+        }
+        return found
+    }
+
+    /* Write one entry and read it back. Only an entry seen again is "recorded". */
+    static Map<String, Object> write(Object settings, String product, String itemKey, Map<String, Object> logEntry) {
+        String key = settingsKey(product, itemKey)
+        try {
+            InvokerHelper.invokeMethod(settings, 'put', [key, JsonOutput.toJson(logEntry)] as Object[])
+        } catch (Throwable error) {
+            return [state: 'failed', reason: 'The export log could not be written: ' + why(error)] as Map<String, Object>
+        }
+        try {
+            Map<String, Object> back = decode(InvokerHelper.invokeMethod(settings, 'get', key), product, itemKey)
+            if (back == null || back.get('exportedAt') != logEntry.get('exportedAt')) {
+                return [state: 'unknown', reason: 'The export log entry was written but not seen again on reading it back.'] as Map<String, Object>
+            }
+            return [state: 'recorded', entry: back, label: label(back), detail: detail(back)] as Map<String, Object>
+        } catch (Throwable error) {
+            return [state: 'unknown', reason: 'The export log entry was written but could not be read back: ' + why(error)] as Map<String, Object>
+        }
+    }
+
+    /* One read per item. Failures are collected, never folded into "not exported". */
+    static Map<String, Object> read(Object settings, String product, List<String> itemKeys) {
+        Map<String, Map<String, Object>> entries = new LinkedHashMap<String, Map<String, Object>>()
+        List<String> failures = new ArrayList<String>()
+        for (String itemKey : itemKeys) {
+            if (itemKey == null) { continue }
+            try {
+                Map<String, Object> found = decode(InvokerHelper.invokeMethod(settings, 'get', settingsKey(product, itemKey)), product, itemKey)
+                if (found != null) { entries.put(itemKey, found) }
+            } catch (IllegalArgumentException refusal) {
+                failures.add(itemKey + ': ' + refusal.getMessage())
+            } catch (Throwable error) {
+                failures.add(itemKey + ': ' + why(error))
+            }
+        }
+        return [entries: entries, failures: failures] as Map<String, Object>
+    }
+
+    /* The failures of a read in one sentence, the first few named. */
+    static String failureLine(List<String> failures, String noun) {
+        if (failures.isEmpty()) { return null }
+        List<String> shown = failures.size() > MAX_FAILURES_SHOWN ? failures.subList(0, MAX_FAILURES_SHOWN) : failures
+        return 'The export log could not be read for ' + failures.size() + ' ' + noun + '(s), so they are not marked ' +
+            'even if they were exported: ' + shown.join('; ') + (failures.size() > shown.size() ? '; ...' : '')
+    }
+
+    static String label(Map<String, Object> logEntry) {
+        String stamp = text(logEntry.get('exportedAt'))
+        String day = stamp == null ? '?' : (stamp.length() >= 10 ? stamp.substring(0, 10) : stamp)
+        String parent = text(logEntry.get('parentTitle'))
+        return 'exported ' + day + ' to ' + (text(logEntry.get('spaceKey')) ?: '?') + (parent == null ? '' : ' / ' + parent)
+    }
+
+    static String detail(Map<String, Object> logEntry) {
+        String target = text(logEntry.get('target'))
+        String parent = text(logEntry.get('parentTitle'))
+        return 'Exported ' + (text(logEntry.get('exportedAt')) ?: 'at an unknown time') +
+            ' by ' + (text(logEntry.get('by')) ?: 'an unknown user') + ' to ' +
+            (target == null ? '' : target + ', ') + 'space ' + (text(logEntry.get('spaceKey')) ?: '?') +
+            ', page "' + (text(logEntry.get('title')) ?: '?') + '"' +
+            (parent == null ? '' : ' under "' + parent + '"') +
+            '. From the export log of this instance; the overview check reads the overview itself.'
+    }
+
+    private static String text(Object value) {
+        if (value == null) { return null }
+        String out = value.toString().trim()
+        return out.isEmpty() ? null : out
+    }
+
+    private static String why(Throwable error) {
+        String message = error.getMessage()
+        return error.getClass().getSimpleName() + (message == null || message.isEmpty() ? '' : ': ' + message)
+    }
 }
 
 /* =============================================================================
@@ -7290,6 +7554,34 @@ projectConfig(
             report.globalDiagnostics.add("The project list could not be read: " +
                 error.getClass().getSimpleName() + ". This is a failed read, not an empty instance.")
         }
+        /* The export log marks what was exported before, for every administrator and
+         * without a request to Confluence. A log that cannot be read is said on the
+         * page; it never shows every project as not exported. */
+        if (!rows.isEmpty()) {
+            Map<String, Object> logStore = exportLogStore()
+            if (logStore.get("ok") != Boolean.TRUE) {
+                report.globalDiagnostics.add("The export log is not available, so no project is marked from it: " +
+                    String.valueOf(logStore.get("error")) + " The overview check of the bulk export still works.")
+            } else {
+                List<String> keys = new ArrayList<String>()
+                for (Map<String, String> row : rows) {
+                    keys.add(row.get("key"))
+                }
+                Map<String, Object> logRead = ExportLog.read(logStore.get("settings"), "jira", keys)
+                Map<String, Map<String, Object>> logEntries = (Map<String, Map<String, Object>>) logRead.get("entries")
+                for (Map<String, String> row : rows) {
+                    Map<String, Object> logEntry = logEntries.get(row.get("key"))
+                    if (logEntry != null) {
+                        row.put("logLabel", ExportLog.label(logEntry))
+                        row.put("logDetail", ExportLog.detail(logEntry))
+                    }
+                }
+                String logFailures = ExportLog.failureLine((List<String>) logRead.get("failures"), "project")
+                if (logFailures != null) {
+                    report.globalDiagnostics.add(logFailures)
+                }
+            }
+        }
         report.executionMs = System.currentTimeMillis() - started
         String page = Render.picker(report, rows, "")
         return Http.ok(responseClass, page, Http.HTML)
@@ -7564,6 +7856,15 @@ projectConfig(
         headers.put("Content-Disposition",
             "attachment; filename=\"project-config-" + report.projectKey + ".csv\"")
         return Http.build(responseClass, 200, Render.csv(report), Http.CSV, headers)
+    }
+    /* Only the HTML page shows the export form, so only it reads the export log. */
+    Map<String, Object> projectLogStore = exportLogStore()
+    if (projectLogStore.get("ok") != Boolean.TRUE) {
+        report.lastExportProblem = String.valueOf(projectLogStore.get("error"))
+    } else {
+        Map<String, Object> projectLogRead = ExportLog.read(projectLogStore.get("settings"), "jira", [report.projectKey])
+        report.lastExport = ((Map<String, Map<String, Object>>) projectLogRead.get("entries")).get(report.projectKey)
+        report.lastExportProblem = ExportLog.failureLine((List<String>) projectLogRead.get("failures"), "project")
     }
     return Http.ok(responseClass, Render.html(report, activeParams, expandAll), Http.HTML)
 }
@@ -7973,6 +8274,24 @@ Map<String, Object> confluenceSpaces(ApplicationLinkRequestFactory factory) {
     result.put("ok", Boolean.TRUE)
     result.put("truncated", Boolean.TRUE)
     return result
+}
+
+/* The export log store of this instance: SAL's PluginSettingsFactory, reached by
+ * name and asked for its global settings. NOT YET MEASURED from a ScriptRunner
+ * endpoint on Jira; ExportLog reports a store it cannot reach instead of failing.
+ * The OSGi lookup is tried first because SAL is a plugin-provided service; the
+ * plain component lookup is the fallback. */
+Map<String, Object> exportLogStore() {
+    return ExportLog.open([ComponentAccessor.class.getClassLoader(), Thread.currentThread().getContextClassLoader(),
+        ExportLog.class.getClassLoader()], { Class type ->
+        Object found = null
+        try {
+            found = ComponentAccessor.getOSGiComponentInstanceOfType(type)
+        } catch (Throwable ignored) {
+            found = null
+        }
+        return found != null ? found : ComponentAccessor.getComponent(type)
+    })
 }
 
 /* The same authenticated application link as the detail export. Read the body,
@@ -8975,6 +9294,32 @@ projectConfig(
         { -> confluenceOverviewRead(factory, parentId) },
         { Map page, String storage -> confluenceOverviewWrite(factory, page, storage) })
 
+    /* The detail page is written, so the export goes into the log, whatever the
+     * overview did. A log that cannot be written is reported with the export; it
+     * never turns a written page into a failed export. */
+    Map<String, Object> exportLog
+    String loggedKey = Cx.str(projectIdentity, "key", "")
+    if (loggedKey.isEmpty()) {
+        exportLog = [state: "failed", reason: "The export named no project key, so it was not logged."] as Map<String, Object>
+    } else {
+        try {
+            Map<String, Object> logStore = exportLogStore()
+            if (logStore.get("ok") != Boolean.TRUE) {
+                exportLog = [state: "failed", reason: String.valueOf(logStore.get("error"))] as Map<String, Object>
+            } else {
+                ApplicationUser exporter = ComponentAccessor.getJiraAuthenticationContext().getLoggedInUser()
+                Map<String, Object> logEntry = ExportLog.entry("jira", loggedKey, ExportLog.stamp(),
+                    exporter == null ? null : exporter.getName(),
+                    [target: confluenceLinkName(link), spaceKey: spaceKey, pageId: pageId, title: title,
+                     parentPageId: parentId, parentTitle: parentTitle] as Map<String, Object>)
+                exportLog = ExportLog.write(logStore.get("settings"), "jira", loggedKey, logEntry)
+            }
+        } catch (Throwable error) {
+            exportLog = [state: "failed", reason: "The export log could not be written: " +
+                error.getClass().getSimpleName()] as Map<String, Object>
+        }
+    }
+
     Map<String, Object> response = new LinkedHashMap<String, Object>()
     response.put("ok", Boolean.TRUE)
     response.put("written", Boolean.TRUE)
@@ -8999,6 +9344,7 @@ projectConfig(
     response.put("orphanedRemarks", Integer.valueOf(outcome.orphanKeys.size()))
     response.put("orphanedKeys", outcome.orphanKeys)
     response.put("overview", overview)
+    response.put("exportLog", exportLog)
     response.put("warnings", outcome.warnings)
     response.put("executionMs", Long.valueOf(System.currentTimeMillis() - started))
 
