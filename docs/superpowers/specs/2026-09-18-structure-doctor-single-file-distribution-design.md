@@ -100,7 +100,6 @@ Automated checks must prove:
 The repository has no available GitHub Actions budget. Verification is therefore local and
 must not depend on or trigger GitHub Actions. A local check mode regenerates the artifact in a
 temporary location and fails on any byte difference from the committed distribution file.
-Every commit that may be pushed for this work carries `[skip ci]` in the HEAD commit message.
 
 ## Error handling
 

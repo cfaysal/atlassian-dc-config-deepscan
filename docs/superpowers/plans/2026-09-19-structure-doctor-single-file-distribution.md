@@ -35,7 +35,7 @@
 
   Run: `git add tools/tests/structure-doctor-bundle.tests.mjs docs/superpowers/plans/2026-09-19-structure-doctor-single-file-distribution.md`
 
-  Run: `git commit -m "OP-1371 test single-file Doctor distribution [skip ci]"`
+  Run: `git commit -m "OP-1371 test single-file Doctor distribution"`
 
 ### Task 2: Implement the deterministic generator
 
@@ -69,7 +69,7 @@
 
   Run: `git add tools/build-structure-doctor-bundle.mjs tools/tests/structure-doctor-bundle.tests.mjs`
 
-  Run: `git commit -m "OP-1371 build deterministic Doctor bundle [skip ci]"`
+  Run: `git commit -m "OP-1371 build deterministic Doctor bundle"`
 
 ### Task 3: Generate and verify the deployable Groovy
 
@@ -109,7 +109,7 @@
 
   Run: `git add dist/structuredoctor/structureIssueDoctor.groovy README.md`
 
-  Run: `git commit -m "OP-1371 distribute Doctor as one Groovy [skip ci]"`
+  Run: `git commit -m "OP-1371 distribute Doctor as one Groovy"`
 
 ### Task 4: Final acceptance
 
