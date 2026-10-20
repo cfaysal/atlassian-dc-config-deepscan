@@ -1,16 +1,17 @@
 # Atlassian Data Center Configuration and Diagnostics
 
-Five administrator tools built with ScriptRunner REST endpoints for Jira and Confluence Data Center. Use the guide for the tool you installed; they have different URLs, parameters, read coverage, and export behavior.
+Six administrator tools built with ScriptRunner REST endpoints for Jira and Confluence Data Center. Use the guide for the tool you installed; they have different URLs, parameters, read coverage, and export behavior.
 
 | Endpoint | Platform | Administrator guide | Source |
 | --- | --- | --- | --- |
 | Project configuration (projectConfig) | Jira | [Run and interpret a project scan](docs/jira-project-configuration.md) | [Groovy](jira/jiraDCprojectConfig.groovy) |
 | Structure Doctor (structureIssueDoctor) | Jira | [Analyse a Structure and review findings](docs/jira-structure-doctor.md) | [Installable bundle](dist/structuredoctor/structureIssueDoctor.groovy) |
+| Dashboard filter editor (dashboardFilterEditor) | Jira 11 | [Find dashboards and edit filter JQL](docs/jira-dashboard-filter-editor.md) | [Groovy](jira/dashboardFilterEditor.groovy) |
 | Space configuration (spaceConfig) | Confluence | [Survey spaces and inspect one configuration](docs/confluence-space-configuration.md) | [Groovy](confluence/confluenceDCspaceConfig.groovy) |
 | Space information (spaceInfo) | Confluence | [Find a space and inspect its pages](docs/confluence-space-information.md) | [Groovy](confluence/confluenceDCspaceInfo.groovy) |
 | User macros (userMacros) | Confluence | [Inventory and assess user macros](docs/confluence-user-macros.md) | [Groovy](confluence/userMacroDeepScan.groovy) |
 
-Start with the linked guide for installation, the exact URL, controls, output interpretation, and troubleshooting. The technical sections below retain implementation background. The following project configuration sections apply to the Jira projectConfig endpoint through **Status**; the later **Confluence user macros** and **Structure Doctor Core** sections describe those tools. The Confluence space guides provide the missing end-user workflows.
+Start with the linked guide for installation, the exact URL, controls, output interpretation, and troubleshooting. The technical sections below retain implementation background. The following project configuration sections apply to the Jira projectConfig endpoint through **Status**; the later **Dashboard filter editor**, **Confluence user macros** and **Structure Doctor Core** sections describe those tools. The Confluence space guides provide the missing end-user workflows.
 ## What it reports
 
 Every section is expanded, not summarised:
@@ -260,6 +261,41 @@ Still unproven, and named here rather than left to be assumed:
 - On a project of that size the exported page hits the row cap: 5000 of 11 671 items. Every
   section keeps its heading and the ones that were cut say so, but more than half of the
   detail reaches the report and not the page.
+
+## Dashboard filter editor
+
+`jira/dashboardFilterEditor.groovy` lets Jira administrators find a dashboard by
+name or ID, inspect its referenced saved filters, and edit each filter's JQL on
+the same page. It targets **Jira Data Center 11** with ScriptRunner and HAPI `Users`.
+
+- Search dashboard names by case-insensitive substring or match an exact dashboard ID.
+- Select a dashboard to list each recognised filter once, with its ID, owner,
+  referencing gadget IDs and editable JQL.
+- Validate JQL automatically on load and 500 ms after the last edit. A **green
+  circle with a check mark** means valid JQL; invalid queries show Jira's error
+  messages. Validation uses Jira's parser and query validator without saving or
+  executing an issue search.
+- Save an individual filter directly. The endpoint validates again, checks for
+  intervening JQL changes and serialises its own writes across Data Center nodes.
+  Both routes require Jira administrator access; POST requests also require a
+  session-bound CSRF token.
+
+Saving changes the existing shared filter everywhere it is used, including other
+dashboards and subscriptions. Its owner, name and sharing settings remain unchanged.
+Standard gadget filter preferences are recognised; app gadgets with their own
+configuration storage and filters nested inside other JQL are not automatically
+covered. The gadget coverage list identifies unverified gadgets and read failures.
+
+Install the script as a ScriptRunner **file** REST endpoint, then open:
+
+```text
+https://<jira>/rest/scriptrunner/latest/custom/dashboardFilterEditor
+```
+
+Include Jira's context path before `/rest` when applicable. See the
+[administrator guide](docs/jira-dashboard-filter-editor.md) for installation,
+permissions, coverage, concurrency limits and validation details. Version **1.1.0**
+is displayed on the page so the deployed script can be identified.
 
 ## Confluence user macros
 
