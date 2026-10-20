@@ -13,7 +13,7 @@ jobs:
   offline-tests:
     runs-on: ubuntu-latest
     env:
-      DASHBOARD_EDITOR_HTML: ${{ runner.temp }}/dashboard-filter-editor.html
+      DASHBOARD_EDITOR_HTML: /tmp/dashboard-filter-editor.html
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6
