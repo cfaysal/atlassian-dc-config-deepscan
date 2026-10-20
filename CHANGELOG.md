@@ -4,6 +4,32 @@ All notable changes to this project are documented here. Each endpoint carries i
 version, declared once in its helper class and printed by every output channel, so the
 sections below are grouped by endpoint rather than by a single repository version.
 
+## dashboardFilterEditor 1.2.0
+
+### Added
+
+- A chart/gadget overview shows the saved filter name and ID for each gadget,
+  with links to its JQL editor. Shared filters keep one editor and list every
+  referring gadget by name and ID. Standard pie charts, two-dimensional
+  statistics, created-vs-resolved charts, issue statistics and filter results
+  receive readable labels; their original gadget type remains visible.
+- Project sources and inline gadget JQL appear as distinct data sources instead
+  of being marked unverified or treated as saved filters. Expandable source
+  details expose standard source preferences and other preference names, without
+  exposing values of unrelated gadget preferences or fetching gadget URLs.
+
+### Fixed
+
+- A malformed reference or an unreadable filter no longer hides the remaining
+  valid filter references on the same gadget. Failures remain visible beside the
+  affected source or filter.
+
+### Validation
+
+- Offline source, complete-script compilation and browser tests cover standard
+  charts, shared filters, project/inline sources, read failures and source details.
+  The change has not been verified on a live Jira instance.
+
 ## confluenceDCspaceConfig 0.5 and jiraDCprojectConfig 0.5
 
 ### Added

@@ -35,22 +35,57 @@ class DashboardFilterSupport {
         }
     }
 
-    // Standard Jira gadget preferences, including projectOrFilterId = filter-123.
-    // Unknown plugin preferences are reported as unverified; arbitrary numbers are never filter IDs.
-    static Set<Long> references(Map preferences) {
+    // Standard Jira descriptor evidence: jira-gadgets-plugin/src/main/resources/gadgets/
+    // piechart-gadget.xml and stats-gadget.xml use projectOrFilterId;
+    // two-dimensional-stats-gadget.xml and filter-results-gadget.xml use filterId.
+    // The descriptors also support jql- sources. Inspected in the Jira source mirror at
+    // github.com/turgaycelik/mysource, commit 44f29e397a6a2da9340a79b8a3f61b3d51e331d1,
+    // under jira-project/jira-components/jira-plugins/jira-gadgets-plugin/.
+    // Unknown plugin preferences remain unverified; arbitrary numbers are never filter IDs.
+    static Map sources(Map preferences) {
         Set<Long> ids = new LinkedHashSet<>()
+        Set<Long> projects = new LinkedHashSet<>()
+        Set<String> queries = new LinkedHashSet<>()
+        List<String> warnings = []
+        List<Map> sourcePreferences = []
         preferences.each { key, value ->
-            String name = key.toString().toLowerCase(Locale.ROOT)
+            String name = key.toString().trim().toLowerCase(Locale.ROOT)
             String text = value?.toString()?.trim() ?: ''
-            if (name in ['filterid', 'filter', 'filterids']) {
+            if (!(name in ['filterid', 'filter', 'filterids', 'projectorfilterid'])) return
+            sourcePreferences.add([name: key.toString(), value: value?.toString() ?: ''])
+            if (!text) return
+            if (text.startsWith('jql-')) {
+                queries.add(text.substring(4))
+            } else if (name == 'projectorfilterid' && text.startsWith('project-')) {
+                try { projects.add(id(text.substring(8))) }
+                catch (IllegalArgumentException ignored) { warnings.add('Ung\u00fcltige Projektquelle in ' + key + '.') }
+            } else if (name != 'projectorfilterid' || text.startsWith('filter-')) {
                 text.split(/[,;\s]+/).findAll { it }.each { token ->
-                    ids.add(id(token.replaceFirst(/^filter-/, '')))
+                    try { ids.add(id(token.replaceFirst(/^filter-/, ''))) }
+                    catch (IllegalArgumentException ignored) { warnings.add('Ung\u00fcltige Filterreferenz in ' + key + '.') }
                 }
-            } else if (name == 'projectorfilterid' && text.startsWith('filter-')) {
-                ids.add(id(text.substring(7)))
+            } else {
+                warnings.add('Datenquelle in ' + key + ' nicht erkannt.')
             }
         }
-        ids
+        [filterIds: ids, projectIds: projects, directJql: queries, warnings: warnings.unique(),
+            sourcePreferences: sourcePreferences]
+    }
+
+    static Set<Long> references(Map preferences) {
+        sources(preferences).filterIds as Set<Long>
+    }
+
+    static String gadgetName(String type) {
+        // Friendly labels for the descriptor filenames evidenced above; the original
+        // type remains visible and is never used as a URL to fetch gadget metadata.
+        Map names = ['piechart-gadget.xml': 'Kreisdiagramm',
+            'two-dimensional-stats-gadget.xml': 'Zweidimensionale Filterstatistik',
+            'createdvsresolved-gadget.xml': 'Erstellt vs. erledigt',
+            'filter-results-gadget.xml': 'Filterergebnisse', 'stats-gadget.xml': 'Vorgangsstatistik']
+        List parts = (type ?: '').replaceFirst(/[?#].*$/, '').tokenize('/')
+        String filename = parts ? parts.last() : ''
+        names[filename] ?: (type ?: 'Unbekanntes Gadget')
     }
 
     static Map save(Map input, Closure read, Closure parse, Closure validate, Closure persist, Closure serialize) {
@@ -77,7 +112,7 @@ class DashboardFilterSupport {
 // Jira/ScriptRunner bridges use dynamic dispatch for platform services.
 @TypeChecked(TypeCheckingMode.SKIP)
 class DashboardFilterLive {
-    static final String VERSION = '1.1.0'
+    static final String VERSION = '1.2.0'
     static def response(int status, Object body, String type = 'application/json') {
         Class responseClass
         try { responseClass = Class.forName('jakarta.ws.rs.core.Response') }
@@ -111,22 +146,40 @@ class DashboardFilterLive {
         Map<String, Map> filters = [:]
         List gadgets = []
         db.findByAnd('PortletConfiguration', [portalpage: dashboardId]).each { gadget ->
-            Map item = [id: gadget.getLong('id').toString(), type: gadget.getString('gadgetXml') ?: gadget.getString('portletId')]
+            String type = gadget.getString('gadgetXml') ?: gadget.getString('portletId')
+            Map item = [id: gadget.getLong('id').toString(), type: type,
+                name: DashboardFilterSupport.gadgetName(type), filterIds: [], projectIds: [], directJql: [],
+                sourcePreferences: [], preferenceNames: []]
             try {
                 Map prefs = [:]
                 db.findByAnd('GadgetUserPreference', [portletconfiguration: gadget.getLong('id')]).each { pref ->
                     prefs[pref.getString('userprefkey')] = pref.getString('userprefvalue')
                 }
-                Set<Long> ids = DashboardFilterSupport.references(prefs)
+                Map sources = DashboardFilterSupport.sources(prefs)
+                item.sourcePreferences = sources.sourcePreferences
+                item.preferenceNames = prefs.keySet().collect { it.toString() }.sort()
+                Set<Long> ids = sources.filterIds
                 item.filterIds = ids.collect { it.toString() }
-                item.note = ids ? 'Filterreferenzen erkannt.' : 'Keine Standard-Filterreferenz erkannt; Gadget ungepr\u00fcft.'
+                item.projectIds = sources.projectIds.collect { it.toString() }
+                item.directJql = sources.directJql.toList()
+                List notes = []
+                if (ids) notes.add('Gespeicherte Filter erkannt.')
+                if (item.projectIds) notes.add('Projektquelle ohne gespeicherten Filter.')
+                if (item.directJql) notes.add('Direkte JQL im Gadget hinterlegt.')
+                if (!ids && !item.projectIds && !item.directJql) notes.add('Keine Standard-Datenquelle erkannt; Gadget ungepr\u00fcft.')
+                notes.addAll(sources.warnings)
+                item.note = notes.join(' ')
                 ids.each { filterId ->
                     String key = filterId.toString()
                     if (!filters.containsKey(key)) {
-                        def filter = ComponentAccessor.getComponent(SearchRequestManager).getSearchRequestById(filterId)
-                        filters[key] = filter ? [id: key, name: filter.name, owner: filter.owner?.displayName,
-                            jql: ComponentAccessor.getComponent(SearchService).getJqlString(filter.query), gadgets: []] :
-                            [id: key, error: 'Filter fehlt oder konnte nicht geladen werden.', gadgets: []]
+                        try {
+                            def filter = ComponentAccessor.getComponent(SearchRequestManager).getSearchRequestById(filterId)
+                            filters[key] = filter ? [id: key, name: filter.name, owner: filter.owner?.displayName,
+                                jql: ComponentAccessor.getComponent(SearchService).getJqlString(filter.query), gadgets: []] :
+                                [id: key, error: 'Filter fehlt oder konnte nicht geladen werden.', gadgets: []]
+                        } catch (Exception failure) {
+                            filters[key] = [id: key, error: 'Filter konnte nicht gelesen werden: ' + failure.class.simpleName, gadgets: []]
+                        }
                     }
                     filters[key].gadgets.add(item.id)
                 }
@@ -153,8 +206,9 @@ class DashboardFilterLive {
         '''<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>Dashboard-Filter bearbeiten</title><style>
 body{font:16px system-ui;margin:32px auto;max-width:1100px;padding:0 20px;color:#172b4d}input,button,textarea{font:inherit;padding:8px}textarea{display:block;width:96%;min-height:110px;margin:10px 0}article{border:1px solid #ccd3dd;border-radius:6px;padding:18px;margin:16px 0}button{cursor:pointer;margin:4px}#status,.result{white-space:pre-wrap}small{display:block}li{margin:8px 0}
+.sources{width:100%;border-collapse:collapse;margin:16px 0}.sources th,.sources td{text-align:left;vertical-align:top;padding:12px;border:1px solid #ccd3dd;overflow-wrap:anywhere}.sources th{background:#f4f5f7}.sources small{margin-top:6px}.sources pre{white-space:pre-wrap}article{scroll-margin-top:16px}a{color:#0052cc}
 .jql-state{display:flex;align-items:center;gap:8px;margin:10px 0;white-space:pre-wrap}.jql-state::before{content:"?";display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:22px;height:22px;border-radius:50%;background:#6b778c;color:white;font-weight:bold}.jql-state.valid::before{content:"\u2713";background:#00875a}.jql-state.invalid::before{content:"!";background:#de350b}.jql-state.checking::before{content:"\u2026";background:#0052cc}</style><h1>Dashboard-Filter bearbeiten</h1>
-<p>Version <strong>__VERSION__</strong> &middot; Jira 11 &middot; JQL-Serializer</p>
+<p>Version <strong>__VERSION__</strong> &middot; Jira 11</p>
 <form id="search"><label>Dashboard-Name oder ID <input id="query" required maxlength="200"></label><button>Suchen</button></form>
 <p id="status" role="status"></p><div id="choices"></div><div id="dashboard"></div>
 <script>
@@ -184,11 +238,40 @@ async function load(id) {
  const current=++generation; dashboard.replaceChildren(); status.textContent='Dashboard wird gelesen \u2026';
  try { const data=await api(endpoint+'?action=dashboard&id='+encodeURIComponent(id)); if(current!==generation)return;
  status.textContent=''; node('h2',data.name+' \u00b7 ID '+data.id,dashboard);
+ const gadgets=data.gadgets || [], filtersById=new Map(data.filters.map(filter=>[filter.id,filter]));
+ node('h3','Charts und verwendete Filter',dashboard);
+ node('p','Pro Chart oder Gadget siehst du den gespeicherten Filter oder eine andere erkannte Datenquelle. Ein Filtername f\u00fchrt zur JQL weiter unten.',dashboard);
+ if(!gadgets.length) node('p','Keine Gadgets auf diesem Dashboard gefunden.',dashboard);
+ else {
+ const table=node('table',undefined,dashboard); table.className='sources';
+ const head=node('tr',undefined,node('thead',undefined,table)); node('th','Chart / Gadget',head); node('th','Verwendete Filter / Datenquelle',head);
+ const rows=node('tbody',undefined,table);
+ gadgets.forEach(g=>{
+ const row=node('tr',undefined,rows), gadgetCell=node('td',undefined,row), sourceCell=node('td',undefined,row);
+ node('strong',g.name || g.type || 'Unbekanntes Gadget',gadgetCell); node('small','Gadget-ID '+g.id,gadgetCell);
+ (g.filterIds || []).forEach(filterId=>{
+ const filter=filtersById.get(filterId), line=node('p',undefined,sourceCell);
+ if(filter) {const link=node('a',(filter.name || 'Filter')+' \u00b7 ID '+filterId,line);link.href='#filter-'+filterId;if(filter.error)node('small',filter.error,line);}
+ else node('span','Filter-ID '+filterId+' konnte nicht geladen werden.',line);
+ });
+ (g.projectIds || []).forEach(projectId=>node('p','Projekt-ID '+projectId+' (ohne gespeicherten Filter)',sourceCell));
+ (g.directJql || []).forEach(jql=>{const details=node('details',undefined,sourceCell);node('summary','Direkte JQL im Gadget',details);node('pre',jql,details);});
+ node('small',g.note || 'Datenquelle nicht erkannt; Gadget ungepr\u00fcft.',sourceCell);
+ const details=node('details',undefined,sourceCell);node('summary','Datenquelle pr\u00fcfen',details);
+ if(g.type) node('small','Gadget-Typ: '+g.type,details);
+ const preferences=g.sourcePreferences || [];
+ if(!preferences.length) node('p','Keine Standard-Quellpr\u00e4ferenz vorhanden.',details);
+ preferences.forEach(pref=>{node('strong',pref.name,details);node('pre',pref.value || '(leer)',details);});
+ if(g.preferenceNames && g.preferenceNames.length) node('small','Vorhandene Einstellungsnamen: '+g.preferenceNames.join(', '),details);
+ });
+ }
+ node('h3','Gespeicherte Filter bearbeiten',dashboard);
  node('p','Speichern \u00e4ndert den bestehenden Filter \u00fcberall, auch in anderen Dashboards und Abonnements. Eigent\u00fcmer und Freigaben bleiben erhalten.',dashboard);
- if(!data.filters.length) node('p','Keine Standard-Filterreferenzen gefunden. Gadget-Abdeckung unten pr\u00fcfen.',dashboard);
+ if(!data.filters.length) node('p','Keine gespeicherten Filter erkannt. Datenquellen der Charts und Gadgets oben pr\u00fcfen.',dashboard);
  data.filters.forEach(filter => {
- const card=node('article',undefined,dashboard); node('h3',(filter.name || 'Filter')+' \u00b7 ID '+filter.id,card);
- node('small','Eigent\u00fcmer: '+(filter.owner || '\u2014')+' \u00b7 Gadgets: '+filter.gadgets.join(', '),card);
+ const card=node('article',undefined,dashboard); card.id='filter-'+filter.id; node('h3',(filter.name || 'Filter')+' \u00b7 ID '+filter.id,card);
+ const usages=filter.gadgets.map(id=>{const g=gadgets.find(g=>g.id===id);return g?(g.name || g.type)+' (ID '+id+')':'Gadget '+id;});
+ node('small','Eigent\u00fcmer: '+(filter.owner || '\u2014')+' \u00b7 Verwendet von: '+usages.join(', '),card);
  if(filter.error){node('p',filter.error,card);return;}
  const label=node('label','JQL',card); const area=node('textarea',undefined,label); area.value=filter.jql; area.maxLength=32000;
  const validity=node('p','Noch nicht gepr\u00fcft.',card); validity.className='jql-state'; validity.setAttribute('role','status'); validity.setAttribute('aria-live','polite');
@@ -211,8 +294,7 @@ async function load(id) {
  filter.jql=saved.jql; area.value=saved.jql; ++validationVersion; clearTimeout(validationTimer); showValidity('valid','JQL ist g\u00fcltig.'); result.textContent=saved.message;
  }catch(e){result.textContent=e.message;}finally{button.disabled=false;}};
  });
- node('h3','Gadget-Abdeckung',dashboard); node('p','Ausgelesen werden Standard-Filterpr\u00e4ferenzen. App-Gadgets mit eigener Ablage und in JQL verschachtelte Filter sind nicht automatisch abgedeckt.',dashboard);
- const list=node('ul',undefined,dashboard); data.gadgets.forEach(g=>node('li','Gadget '+g.id+' \u00b7 '+g.type+' \u00b7 '+g.note,list));
+ node('p','Ausgelesen werden Standard-Filterpr\u00e4ferenzen. App-Gadgets mit eigener Ablage und in JQL verschachtelte Filter sind nicht automatisch abgedeckt.',dashboard);
  }catch(e){if(current===generation)status.textContent=e.message;}
 }
 </script></html>'''.replace('__TOKEN__', token).replace('__VERSION__', VERSION)

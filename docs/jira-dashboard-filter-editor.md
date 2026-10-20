@@ -26,8 +26,16 @@ Routen die globale Jira-Berechtigung **Administer Jira**.
   Beachtung der Großschreibung als Teilstring gesucht; IDs exakt.
 - Dashboard auswählen. Auch private Dashboards werden für Administratoren aus
   der lokalen Jira-Konfiguration gelesen.
+- Unter **Charts und verwendete Filter** steht pro Gadget der verwendete
+  gespeicherte Filter mit Name und ID. Kreisdiagramm und zweidimensionale
+  Filterstatistik erhalten verständliche Gadget-Namen. Ein Klick auf den
+  Filternamen springt zur JQL desselben Filters weiter unten.
+- Nutzt ein Chart stattdessen ein Projekt oder direkt hinterlegte JQL, wird diese
+  Datenquelle angezeigt. Die Projekt-ID bzw. die aufklappbare JQL lässt sich
+  nachsehen; daraus wird kein gespeicherter Filter zum Bearbeiten erzeugt.
 - Jeder erkannte Filter erscheint einmal mit ID, Eigentümer, referenzierenden
-  Gadget-IDs und direkt bearbeitbarem JQL-Textfeld.
+  Gadget-Namen und IDs und direkt bearbeitbarem JQL-Textfeld. Mehrere Charts mit
+  demselben Filter teilen sich einen Editor.
 - JQL anpassen und am betreffenden Filter **JQL speichern** wählen. Syntax und
   JQL-Validierung laufen unter dem angemeldeten Administrator; es werden keine
   Issues gesucht. Fehler erscheinen an demselben Filter.
@@ -46,16 +54,29 @@ Benutzer dieselben Projekte oder Issues sehen können.
 
 Direkte Filterreferenzen aus den Jira-Gadget-Präferenzen `filterId`, `filter`,
 `filterIds` sowie `projectOrFilterId=filter-<ID>` werden erkannt und dedupliziert.
+`projectOrFilterId=project-<ID>` wird als Projektquelle angezeigt; `jql-<JQL>`
+in einer Standard-Quellpräferenz als direkte Gadget-JQL. Diese Quellen sind
+keine gespeicherten Filter und werden nur angezeigt.
 Die Daten werden lesend über die Jira-Entities `PortalPage`, `PortletConfiguration`
 und `GadgetUserPreference` geladen; es gibt keine direkten Datenbank-Schreibzugriffe.
 
-Die Gadget-Liste zeigt für jedes Gadget, ob eine Standardreferenz gefunden wurde
+Die Übersicht zeigt für jedes Gadget, ob eine Standardquelle gefunden wurde
 oder es ungeprüft bleibt. Unlesbare oder gelöschte Filter und Lesefehler werden
-sichtbar ausgewiesen. Eine leere Liste bedeutet deshalb nicht automatisch, dass
+sichtbar ausgewiesen. Ein defekter Filter verdeckt keine weiteren Referenzen
+desselben Gadgets. Eine leere Filterliste bedeutet deshalb nicht automatisch, dass
 keines der Gadgets Filter verwendet. App-Gadgets mit eigener Konfigurationsablage,
 eingebettete JQL und Filter, die innerhalb anderer Filter referenziert werden,
 sind nicht automatisch abgedeckt. Für solche Apps muss deren konkrete Ablage
 zusätzlich integriert werden.
+
+Unter **Datenquelle prüfen** stehen die ausgelesenen Standard-Quellpräferenzen
+mit ihrem gespeicherten Wert sowie die Namen der vorhandenen Einstellungen.
+Das hilft insbesondere bei einem Kreisdiagramm, das bisher nur als „ungeprüft“
+erschien: `project-…` bezeichnet ein Projekt, `filter-…` einen gespeicherten Filter.
+Nicht erkannte Werte bleiben sichtbar und werden nicht als Filter-ID geraten.
+Werte anderer Gadget-Einstellungen werden nicht ausgegeben. Die Originalkennung
+des Gadget-Typs bleibt sichtbar; die lesbaren Namen werden lokal aus bekannten
+Standarddeskriptoren bestimmt, ohne Abruf der Gadget-URL.
 
 ## Schreibschutz und parallele Änderungen
 

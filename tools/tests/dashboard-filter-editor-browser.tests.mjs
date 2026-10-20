@@ -93,3 +93,58 @@ test('validator checks after typing, clears green immediately and ignores stale 
   assert.equal(state.className,'jql-state invalid');
   assert.equal(pending.length,4);
 });
+
+test('charts show their named saved filters, other sources and read failures with one shared editor', async () => {
+  const source = readFileSync('jira/dashboardFilterEditor.groovy', 'utf8');
+  const script = source.match(/<script>\n([\s\S]*?)<\/script>/)[1];
+  const elements = Object.fromEntries(['status','choices','dashboard','search','query'].map(id=>[id,new Element('div')]));
+  const calls = [];
+  const gadgets = [
+    {id:'43710',name:'Kreisdiagramm',type:'rest/gadgets/piechart-gadget.xml',filterIds:['20'],note:'Gespeicherte Filter erkannt.',sourcePreferences:[{name:'projectOrFilterId',value:'filter-20'}]},
+    {id:'70511',name:'Zweidimensionale Filterstatistik',filterIds:['20'],note:'Gespeicherte Filter erkannt.'},
+    {id:'43712',name:'Kreisdiagramm',projectIds:['123'],note:'Projektquelle ohne gespeicherten Filter.'},
+    {id:'43713',name:'Kreisdiagramm',directJql:['project = TEST AND summary ~ "<img onerror=evil()>"'],note:'Direkte JQL im Gadget hinterlegt.'},
+    {id:'44430',name:'Filterergebnisse',filterIds:['21'],note:'Gespeicherte Filter erkannt.'},
+    {id:'44431',type:'rest/gadgets/custom.xml',filterIds:[],note:'Keine Standard-Datenquelle erkannt; Gadget ungeprüft.',preferenceNames:['pluginSource']}
+  ];
+  const context = vm.createContext({
+    document:{getElementById:id=>elements[id],createElement:tag=>new Element(tag)},
+    location:{pathname:'/jira/rest/scriptrunner/latest/custom/dashboardFilterEditor'},
+    encodeURIComponent,setTimeout,clearTimeout,
+    fetch:async(url,options)=>{
+      calls.push({url,options});
+      if(url.includes('action=dashboard'))return {ok:true,json:async()=>({id:'10',name:'Team',filters:[
+        {id:'20',name:'Shared <img onerror=evil()>',owner:'Other',jql:'project = TEST',gadgets:['43710','70511']},
+        {id:'21',error:'Filter fehlt oder konnte nicht geladen werden.',gadgets:['44430']}
+      ],gadgets})};
+      assert.ok(url.endsWith('Save?action=validate'));
+      return {ok:true,json:async()=>({valid:true,errors:[]})};
+    }
+  });
+  vm.runInContext(script,context);
+  await vm.runInContext("load('10')",context);
+  const nodes=all(elements.dashboard);
+  const table=nodes.find(el=>el.tag==='table');
+  const rows=all(table).filter(el=>el.tag==='tr').slice(1);
+  assert.equal(rows.length,6);
+  const savedFilterLink=all(rows[0]).find(el=>el.tag==='a');
+  assert.equal(savedFilterLink.textContent,'Shared <img onerror=evil()> · ID 20');
+  assert.equal(savedFilterLink.href,'#filter-20');
+  assert.equal(all(rows[1]).find(el=>el.tag==='a').href,'#filter-20');
+  assert.ok(all(rows[0]).some(el=>el.textContent==='projectOrFilterId'));
+  assert.ok(all(rows[0]).some(el=>el.textContent==='filter-20'));
+  assert.ok(all(rows[2]).some(el=>el.textContent==='Projekt-ID 123 (ohne gespeicherten Filter)'));
+  assert.equal(all(rows[2]).filter(el=>el.tag==='a').length,0);
+  assert.ok(all(rows[3]).some(el=>el.tag==='pre' && el.textContent===gadgets[3].directJql[0]));
+  assert.equal(all(rows[4]).find(el=>el.tag==='a').href,'#filter-21');
+  assert.ok(all(rows[4]).some(el=>el.textContent==='Filter fehlt oder konnte nicht geladen werden.'));
+  assert.ok(all(rows[5]).some(el=>el.textContent.includes('ungeprüft')));
+  assert.ok(all(rows[5]).some(el=>el.textContent.includes('pluginSource')));
+  assert.equal(nodes.filter(el=>el.tag==='article').length,2);
+  assert.ok(nodes.some(el=>el.id==='filter-20'));
+  assert.ok(nodes.some(el=>el.id==='filter-21'));
+  assert.ok(nodes.some(el=>el.textContent.includes('Kreisdiagramm (ID 43710), Zweidimensionale Filterstatistik (ID 70511)')));
+  assert.equal(nodes.filter(el=>el.tag==='textarea').length,1);
+  assert.equal(nodes.filter(el=>el.tag==='img').length,0);
+  assert.equal(calls.length,2); // One dashboard read and one validation, no remote gadget lookup or save.
+});

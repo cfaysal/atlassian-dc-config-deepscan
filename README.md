@@ -271,6 +271,11 @@ the same page. It targets **Jira Data Center 11** with ScriptRunner and HAPI `Us
 - Search dashboard names by case-insensitive substring or match an exact dashboard ID.
 - Select a dashboard to list each recognised filter once, with its ID, owner,
   referencing gadget IDs and editable JQL.
+- See **Charts und verwendete Filter** for each gadget's named saved filters,
+  with links to their JQL editors. Standard pie charts and two-dimensional
+  statistics have readable names. Project sources and inline gadget JQL are
+  displayed separately from saved filters; source details help diagnose
+  unrecognised configurations.
 - Validate JQL automatically on load and 500 ms after the last edit. A **green
   circle with a check mark** means valid JQL; invalid queries show Jira's error
   messages. Validation uses Jira's parser and query validator without saving or
@@ -284,7 +289,7 @@ Saving changes the existing shared filter everywhere it is used, including other
 dashboards and subscriptions. Its owner, name and sharing settings remain unchanged.
 Standard gadget filter preferences are recognised; app gadgets with their own
 configuration storage and filters nested inside other JQL are not automatically
-covered. The gadget coverage list identifies unverified gadgets and read failures.
+covered. The source overview identifies unverified gadgets and read failures.
 
 Install the script as a ScriptRunner **file** REST endpoint, then open:
 
@@ -294,7 +299,7 @@ https://<jira>/rest/scriptrunner/latest/custom/dashboardFilterEditor
 
 Include Jira's context path before `/rest` when applicable. See the
 [administrator guide](docs/jira-dashboard-filter-editor.md) for installation,
-permissions, coverage, concurrency limits and validation details. Version **1.1.0**
+permissions, coverage, concurrency limits and validation details. Version **1.2.0**
 is displayed on the page so the deployed script can be identified.
 
 ## Confluence user macros
