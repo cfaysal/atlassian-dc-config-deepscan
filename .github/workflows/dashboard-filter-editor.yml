@@ -1,0 +1,45 @@
+name: Dashboard Filter Editor
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Install checksum-verified Groovy 3.0.21
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/dashboard-groovy"
+          for artifact in groovy groovy-json groovy-xml; do
+            name="${artifact}-3.0.21.jar"
+            url="https://repo.maven.apache.org/maven2/org/codehaus/groovy/${artifact}/3.0.21/${name}"
+            curl -fsSL "$url" -o "$RUNNER_TEMP/dashboard-groovy/$name"
+            checksum=$(curl -fsSL "${url}.sha256")
+            echo "$checksum  $RUNNER_TEMP/dashboard-groovy/$name" | sha256sum --check
+          done
+      - name: Parse and test complete endpoint and platform-free logic
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp="$RUNNER_TEMP/dashboard-groovy/*"
+          java -Dfile.encoding=UTF-8 -cp "$cp" groovy.ui.GroovyMain tools/parsecheck.groovy jira/dashboardFilterEditor.groovy
+          java -Dfile.encoding=UTF-8 -cp "$cp" groovy.ui.GroovyMain jira/tests/dashboardFilterEditor.compilation.tests.groovy
+          java -Dfile.encoding=UTF-8 -cp "$cp" groovy.ui.GroovyMain jira/tests/dashboardFilterEditor.tests.groovy
+      - name: Browser validation and save flow
+        run: node --test tools/tests/dashboard-filter-editor-browser.tests.mjs

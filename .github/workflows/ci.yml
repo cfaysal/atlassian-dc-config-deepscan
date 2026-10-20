@@ -474,6 +474,11 @@ jobs:
           files=$(git ls-files '*.groovy')
           [ -z "$files" ] && exit 0
           for f in $files; do
+            # Dashboard Filter Editor deliberately targets Jira 11 / Jakarta.
+            # Its full-script contract test also imports those types in generated code.
+            case "$f" in
+              jira/dashboardFilterEditor.groovy|jira/tests/dashboardFilterEditor.compilation.tests.groovy) continue ;;
+            esac
             hits=$(grep -nE '^[[:space:]]*import[[:space:]]+(jakarta|javax)\.' "$f" || true)
             if [ -n "$hits" ]; then
               echo "::error file=$f::A jakarta or javax import pins this file to one ScriptRunner line. Resolve the type at runtime instead."
