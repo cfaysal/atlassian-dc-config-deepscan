@@ -40,6 +40,37 @@ Routen die globale Jira-Berechtigung **Administer Jira**.
   JQL-Validierung laufen unter dem angemeldeten Administrator; es werden keine
   Issues gesucht. Fehler erscheinen an demselben Filter.
 
+## Monaco für JQL
+
+Ab Version **1.3.0** nutzt das JQL-Feld die von ScriptRunner mitgelieferte
+Monaco-Bibliothek. Die Ressource
+`com.onresolve.jira.groovy.groovyrunner:vs` mit `vs/loader.js`,
+`vs/editor/editor.main.js` und `vs/base/worker/workerMain.js` wurde auf der
+ScriptRunner-Console-Seite einer Installation mit **ScriptRunner 10.17.0**
+beobachtet. Jiras `WebResourceUrlProvider` liefert die passende lokale URL samt
+Kontextpfad und Cache-Version. Es wird keine zweite Monaco-Version installiert
+und kein CDN verwendet. Die Worker-Startdatei liefert derselbe geschützte
+Endpoint über `?action=monacoWorker`; auch dafür sind Administratorrechte nötig.
+
+Der Editor bietet JQL-Hervorhebung, Zeilennummern, Zeilenumbruch,
+Rückgängig/Wiederholen und Vorschläge für gängige JQL-Felder, Schlüsselwörter
+und Funktionen. **Strg+Leertaste** öffnet die Vorschläge; **Strg+Enter**
+(**Cmd+Enter** auf macOS) speichert den betreffenden Filter. Die Höhe
+lässt sich am unteren Rand verändern. Die Vorschläge sind statisch;
+instanzspezifische Feld- und Projektwerte werden nicht automatisch ergänzt.
+
+Die verbindliche Validierung erfolgt weiterhin mit Jira. Fehlermeldungen
+erscheinen zusätzlich als Monaco-Markierung am Query; Jira liefert hier keine
+genaue Zeichenposition. Änderungen während einer laufenden Speicherung bleiben
+als neuer, noch ungespeicherter Entwurf erhalten. Beim Wechsel des Dashboards
+werden die alten Editor-Modelle und Prüf-Timer aufgeräumt.
+
+Ist die ScriptRunner-Ressource nicht verfügbar oder schlägt das Laden fehl,
+bleibt ein einfaches JQL-Feld mit Hinweis nutzbar. Auch dort funktionieren
+Jira-Validierung und Speichern. Die interne Monaco-Ressource kann sich mit
+ScriptRunner-Versionen ändern; die Anbindung muss nach solchen Änderungen auf
+der betreffenden Installation geprüft werden.
+
 Speichern aktualisiert den bestehenden Filter. Der angemeldete Benutzer kommt
 aus HAPI `Users`; Filter werden über Jiras `SearchRequestManager` geladen und
 aktualisiert. Eine HAPI-Klasse `Filters` wird nicht vorausgesetzt. Der Endpoint
@@ -104,7 +135,10 @@ node --test tools/tests/dashboard-filter-editor-browser.tests.mjs
 ```
 
 Diese Prüfungen belegen Syntax, reine Filter-/Speicherlogik und den Browserablauf
-mit synthetischen Antworten. Sie lösen keine Jira-Typen auf. Eine Installation
+mit synthetischen Antworten. In CI verwendet der Browsertest das HTML, das die
+vollständig kompilierte Datei erzeugt; er prüft auch Monaco-Änderungen,
+Jira-Fehlermarkierungen, Speichern während weiterer Eingaben und das Aufräumen
+der Modelle. Die Plattform-Stubs lösen keine echten Jira-Typen auf. Eine Installation
 oder Kompatibilitätsprüfung auf einer echten Jira-Instanz wurde hier nicht ausgeführt.
 Vor produktiver Nutzung auf einem Testsystem prüfen: Namens-/ID-Suche, ein privates
 Dashboard, mehrere Standardgadgets mit demselben und unterschiedlichen Filtern,

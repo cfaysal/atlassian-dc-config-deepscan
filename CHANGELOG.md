@@ -4,6 +4,33 @@ All notable changes to this project are documented here. Each endpoint carries i
 version, declared once in its helper class and printed by every output channel, so the
 sections below are grouped by endpoint rather than by a single repository version.
 
+## dashboardFilterEditor 1.3.0
+
+### Added
+
+- JQL fields use ScriptRunner's bundled Monaco editor with highlighting, common
+  JQL completions, line wrapping, undo/redo, Jira validation markers and Ctrl+Enter
+  to save. Models and validation timers are disposed when switching dashboards.
+- Jira's `WebResourceUrlProvider` resolves the installed local Monaco resource,
+  observed in ScriptRunner 10.17.0. No external library or CDN is loaded. The
+  endpoint provides an administrator-protected worker bootstrap. A plain JQL field
+  remains usable if Monaco is unavailable.
+- CI browser tests execute the HTML emitted by the compiled script and cover
+  Monaco integration, delayed loading, validation, saving and model disposal.
+
+### Fixed
+
+- A save response no longer overwrites JQL entered while that request was in
+  progress. The newer draft is preserved and the next save uses the updated
+  original revision. Repeated save shortcuts do not issue duplicate requests.
+
+### Validation
+
+- Offline compilation and functional/browser tests cover the local-resource
+  adapter with platform stubs. A Chromium check with real locally served Monaco
+  verifies editor rendering, error markers, keyboard save and model disposal.
+  The change has not been executed on a live Jira endpoint.
+
 ## dashboardFilterEditor 1.2.0
 
 ### Added

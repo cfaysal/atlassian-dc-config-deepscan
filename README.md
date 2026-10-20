@@ -280,6 +280,10 @@ the same page. It targets **Jira Data Center 11** with ScriptRunner and HAPI `Us
   circle with a check mark** means valid JQL; invalid queries show Jira's error
   messages. Validation uses Jira's parser and query validator without saving or
   executing an issue search.
+- Edit JQL with ScriptRunner's bundled Monaco editor: syntax highlighting,
+  common JQL completions, Jira validation markers and Ctrl+Enter to save. Assets
+  come from the local ScriptRunner web resource, without a CDN. A plain JQL field
+  remains available if Monaco cannot load.
 - Save an individual filter directly. The endpoint validates again, checks for
   intervening JQL changes and serialises its own writes across Data Center nodes.
   Both routes require Jira administrator access; POST requests also require a
@@ -299,7 +303,7 @@ https://<jira>/rest/scriptrunner/latest/custom/dashboardFilterEditor
 
 Include Jira's context path before `/rest` when applicable. See the
 [administrator guide](docs/jira-dashboard-filter-editor.md) for installation,
-permissions, coverage, concurrency limits and validation details. Version **1.2.0**
+permissions, coverage, concurrency limits and validation details. Version **1.3.0**
 is displayed on the page so the deployed script can be identified.
 
 ## Confluence user macros
