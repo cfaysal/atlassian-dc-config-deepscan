@@ -26,11 +26,51 @@ Routen die globale Jira-Berechtigung **Administer Jira**.
   Beachtung der Großschreibung als Teilstring gesucht; IDs exakt.
 - Dashboard auswählen. Auch private Dashboards werden für Administratoren aus
   der lokalen Jira-Konfiguration gelesen.
+- Unter **Charts und verwendete Filter** steht pro Gadget der verwendete
+  gespeicherte Filter mit Name und ID. Kreisdiagramm und zweidimensionale
+  Filterstatistik erhalten verständliche Gadget-Namen. Ein Klick auf den
+  Filternamen springt zur JQL desselben Filters weiter unten.
+- Nutzt ein Chart stattdessen ein Projekt oder direkt hinterlegte JQL, wird diese
+  Datenquelle angezeigt. Die Projekt-ID bzw. die aufklappbare JQL lässt sich
+  nachsehen; daraus wird kein gespeicherter Filter zum Bearbeiten erzeugt.
 - Jeder erkannte Filter erscheint einmal mit ID, Eigentümer, referenzierenden
-  Gadget-IDs und direkt bearbeitbarem JQL-Textfeld.
+  Gadget-Namen und IDs und direkt bearbeitbarem JQL-Textfeld. Mehrere Charts mit
+  demselben Filter teilen sich einen Editor.
 - JQL anpassen und am betreffenden Filter **JQL speichern** wählen. Syntax und
   JQL-Validierung laufen unter dem angemeldeten Administrator; es werden keine
   Issues gesucht. Fehler erscheinen an demselben Filter.
+
+## Monaco für JQL
+
+Ab Version **1.3.0** nutzt das JQL-Feld die von ScriptRunner mitgelieferte
+Monaco-Bibliothek. Die Ressource
+`com.onresolve.jira.groovy.groovyrunner:vs` mit `vs/loader.js`,
+`vs/editor/editor.main.js` und `vs/base/worker/workerMain.js` wurde auf der
+ScriptRunner-Console-Seite einer Installation mit **ScriptRunner 10.17.0**
+beobachtet. Jiras `WebResourceUrlProvider` liefert die passende lokale URL samt
+Kontextpfad und Cache-Version. Es wird keine zweite Monaco-Version installiert
+und kein CDN verwendet. Die Worker-Startdatei liefert derselbe geschützte
+Endpoint über `?action=monacoWorker`; auch dafür sind Administratorrechte nötig.
+
+Der Editor verwendet ab Version **1.3.1** das dunkle Monaco-Theme **vs-dark**
+und bietet JQL-Hervorhebung, Zeilennummern, Zeilenumbruch,
+Rückgängig/Wiederholen und Vorschläge für gängige JQL-Felder, Schlüsselwörter
+und Funktionen. **Strg+Leertaste** öffnet die Vorschläge; **Strg+Enter**
+(**Cmd+Enter** auf macOS) speichert den betreffenden Filter. Die Höhe
+lässt sich am unteren Rand verändern. Die Vorschläge sind statisch;
+instanzspezifische Feld- und Projektwerte werden nicht automatisch ergänzt.
+
+Die verbindliche Validierung erfolgt weiterhin mit Jira. Fehlermeldungen
+erscheinen zusätzlich als Monaco-Markierung am Query; Jira liefert hier keine
+genaue Zeichenposition. Änderungen während einer laufenden Speicherung bleiben
+als neuer, noch ungespeicherter Entwurf erhalten. Beim Wechsel des Dashboards
+werden die alten Editor-Modelle und Prüf-Timer aufgeräumt.
+
+Ist die ScriptRunner-Ressource nicht verfügbar oder schlägt das Laden fehl,
+bleibt ein einfaches JQL-Feld mit Hinweis nutzbar. Auch dort funktionieren
+Jira-Validierung und Speichern. Die interne Monaco-Ressource kann sich mit
+ScriptRunner-Versionen ändern; die Anbindung muss nach solchen Änderungen auf
+der betreffenden Installation geprüft werden.
 
 Speichern aktualisiert den bestehenden Filter. Der angemeldete Benutzer kommt
 aus HAPI `Users`; Filter werden über Jiras `SearchRequestManager` geladen und
@@ -46,16 +86,29 @@ Benutzer dieselben Projekte oder Issues sehen können.
 
 Direkte Filterreferenzen aus den Jira-Gadget-Präferenzen `filterId`, `filter`,
 `filterIds` sowie `projectOrFilterId=filter-<ID>` werden erkannt und dedupliziert.
+`projectOrFilterId=project-<ID>` wird als Projektquelle angezeigt; `jql-<JQL>`
+in einer Standard-Quellpräferenz als direkte Gadget-JQL. Diese Quellen sind
+keine gespeicherten Filter und werden nur angezeigt.
 Die Daten werden lesend über die Jira-Entities `PortalPage`, `PortletConfiguration`
 und `GadgetUserPreference` geladen; es gibt keine direkten Datenbank-Schreibzugriffe.
 
-Die Gadget-Liste zeigt für jedes Gadget, ob eine Standardreferenz gefunden wurde
+Die Übersicht zeigt für jedes Gadget, ob eine Standardquelle gefunden wurde
 oder es ungeprüft bleibt. Unlesbare oder gelöschte Filter und Lesefehler werden
-sichtbar ausgewiesen. Eine leere Liste bedeutet deshalb nicht automatisch, dass
+sichtbar ausgewiesen. Ein defekter Filter verdeckt keine weiteren Referenzen
+desselben Gadgets. Eine leere Filterliste bedeutet deshalb nicht automatisch, dass
 keines der Gadgets Filter verwendet. App-Gadgets mit eigener Konfigurationsablage,
 eingebettete JQL und Filter, die innerhalb anderer Filter referenziert werden,
 sind nicht automatisch abgedeckt. Für solche Apps muss deren konkrete Ablage
 zusätzlich integriert werden.
+
+Unter **Datenquelle prüfen** stehen die ausgelesenen Standard-Quellpräferenzen
+mit ihrem gespeicherten Wert sowie die Namen der vorhandenen Einstellungen.
+Das hilft insbesondere bei einem Kreisdiagramm, das bisher nur als „ungeprüft“
+erschien: `project-…` bezeichnet ein Projekt, `filter-…` einen gespeicherten Filter.
+Nicht erkannte Werte bleiben sichtbar und werden nicht als Filter-ID geraten.
+Werte anderer Gadget-Einstellungen werden nicht ausgegeben. Die Originalkennung
+des Gadget-Typs bleibt sichtbar; die lesbaren Namen werden lokal aus bekannten
+Standarddeskriptoren bestimmt, ohne Abruf der Gadget-URL.
 
 ## Schreibschutz und parallele Änderungen
 
@@ -83,7 +136,10 @@ node --test tools/tests/dashboard-filter-editor-browser.tests.mjs
 ```
 
 Diese Prüfungen belegen Syntax, reine Filter-/Speicherlogik und den Browserablauf
-mit synthetischen Antworten. Sie lösen keine Jira-Typen auf. Eine Installation
+mit synthetischen Antworten. In CI verwendet der Browsertest das HTML, das die
+vollständig kompilierte Datei erzeugt; er prüft auch Monaco-Änderungen,
+Jira-Fehlermarkierungen, Speichern während weiterer Eingaben und das Aufräumen
+der Modelle. Die Plattform-Stubs lösen keine echten Jira-Typen auf. Eine Installation
 oder Kompatibilitätsprüfung auf einer echten Jira-Instanz wurde hier nicht ausgeführt.
 Vor produktiver Nutzung auf einem Testsystem prüfen: Namens-/ID-Suche, ein privates
 Dashboard, mehrere Standardgadgets mit demselben und unterschiedlichen Filtern,

@@ -6,12 +6,14 @@ import org.codehaus.groovy.control.customizers.ASTTransformationCustomizer
 
 def platform = new GroovyClassLoader(getClass().classLoader)
 [
-    'com.atlassian.jira.component.ComponentAccessor': 'class ComponentAccessor { static Object jiraAuthenticationContext; static Object globalPermissionManager; static Map components = [:]; static Object getComponent(Class type) { components[type] } }',
+    'com.atlassian.jira.component.ComponentAccessor': 'class ComponentAccessor { static Object jiraAuthenticationContext; static Object globalPermissionManager; static Object ofBizDelegator; static Map components = [:]; static Object getComponent(Class type) { components[type] }; static Object getOSGiComponentInstanceOfType(Class type) { components[type] } }',
+    'com.atlassian.webresource.api.UrlMode': 'enum UrlMode { RELATIVE }',
+    'com.atlassian.webresource.api.WebResourceUrlProvider': 'interface WebResourceUrlProvider { String getStaticPluginResourceUrl(String moduleKey, String resourceName, UrlMode mode) }',
     'com.atlassian.query.Query': 'interface Query {}',
     'com.atlassian.jira.issue.search.SearchRequest': 'class SearchRequest {}',
     'com.atlassian.jira.bc.issue.search.SearchService': 'interface SearchService { String getJqlString(com.atlassian.query.Query query); Object parseQuery(Object user, String jql); Object validateQuery(Object user, com.atlassian.query.Query query) }',
     'com.adaptavist.hapi.jira.users.Users': 'class Users { static Object loggedInUser; static Object getLoggedInUser() { loggedInUser } }',
-    'com.atlassian.jira.issue.search.SearchRequestManager': 'interface SearchRequestManager { Object update(Object user, SearchRequest filter) }',
+    'com.atlassian.jira.issue.search.SearchRequestManager': 'interface SearchRequestManager { Object getSearchRequestById(Long id); Object update(Object user, SearchRequest filter) }',
     'com.atlassian.jira.permission.GlobalPermissionKey': 'class GlobalPermissionKey { static final Object ADMINISTER = new Object() }',
     'com.atlassian.beehive.ClusterLockService': 'interface ClusterLockService {}',
     'jakarta.ws.rs.core.MultivaluedMap': 'interface MultivaluedMap<K,V> { V getFirst(K key) }',
@@ -57,12 +59,22 @@ script.routes.each { name, route ->
 println 'PASS: complete script compiles with TypeChecked and registers both admin routes'
 
 Class live = checked.loadClass('DashboardFilterLive')
+Class resourceProviderType = platform.loadClass('com.atlassian.webresource.api.WebResourceUrlProvider')
+Class accessor = platform.loadClass('com.atlassian.jira.component.ComponentAccessor')
+String nativeLoader = '/jira/s/cache/11030013/version/10.17.0/_/download/resources/com.onresolve.jira.groovy.groovyrunner:vs/vs/loader.js'
+accessor.components[resourceProviderType] = [getStaticPluginResourceUrl:{ String moduleKey, String resourceName, mode ->
+    assert moduleKey == 'com.onresolve.jira.groovy.groovyrunner:vs'
+    assert resourceName == 'vs/loader.js' && mode.toString() == 'RELATIVE'
+    nativeLoader
+}].asType(resourceProviderType)
+assert live.monacoBase() == nativeLoader - '/loader.js'
 String html = live.page('test-token')
+String outputPath = System.getenv('DASHBOARD_EDITOR_HTML')
+if (outputPath) new File(outputPath).setText(html, 'UTF-8')
 assert html.contains('Speichern \u00e4ndert')
 assert html.contains('Filterpr\u00e4ferenzen')
 assert !html.contains('\\u00e4')
 assert new File(path).bytes.every { (it & 0xff) < 128 }
-Class accessor = platform.loadClass('com.atlassian.jira.component.ComponentAccessor')
 platform.loadClass('com.adaptavist.hapi.jira.users.Users').loggedInUser = [key:'test-admin']
 accessor.globalPermissionManager = [hasPermission: { key, user -> true }]
 Map attributes = [:]
@@ -156,8 +168,67 @@ assert live.validateJql('project = TEST').valid == true
 assert live.validateJql('project = MISSING').errors == ['Unknown project']
 println 'PASS: validator distinguishes empty input, parse errors, semantic errors and valid queries'
 
-assert html.contains('Version <strong>1.1.0</strong>')
+assert html.contains('Version <strong>1.3.1</strong>')
+assert !html.contains('cdn.jsdelivr.net')
+assert !html.contains('__MONACO_BASE__')
+assert !html.contains('__MONACO_FAILURE__')
+assert html.contains(nativeLoader - '/loader.js')
+assert live.monacoWorker('/jira/download/resources/fixture:monaco/vs').contains('importScripts(')
+assert live.monacoWorker('/jira/download/resources/fixture:monaco/vs').contains('/base/worker/workerMain.js')
+try { live.monacoWorker('https://external.invalid/vs'); assert false } catch (IllegalArgumentException expected) { }
+def workerParams = [getFirst:{ String key -> key == 'action' ? 'monacoWorker' : null }].asType(platform.loadClass('jakarta.ws.rs.core.MultivaluedMap'))
+accessor.globalPermissionManager = [hasPermission:{ key,user -> true }]
+assert script.routes.dashboardFilterEditor.handler.call(workerParams, '', request).entity == live.monacoWorker()
+accessor.globalPermissionManager = [hasPermission:{ key,user -> false }]
+assert script.routes.dashboardFilterEditor.handler.call(workerParams, '', request).status == 403
+accessor.components.remove(resourceProviderType)
+assert live.page('test-token').contains('ScriptRunner-Monaco konnte nicht aufgel')
 assert !endpointSource.contains('query.toString()')
 assert !endpointSource.contains('errors.errors')
 assert endpointSource.contains('getJqlString(filter.query)')
-println 'PASS: delivery version 1.1.0 contains serializer and MessageSet corrections'
+println 'PASS: delivery version 1.3.1 includes the Monaco asset base and worker bootstrap'
+
+// Exercise the shipped dashboard reader. One broken filter must not hide the other
+// sources, and shared filters must retain every referring gadget without duplicate reads.
+def entity = { Map values -> new Expando(getLong:{ String key -> values[key] as Long }, getString:{ String key -> values[key] as String }) }
+Map<Long, Map> preferences = [
+    (43710L):[projectOrFilterId:'filter-120'],
+    (70511L):[filterId:'120'],
+    (43712L):[projectOrFilterId:'project-123'],
+    (43713L):[projectOrFilterId:'jql-project = TEST'],
+    (44430L):[filterIds:'999, 121, 888'],
+    (44431L):[pluginSource:'456', apiToken:'private']]
+Map<Long, String> descriptors = [(43710L):'piechart-gadget.xml', (70511L):'two-dimensional-stats-gadget.xml',
+    (43712L):'piechart-gadget.xml', (43713L):'piechart-gadget.xml', (44430L):'filter-results-gadget.xml', (44431L):'custom.xml']
+accessor.ofBizDelegator = new Expando(findByAnd:{ String name, Map criteria ->
+    switch (name) {
+        case 'PortalPage': return [entity([pagename:'Charts'])]
+        case 'PortletConfiguration': return descriptors.collect { id, descriptor -> entity([id:id,gadgetXml:'rest/gadgets/' + descriptor]) }
+        case 'GadgetUserPreference': return preferences[criteria.portletconfiguration].collect { key, value -> entity([userprefkey:key,userprefvalue:value]) }
+        default: throw new IllegalArgumentException(name)
+    }
+})
+List<Long> reads = []
+Class managerType = platform.loadClass('com.atlassian.jira.issue.search.SearchRequestManager')
+accessor.components[managerType] = [getSearchRequestById:{ Long id ->
+    reads.add(id)
+    if (id == 999L) throw new IllegalStateException('unreadable')
+    if (id == 888L) return null
+    new Expando(name:'Filter ' + id, owner:new Expando(displayName:'Owner'), query:null)
+}].asType(managerType)
+accessor.components[searchType] = [getJqlString:{ query -> 'project = TEST' }].asType(searchType)
+Map dashboardData = live.dashboard(10L)
+assert dashboardData.status == 200 && dashboardData.gadgets.size() == 6
+assert reads == [120L,999L,121L,888L]
+assert dashboardData.filters.find { it.id == '120' }.gadgets == ['43710','70511']
+assert dashboardData.filters.find { it.id == '999' }.error.contains('IllegalStateException')
+assert dashboardData.filters.find { it.id == '121' }.jql == 'project = TEST'
+assert dashboardData.filters.find { it.id == '888' }.error
+assert dashboardData.gadgets.find { it.id == '43710' }.name == 'Kreisdiagramm'
+assert dashboardData.gadgets.find { it.id == '43712' }.projectIds == ['123']
+assert dashboardData.gadgets.find { it.id == '43713' }.directJql == ['project = TEST']
+Map unknownGadget = dashboardData.gadgets.find { it.id == '44431' }
+assert unknownGadget.filterIds.isEmpty() && unknownGadget.note.contains('ungepr')
+assert unknownGadget.sourcePreferences.isEmpty()
+assert !groovy.json.JsonOutput.toJson(dashboardData).contains('private')
+println 'PASS: chart sources, shared filters, per-filter failures and limited source diagnostics survive the live reader'
