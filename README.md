@@ -303,7 +303,7 @@ https://<jira>/rest/scriptrunner/latest/custom/dashboardFilterEditor
 
 Include Jira's context path before `/rest` when applicable. See the
 [administrator guide](docs/jira-dashboard-filter-editor.md) for installation,
-permissions, coverage, concurrency limits and validation details. Version **1.3.0**
+permissions, coverage, concurrency limits and validation details. Version **1.3.1**
 is displayed on the page so the deployed script can be identified.
 
 ## Confluence user macros

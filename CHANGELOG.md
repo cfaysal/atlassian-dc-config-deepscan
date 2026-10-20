@@ -4,6 +4,13 @@ All notable changes to this project are documented here. Each endpoint carries i
 version, declared once in its helper class and printed by every output channel, so the
 sections below are grouped by endpoint rather than by a single repository version.
 
+## dashboardFilterEditor 1.3.1
+
+### Changed
+
+- JQL editors use Monaco's `vs-dark` theme. The loading background and plain-field
+  fallback use matching dark colours.
+
 ## dashboardFilterEditor 1.3.0
 
 ### Added

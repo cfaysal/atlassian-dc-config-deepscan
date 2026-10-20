@@ -52,7 +52,8 @@ Kontextpfad und Cache-Version. Es wird keine zweite Monaco-Version installiert
 und kein CDN verwendet. Die Worker-Startdatei liefert derselbe geschützte
 Endpoint über `?action=monacoWorker`; auch dafür sind Administratorrechte nötig.
 
-Der Editor bietet JQL-Hervorhebung, Zeilennummern, Zeilenumbruch,
+Der Editor verwendet ab Version **1.3.1** das dunkle Monaco-Theme **vs-dark**
+und bietet JQL-Hervorhebung, Zeilennummern, Zeilenumbruch,
 Rückgängig/Wiederholen und Vorschläge für gängige JQL-Felder, Schlüsselwörter
 und Funktionen. **Strg+Leertaste** öffnet die Vorschläge; **Strg+Enter**
 (**Cmd+Enter** auf macOS) speichert den betreffenden Filter. Die Höhe

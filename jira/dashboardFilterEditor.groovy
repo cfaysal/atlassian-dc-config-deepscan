@@ -114,7 +114,7 @@ class DashboardFilterSupport {
 // Jira/ScriptRunner bridges use dynamic dispatch for platform services.
 @TypeChecked(TypeCheckingMode.SKIP)
 class DashboardFilterLive {
-    static final String VERSION = '1.3.0'
+    static final String VERSION = '1.3.1'
     // Observed in the installed ScriptRunner 10.17.0 console on 2026-10-20:
     // .../download/resources/com.onresolve.jira.groovy.groovyrunner:vs/vs/loader.js
     // and the sibling editor/editor.main.js, editor.main.css and workerMain.js.
@@ -239,7 +239,7 @@ class DashboardFilterLive {
 <title>Dashboard-Filter bearbeiten</title><style>
 body{font:16px system-ui;margin:32px auto;max-width:1100px;padding:0 20px;color:#172b4d}input,button{font:inherit;padding:8px}.jql-fallback{font:inherit;padding:8px;display:block;width:96%;min-height:110px;margin:10px 0}article{border:1px solid #ccd3dd;border-radius:6px;padding:18px;margin:16px 0}button{cursor:pointer;margin:4px}#status,.result{white-space:pre-wrap}small{display:block}li{margin:8px 0}
 .sources{width:100%;border-collapse:collapse;margin:16px 0}.sources th,.sources td{text-align:left;vertical-align:top;padding:12px;border:1px solid #ccd3dd;overflow-wrap:anywhere}.sources th{background:#f4f5f7}.sources small{margin-top:6px}.sources pre{white-space:pre-wrap}article{scroll-margin-top:16px}a{color:#0052cc}
-.monaco-host{height:190px;min-height:120px;resize:vertical;overflow:hidden;border:1px solid #a5adba;border-radius:4px;margin:10px 0}.editor-note{color:#5e6c84}.jql-fallback{font-family:ui-monospace,monospace}.monaco-host[hidden],.jql-fallback[hidden]{display:none}
+.monaco-host{height:190px;min-height:120px;resize:vertical;overflow:hidden;background:#1e1e1e;border:1px solid #3c3c3c;border-radius:4px;margin:10px 0}.editor-note{color:#5e6c84}.jql-fallback{font-family:ui-monospace,monospace;background:#1e1e1e;color:#d4d4d4;border:1px solid #3c3c3c}.monaco-host[hidden],.jql-fallback[hidden]{display:none}
 .jql-state{display:flex;align-items:center;gap:8px;margin:10px 0;white-space:pre-wrap}.jql-state::before{content:"?";display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:22px;height:22px;border-radius:50%;background:#6b778c;color:white;font-weight:bold}.jql-state.valid::before{content:"\u2713";background:#00875a}.jql-state.invalid::before{content:"!";background:#de350b}.jql-state.checking::before{content:"\u2026";background:#0052cc}</style><h1>Dashboard-Filter bearbeiten</h1>
 <p>Version <strong>__VERSION__</strong> &middot; Jira 11</p>
 <form id="search"><label>Dashboard-Name oder ID <input id="query" required maxlength="200"></label><button>Suchen</button></form>
@@ -344,7 +344,7 @@ function createJqlField(card,value,filterId,current) {
   if(disposed || current!==generation)return;
   monaco=api;model=monaco.editor.createModel(area.value,'jql');
   host.hidden=false;
-  editor=monaco.editor.create(host,{model,language:'jql',automaticLayout:true,minimap:{enabled:false},wordWrap:'on',lineNumbers:'on',scrollBeyondLastLine:false,fontSize:14,tabSize:2,ariaLabel:'JQL f\u00fcr Filter '+filterId,fixedOverflowWidgets:true});
+  editor=monaco.editor.create(host,{model,language:'jql',theme:'vs-dark',automaticLayout:true,minimap:{enabled:false},wordWrap:'on',lineNumbers:'on',scrollBeyondLastLine:false,fontSize:14,tabSize:2,ariaLabel:'JQL f\u00fcr Filter '+filterId,fixedOverflowWidgets:true});
   subscription=model.onDidChangeContent(()=>{if(!settingValue){area.value=model.getValue();field.onChange();}});
   editor.addAction({id:'save-jql',label:'JQL speichern',keybindings:[monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],run:()=>field.onSave()});
   area.hidden=true;label.htmlFor='';label.onclick=()=>editor.focus();

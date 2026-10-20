@@ -168,7 +168,7 @@ assert live.validateJql('project = TEST').valid == true
 assert live.validateJql('project = MISSING').errors == ['Unknown project']
 println 'PASS: validator distinguishes empty input, parse errors, semantic errors and valid queries'
 
-assert html.contains('Version <strong>1.3.0</strong>')
+assert html.contains('Version <strong>1.3.1</strong>')
 assert !html.contains('cdn.jsdelivr.net')
 assert !html.contains('__MONACO_BASE__')
 assert !html.contains('__MONACO_FAILURE__')
@@ -186,7 +186,7 @@ assert live.page('test-token').contains('ScriptRunner-Monaco konnte nicht aufgel
 assert !endpointSource.contains('query.toString()')
 assert !endpointSource.contains('errors.errors')
 assert endpointSource.contains('getJqlString(filter.query)')
-println 'PASS: delivery version 1.3.0 includes the Monaco asset base and worker bootstrap'
+println 'PASS: delivery version 1.3.1 includes the Monaco asset base and worker bootstrap'
 
 // Exercise the shipped dashboard reader. One broken filter must not hide the other
 // sources, and shared filters must retain every referring gadget without duplicate reads.
